@@ -2,7 +2,7 @@
 name = "mojox"
 version = "0.1.0"
 description = "CLI wrapper for Mojo with automatic package discovery"
-license = "Apache-2.0"
+license = "MIT"
 requires-python = ">=3.10"
 dependencies = ["mojo-compiler"]
 
