@@ -99,7 +99,7 @@ site-packages/
       libfoo.so         # native shared libraries
 ```
 
-One `-I`, one `LD_LIBRARY_PATH` covers the entire dependency tree. See [mojo-foo](https://github.com/Conobi/mojo-foo) for a real-world example.
+One `-I`, one `LD_LIBRARY_PATH` covers the entire dependency tree.
 
 ## License
 
