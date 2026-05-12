@@ -1,0 +1,118 @@
+name: Release
+
+# Tag conventions:
+#   mojox-vX.Y.Z         → publishes packages/mojox
+#   mojox-build-vX.Y.Z   → publishes packages/mojox-build
+#
+# Each package is configured as a separate trusted publisher on PyPI
+# (https://pypi.org/manage/account/publishing/). No API tokens are stored;
+# the job exchanges its GitHub OIDC token for an ephemeral PyPI credential
+# via `uv publish --trusted-publishing always`.
+
+on:
+  push:
+    tags:
+      - 'mojox-v*'
+      - 'mojox-build-v*'
+  workflow_dispatch:
+    inputs:
+      package:
+        description: 'Package to publish'
+        required: true
+        type: choice
+        options:
+          - mojox
+          - mojox-build
+      destination:
+        description: 'Index to publish to'
+        required: true
+        default: testpypi
+        type: choice
+        options:
+          - testpypi
+          - pypi
+
+jobs:
+  publish:
+    name: Publish to ${{ github.event.inputs.destination || 'pypi' }}
+    runs-on: ubuntu-latest
+
+    # PyPI trusted publishing requires id-token: write on the workflow job.
+    # contents: read is the default but spelled out for clarity.
+    permissions:
+      id-token: write
+      contents: read
+
+    # `environment:` is what PyPI's trusted publisher rule matches against
+    # — set it to "pypi" or "testpypi" so the OIDC claim lines up.
+    environment:
+      name: ${{ github.event.inputs.destination || 'pypi' }}
+      url: https://${{ github.event.inputs.destination == 'testpypi' && 'test.' || '' }}pypi.org/project/${{ steps.pkg.outputs.name }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Determine package + version from tag (or manual input)
+        id: pkg
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            name="${{ github.event.inputs.package }}"
+            version=$(grep -E '^version[[:space:]]*=' packages/${name}/pyproject.toml \
+                       | head -1 | cut -d'"' -f2)
+          else
+            tag="${GITHUB_REF_NAME}"
+            case "$tag" in
+              mojox-build-v*)
+                name="mojox-build"
+                version="${tag#mojox-build-v}"
+                ;;
+              mojox-v*)
+                name="mojox"
+                version="${tag#mojox-v}"
+                ;;
+              *)
+                echo "Unrecognized tag: $tag" >&2
+                exit 1
+                ;;
+            esac
+          fi
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Releasing ${name} ${version}"
+
+      - name: Verify tag matches pyproject.toml version
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          declared=$(grep -E '^version[[:space:]]*=' \
+                       packages/${{ steps.pkg.outputs.name }}/pyproject.toml \
+                       | head -1 | cut -d'"' -f2)
+          if [ "$declared" != "${{ steps.pkg.outputs.version }}" ]; then
+            echo "Tag version (${{ steps.pkg.outputs.version }}) does not match" \
+                 "packages/${{ steps.pkg.outputs.name }}/pyproject.toml ($declared)" >&2
+            exit 1
+          fi
+
+      - name: Build
+        run: |
+          rm -rf dist/
+          uv build --package "${{ steps.pkg.outputs.name }}"
+          ls -la dist/
+
+      - name: Publish to PyPI (trusted publishing, OIDC)
+        if: github.event.inputs.destination != 'testpypi'
+        run: uv publish --trusted-publishing always dist/*
+
+      - name: Publish to TestPyPI (trusted publishing, OIDC)
+        if: github.event.inputs.destination == 'testpypi'
+        run: |
+          uv publish \
+            --trusted-publishing always \
+            --publish-url https://test.pypi.org/legacy/ \
+            dist/*

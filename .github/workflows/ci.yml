@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'README.md'
+      - 'LICENSE'
+      - 'packages/*/README.md'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - 'README.md'
+      - 'LICENSE'
+      - 'packages/*/README.md'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build & smoke-test (${{ matrix.os }} / py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ['3.10', '3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Build mojox
+        run: uv build --package mojox
+
+      - name: Build mojox-build
+        run: uv build --package mojox-build
+
+      - name: Smoke-test mojox-build hooks
+        run: |
+          uv run --no-project --with packaging --with ./packages/mojox-build python - <<'PY'
+          import mojox_build as m
+          required = {
+              "build_wheel",
+              "build_sdist",
+              "build_editable",
+              "get_requires_for_build_wheel",
+              "get_requires_for_build_sdist",
+              "get_requires_for_build_editable",
+              "prepare_metadata_for_build_wheel",
+              "prepare_metadata_for_build_editable",
+          }
+          missing = required - set(dir(m))
+          assert not missing, f"missing PEP 517/660 hooks: {missing}"
+          print(f"mojox-build {m.__version__}: all hooks reachable")
+          PY
+
+      - name: Smoke-test mojox shim imports
+        # The mojo._entrypoints import only resolves when mojo-compiler is
+        # installed, so we patch it out and just verify the wrapper loads
+        # and dispatches subcommands correctly.
+        run: |
+          uv run --no-project --with ./packages/mojox python - <<'PY'
+          import sys, types
+          fake = types.ModuleType("mojo._entrypoints")
+          fake.exec_mojo = lambda: print("exec_mojo called")
+          sys.modules.setdefault("mojo", types.ModuleType("mojo"))
+          sys.modules["mojo._entrypoints"] = fake
+
+          sys.argv = ["mojox", "run", "x.mojo"]
+          import mojox
+          mojox.main()
+          PY
+
+      - name: Upload built artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.os }}-py${{ matrix.python }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
