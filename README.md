@@ -1,106 +1,83 @@
 # mojox
 
-A drop-in wrapper around the [Mojo](https://docs.modular.com/mojo/) CLI that automatically discovers and wires installed Mojo packages.
+A pure-uv DX for Mojo — runtime + build backend, two tiny PyPI packages, no fork of uv, no plugin.
 
-## The problem
+| Package | Role | Source |
+|---|---|---|
+| [`mojox`](./packages/mojox) | Runtime shim. Auto-injects `-I site-packages/mojo_packages/` and `LD_LIBRARY_PATH` so Mojo finds installed `.mojopkg` files. | ~30 lines |
+| [`mojox-build`](./packages/mojox-build) | PEP 517 / PEP 660 build backend. Compiles `.mojo` → `.mojopkg` and assembles them into platform-tagged wheels. | ~600 lines |
 
-Mojo has no `MOJO_IMPORT_PATH`. Every invocation needs explicit `-I` flags and `LD_LIBRARY_PATH` for installed packages:
+The Mojo version is **not** pinned by either package — pin it in your own project via `mojo-compiler==X.Y.Z`. Modular's PyPI distribution does the toolchain delivery; we just sit on top of it.
 
-```bash
-MOJO_PKG=$(python -c "import sysconfig; print(sysconfig.get_path('platlib') + '/mojo_packages')")
-LD_LIBRARY_PATH="$MOJO_PKG/lib" mojo run -I "$MOJO_PKG" my_app.mojo
-```
-
-## The fix
+## End-user DX (greenfield Mojo app)
 
 ```bash
-mojox run my_app.mojo
+uv init --bare hello-mojo && cd hello-mojo
+uv add mojox "mojo-compiler==0.26.2"
+uv add "boucle @ git+https://github.com/Conobi/boucle@v0.2.0"
+
+mkdir -p src && echo 'fn main(): print("hi")' > src/main.mojo
+uv run mojox run src/main.mojo
 ```
 
-`mojox` does three things before delegating to `mojo`:
+Five commands, pure uv. `mojox` finds installed Mojo packages automatically — no `-I` flags, no `LD_LIBRARY_PATH` handling.
 
-1. Finds `site-packages/mojo_packages/` via `sysconfig`
-2. Injects `-I` so the compiler sees installed `.mojopkg` files
-3. Sets `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH` for native libraries
+## Publishing a Mojo library
 
-Everything else passes through unchanged. `mojox run`, `mojox build`, `mojox package` — same flags, same behavior.
+```toml
+# my-lib/pyproject.toml
+[project]
+name = "boucle"
+version = "0.2.0"
+description = "Async event loop primitives for Mojo"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+dependencies = ["mojox", "mojo-compiler>=0.26,<0.27"]
 
-## Install
+[build-system]
+requires      = ["mojox-build>=0.2", "mojo-compiler>=0.26,<0.27"]
+build-backend = "mojox_build"
+
+[tool.mojox-build]
+packages = ["boucle"]              # or `package-root = "src"` for src layout
+```
 
 ```bash
-uv add mojox        # in a project
-uv tool install mojox   # globally
+uv build       # → dist/boucle-0.2.0-py3-none-manylinux_2_43_x86_64.whl
+uv publish     # uploads to PyPI
 ```
 
-`mojox` depends on `mojo-compiler`, which is installed automatically.
+The wheel is correctly **platform-tagged** (because `.mojopkg` is compiled native code) and lays the `.mojopkg` at `mojo_packages/boucle.mojopkg`, where `mojox` discovers it after a consumer does `uv add boucle`.
 
-## Usage
+## Why this works without uv plugins
 
-### As a consumer
+uv has two PEP-standard extension points it implements faithfully:
 
-```bash
-# Install a Mojo library
-uv add mojo-foo
+- **PEP 517** — uv invokes whatever `[build-system].build-backend` declares. `mojox-build` plugs in here.
+- **PEP 427 / `[project.scripts]`** — console scripts land in `<venv>/bin/`. `mojox` is one of those.
 
-# Run code that imports from it — no -I needed
-uv run -- mojox run my_app.mojo
-uv run -- mojox build my_app.mojo
-```
+uv doesn't need to know about Mojo — it just installs wheels and runs scripts. All Mojo-specific behavior lives in our two packages.
 
-### As a library author
+## Repo layout
 
-```bash
-# Your pyproject.toml
-# [dependency-groups]
-# dev = ["mojox", "mojo-io-uring>=0.1.0"]
-
-uv sync
-
-# mojox finds installed deps; -I . adds your local source
-uv run -- mojox run -I . -D ASSERT=all tests/test_foo.mojo
-uv run -- mojox package my_lib -I . -o my_lib.mojopkg
-```
-
-### Bare mojo still works
-
-`mojox` is additive. The `mojo` command is still available in the same venv:
-
-```bash
-uv run -- mojo run -I /some/path my_file.mojo   # manual control
-uv run -- mojox run my_file.mojo                 # automatic discovery
-```
-
-## How it works
-
-`mojox` is ~15 lines of Python. On every invocation it:
+This repository is a uv workspace:
 
 ```
-sys.argv:  mojox run my_app.mojo
-                 ↓
-inject:    mojo run -I<platlib>/mojo_packages my_app.mojo
-                 ↓
-env:       LD_LIBRARY_PATH=<platlib>/mojo_packages/lib:$LD_LIBRARY_PATH
-                 ↓
-exec:      os.execve(mojo_binary, ...)
+.
+├── pyproject.toml                ← workspace root
+├── packages/
+│   ├── mojox/                    ← runtime shim package
+│   │   ├── pyproject.toml
+│   │   └── src/mojox/
+│   └── mojox-build/              ← PEP 517/660 backend
+│       ├── pyproject.toml
+│       └── src/mojox_build/
+└── README.md (this file)
 ```
 
-The `-I` is only injected for subcommands that accept it (`run`, `build`, `package`, `test`, `repl`, `doc`, `format`, `debug`). Top-level flags like `mojox --version` pass through untouched.
-
-## The convention
-
-Mojo packages distributed via PyPI install their artifacts to a shared directory:
-
-```
-site-packages/
-  mojo_packages/          # .mojopkg files (via wheel .data/platlib/)
-    foo.mojopkg
-    io_uring.mojopkg
-    lib/
-      libfoo.so         # native shared libraries
-```
-
-One `-I`, one `LD_LIBRARY_PATH` covers the entire dependency tree.
+Each package versions and releases independently. Develop with `uv sync` at the workspace root; the workspace lockfile keeps both in sync.
 
 ## License
 
-MIT
+MIT. See [`LICENSE`](./LICENSE).
