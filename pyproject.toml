@@ -1,19 +1,15 @@
 [project]
-name = "mojox"
-version = "0.1.0"
-description = "CLI wrapper for Mojo with automatic package discovery"
-readme = "README.md"
-license = "MIT"
+name = "mojox-workspace"
+version = "0"
+description = "Workspace root for the mojox ecosystem (mojox + mojox-build)."
 requires-python = ">=3.10"
-dependencies = ["mojo-compiler"]
-authors = [{name = "Conobi"}]
 
-[project.urls]
-Repository = "https://github.com/Conobi/mojox"
+[tool.uv]
+package = false
 
-[project.scripts]
-mojox = "mojox._cli:main"
+[tool.uv.workspace]
+members = ["packages/*"]
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+[tool.uv.sources]
+mojox       = { workspace = true }
+mojox-build = { workspace = true }
