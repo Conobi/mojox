@@ -75,8 +75,8 @@ jobs:
           sys.modules["mojo._entrypoints"] = fake
 
           sys.argv = ["mojox", "run", "x.mojo"]
-          import mojox
-          mojox.main()
+          from mojox._cli import main
+          main()
           PY
 
       - name: Upload built artifacts
