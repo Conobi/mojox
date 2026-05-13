@@ -1,6 +1,6 @@
 [project]
 name = "mojox"
-version = "0.1.0"
+version = "0.2.0"
 description = "CLI wrapper for Mojo with automatic package discovery"
 readme = "README.md"
 license = "MIT"
