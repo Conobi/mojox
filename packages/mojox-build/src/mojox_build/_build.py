@@ -17,10 +17,10 @@ from base64 import urlsafe_b64encode
 from fnmatch import fnmatch
 from pathlib import Path
 
-from ._config import BackendConfig, ProjectMetadata, normalize_name
+from ._config import BackendConfig, BinaryEntry, ProjectMetadata, normalize_name
 from ._metadata import render_metadata, render_wheel_file
 
-GENERATOR_VERSION = "0.2.0"
+GENERATOR_VERSION = "0.3.0"
 
 # ZIP can't represent dates before 1980; SOURCE_DATE_EPOCH=0 must clamp up.
 _ZIP_EPOCH_FLOOR = 315532800  # 1980-01-01 UTC
@@ -103,6 +103,90 @@ def _compile_mojopkg(
             print(result.stdout, file=sys.stderr, end="")
         if result.stderr:
             print(result.stderr, file=sys.stderr, end="")
+
+
+def _compile_binary(
+    root: Path,
+    source: str,
+    output: Path,
+    cfg: BackendConfig,
+    *,
+    verbose: bool,
+) -> None:
+    """Compile one `.mojo` entrypoint into an executable via `mojo build`.
+
+    Mirrors `_compile_mojopkg`'s `-I site-packages/mojo_packages` injection so
+    cross-package imports (the project's own runtime deps, installed in the
+    build env) resolve.
+
+    Also injects an `$ORIGIN`-relative RUNPATH pointing at the install-site
+    `modular/lib`. Without this, `mojo build` only embeds the build-env's
+    absolute path, which is an ephemeral PEP 517 temp dir — the binary can
+    no longer resolve `libKGENCompilerRTShared.so` etc. once installed.
+    """
+    src_path = root / source
+    cmd = ["mojo", "build", str(src_path), "-o", str(output)]
+    pkg_path = sysconfig.get_path("platlib") + "/mojo_packages"
+    if os.path.isdir(pkg_path):
+        cmd.extend(["-I", pkg_path])
+    for key, value in cfg.defines.items():
+        cmd.extend(["-D", f"{key}={value}"])
+
+    # PEP 427 install layout: <wheel>.data/scripts/ → <venv>/bin/
+    # Inject two `$ORIGIN`-relative RUNPATHs for the venv install layout:
+    #   * modular/lib    → Mojo runtime (libKGENCompilerRTShared.so etc.)
+    #   * mojo_packages/lib → project + dep native-libs declared via
+    #                         [tool.mojox-build].native-libs, dlopened by
+    #                         bare soname from Mojo code.
+    py_ver = sysconfig.get_python_version()
+    site_pkg_rel = f"$ORIGIN/../lib/python{py_ver}/site-packages"
+    for sub in ("modular/lib", "mojo_packages/lib"):
+        cmd.extend(["-Xlinker", "-rpath", "-Xlinker", f"{site_pkg_rel}/{sub}"])
+
+    cmd.extend(cfg.flags)
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"`mojo build` failed for {source}:\n"
+            f"  cmd:    {' '.join(cmd)}\n"
+            f"  stderr: {result.stderr.strip()}"
+        )
+    if verbose:
+        if result.stdout:
+            print(result.stdout, file=sys.stderr, end="")
+        if result.stderr:
+            print(result.stderr, file=sys.stderr, end="")
+
+
+def _build_binaries(
+    root: Path,
+    scripts_dir: Path,
+    binaries: list[BinaryEntry],
+    cfg: BackendConfig,
+    *,
+    verbose: bool,
+) -> None:
+    if not binaries:
+        return
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    tasks = [(b, scripts_dir / b.name) for b in binaries]
+
+    if len(tasks) <= 1:
+        for b, out in tasks:
+            _compile_binary(root, b.source, out, cfg, verbose=verbose)
+            out.chmod(0o755)
+        return
+
+    workers = min(len(tasks), 8)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(_compile_binary, root, b.source, out, cfg, verbose=verbose): out
+            for b, out in tasks
+        }
+        for f in concurrent.futures.as_completed(futures):
+            f.result()
+            futures[f].chmod(0o755)
 
 
 def _resolve_package_dirs(root: Path, cfg: BackendConfig) -> list[Path]:
@@ -239,6 +323,7 @@ def build_wheel(
         platlib = data_dir / "platlib"
         pkg_dir = platlib / "mojo_packages"
         lib_dir = pkg_dir / "lib"
+        scripts_dir = data_dir / "scripts"
         dist_info = staging / f"{name}-{version}.dist-info"
         dist_info.mkdir()
 
@@ -251,6 +336,7 @@ def build_wheel(
         packages = _resolve_package_dirs(root, backend)
         _compile_all(packages, pkg_dir, backend, verbose=verbose)
         _copy_native_libs(root, lib_dir, backend.native_libs)
+        _build_binaries(root, scripts_dir, backend.binaries, backend, verbose=verbose)
 
         license_relpaths = _copy_license_files(
             root, dist_info, project.license_files

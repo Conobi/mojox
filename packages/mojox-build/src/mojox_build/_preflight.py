@@ -17,6 +17,7 @@ def check(root: Path, project: ProjectMetadata, backend: BackendConfig) -> None:
     # is deferred to check_post_pre_build() (run after _run_pre_build).
     if not backend.pre_build:
         _check_native_libs(root, backend)
+    _check_binaries(root, backend)
     _check_readme(root, project)
 
 
@@ -52,6 +53,12 @@ def _check_package_dirs(root: Path, backend: BackendConfig) -> None:
             )
         return
 
+    # Binary-only projects (no .mojopkg output) opt out of package discovery
+    # by setting `packages = []`. Treat a missing src/ as fatal only when no
+    # other build output is declared.
+    if backend.binaries:
+        return
+
     pkg_root = root / backend.package_root
     if not pkg_root.is_dir():
         raise BuildConfigError(
@@ -62,6 +69,15 @@ def _check_package_dirs(root: Path, backend: BackendConfig) -> None:
         raise BuildConfigError(
             f"no package directories found under {pkg_root}. Each top-level "
             f"directory becomes one .mojopkg in the wheel."
+        )
+
+
+def _check_binaries(root: Path, backend: BackendConfig) -> None:
+    missing = [b.source for b in backend.binaries if not (root / b.source).is_file()]
+    if missing:
+        raise BuildConfigError(
+            f"[tool.mojox-build].binaries references files that do not exist: "
+            f"{missing} (relative to {root})."
         )
 
 

@@ -16,11 +16,23 @@ class BuildConfigError(RuntimeError):
     """User-facing configuration error (clean message, no Python stack)."""
 
 
+@dataclass(frozen=True)
+class BinaryEntry:
+    """One executable produced by `mojo build` and packed into the wheel.
+
+    Lands in `<wheel>.data/scripts/<name>`, which PEP 427 installs to the
+    venv's bin/ directory (Scripts/ on Windows).
+    """
+    source: str
+    name: str
+
+
 @dataclass
 class BackendConfig:
     package_root: str = "src"
     packages: list[str] | None = None
     native_libs: list[str] = field(default_factory=list)
+    binaries: list[BinaryEntry] = field(default_factory=list)
     defines: dict[str, str] = field(default_factory=dict)
     flags: list[str] = field(default_factory=list)
     pre_build: list[list[str]] = field(default_factory=list)
@@ -34,6 +46,7 @@ class BackendConfig:
             package_root=d.get("package-root", "src"),
             packages=list(d["packages"]) if "packages" in d else None,
             native_libs=list(d.get("native-libs", [])),
+            binaries=_normalize_binaries(d.get("binaries", [])),
             defines={str(k): str(v) for k, v in d.get("defines", {}).items()},
             flags=list(d.get("flags", [])),
             pre_build=_normalize_pre_build(d.get("pre-build", [])),
@@ -41,6 +54,56 @@ class BackendConfig:
             source_exclude=list(d.get("source-exclude", [])),
             wheel_exclude=list(d.get("wheel-exclude", [])),
         )
+
+
+def _normalize_binaries(items: list) -> list[BinaryEntry]:
+    """Normalize binary entries to BinaryEntry instances.
+
+    Each entry may be:
+      - a string: source path; name defaults to the filename stem.
+        e.g. "main.mojo" → BinaryEntry(source="main.mojo", name="main")
+      - a table: {source = "main.mojo", name = "fetch"} — both required.
+    """
+    out: list[BinaryEntry] = []
+    seen_names: set[str] = set()
+    for item in items:
+        if isinstance(item, str):
+            source = item
+            name = Path(item).stem
+        elif isinstance(item, dict):
+            if "source" not in item or "name" not in item:
+                raise BuildConfigError(
+                    f"Invalid [tool.mojox-build].binaries entry: {item!r}\n"
+                    "  Table form requires both `source` and `name` keys."
+                )
+            source = str(item["source"])
+            name = str(item["name"])
+        else:
+            raise BuildConfigError(
+                f"Invalid [tool.mojox-build].binaries entry: {item!r}\n"
+                "  Each entry must be a string (source path) or a table "
+                "with `source` and `name` keys."
+            )
+        if not source:
+            raise BuildConfigError(
+                f"[tool.mojox-build].binaries: empty `source` in entry {item!r}."
+            )
+        if not name:
+            raise BuildConfigError(
+                f"[tool.mojox-build].binaries: empty `name` in entry {item!r}."
+            )
+        if "/" in name or "\\" in name:
+            raise BuildConfigError(
+                f"[tool.mojox-build].binaries: `name` must be a bare filename, "
+                f"got {name!r} in entry {item!r}."
+            )
+        if name in seen_names:
+            raise BuildConfigError(
+                f"[tool.mojox-build].binaries: duplicate `name` {name!r}."
+            )
+        seen_names.add(name)
+        out.append(BinaryEntry(source=source, name=name))
+    return out
 
 
 def _normalize_pre_build(items: list) -> list[list[str]]:
