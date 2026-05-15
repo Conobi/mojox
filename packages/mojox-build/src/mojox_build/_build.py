@@ -243,6 +243,11 @@ def build_wheel(
         dist_info.mkdir()
 
         _run_pre_build(root, backend.pre_build, verbose=verbose)
+        # Validate that pre-build produced the declared native libs (skipped in
+        # the initial preflight when pre_build is configured, since they may
+        # not exist yet at that point).
+        from ._preflight import check_post_pre_build
+        check_post_pre_build(root, backend)
         packages = _resolve_package_dirs(root, backend)
         _compile_all(packages, pkg_dir, backend, verbose=verbose)
         _copy_native_libs(root, lib_dir, backend.native_libs)

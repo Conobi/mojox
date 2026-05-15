@@ -1,6 +1,6 @@
 [project]
 name = "mojox-build"
-version = "0.2.2"
+version = "0.2.3"
 description = "PEP 517 / PEP 660 build backend for Mojo libraries (compiles .mojo → .mojopkg → wheel)."
 readme = "README.md"
 license = "MIT"

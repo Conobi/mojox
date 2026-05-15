@@ -13,8 +13,17 @@ def check(root: Path, project: ProjectMetadata, backend: BackendConfig) -> None:
     """Raise BuildConfigError with a clean message if anything is off."""
     _check_mojo_binary()
     _check_package_dirs(root, backend)
-    _check_native_libs(root, backend)
+    # native-libs may be produced by a pre-build hook, so the existence check
+    # is deferred to check_post_pre_build() (run after _run_pre_build).
+    if not backend.pre_build:
+        _check_native_libs(root, backend)
     _check_readme(root, project)
+
+
+def check_post_pre_build(root: Path, backend: BackendConfig) -> None:
+    """Validate artifacts that the pre-build hook is expected to produce."""
+    if backend.pre_build:
+        _check_native_libs(root, backend)
 
 
 def _check_mojo_binary() -> None:
