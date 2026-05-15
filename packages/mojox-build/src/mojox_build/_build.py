@@ -52,6 +52,11 @@ def _compile_mojopkg(
     verbose: bool,
 ) -> None:
     cmd = ["mojo", "package", str(source_dir), "-o", str(output)]
+    # Auto-inject -I for uv-installed Mojo packages so cross-package imports
+    # resolve during PEP 517 builds (mirrors the mojox CLI wrapper's behavior).
+    pkg_path = sysconfig.get_path("platlib") + "/mojo_packages"
+    if os.path.isdir(pkg_path):
+        cmd.extend(["-I", pkg_path])
     for key, value in cfg.defines.items():
         cmd.extend(["-D", f"{key}={value}"])
     cmd.extend(cfg.flags)
