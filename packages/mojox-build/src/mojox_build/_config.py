@@ -23,6 +23,7 @@ class BackendConfig:
     native_libs: list[str] = field(default_factory=list)
     defines: dict[str, str] = field(default_factory=dict)
     flags: list[str] = field(default_factory=list)
+    pre_build: list[list[str]] = field(default_factory=list)
     source_include: list[str] | None = None
     source_exclude: list[str] = field(default_factory=list)
     wheel_exclude: list[str] = field(default_factory=list)
@@ -35,10 +36,33 @@ class BackendConfig:
             native_libs=list(d.get("native-libs", [])),
             defines={str(k): str(v) for k, v in d.get("defines", {}).items()},
             flags=list(d.get("flags", [])),
+            pre_build=_normalize_pre_build(d.get("pre-build", [])),
             source_include=list(d["source-include"]) if "source-include" in d else None,
             source_exclude=list(d.get("source-exclude", [])),
             wheel_exclude=list(d.get("wheel-exclude", [])),
         )
+
+
+def _normalize_pre_build(items: list) -> list[list[str]]:
+    """Normalize pre-build entries to argv lists.
+
+    Each entry may be:
+      - a string: invoked via `sh -c <string>` (allows shell features like
+        pipes, redirects, env-var expansion).
+      - a list of strings: invoked directly as argv (no shell parsing).
+    """
+    out: list[list[str]] = []
+    for item in items:
+        if isinstance(item, str):
+            out.append(["sh", "-c", item])
+        elif isinstance(item, list) and all(isinstance(x, str) for x in item):
+            out.append(list(item))
+        else:
+            raise BuildConfigError(
+                f"Invalid [tool.mojox-build].pre-build entry: {item!r}\n"
+                "  Each entry must be a string (shell command) or a list of strings (argv)."
+            )
+    return out
 
 
 @dataclass

@@ -44,6 +44,36 @@ def host_platform_tag() -> str:
 # ============================================================
 
 
+def _run_pre_build(
+    root: Path,
+    commands: list[list[str]],
+    *,
+    verbose: bool,
+) -> None:
+    """Run user-defined pre-build hooks before any Mojo compilation.
+
+    Each command runs with cwd=<project root>. Inherits the build env's PATH
+    (so build dependencies on PATH are available) and PYTHONPATH (so the build
+    env's site-packages is reachable). Any non-zero exit aborts the wheel
+    build with the captured stderr.
+    """
+    for cmd in commands:
+        if verbose:
+            print(f"[mojox-build] pre-build: {' '.join(cmd)}", file=sys.stderr)
+        result = subprocess.run(
+            cmd,
+            cwd=root,
+            capture_output=not verbose,
+            text=True,
+        )
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip() if not verbose else "(see above)"
+            raise RuntimeError(
+                f"pre-build hook failed (exit {result.returncode}): {' '.join(cmd)}\n"
+                f"  stderr: {stderr}"
+            )
+
+
 def _compile_mojopkg(
     source_dir: Path,
     output: Path,
@@ -212,6 +242,7 @@ def build_wheel(
         dist_info = staging / f"{name}-{version}.dist-info"
         dist_info.mkdir()
 
+        _run_pre_build(root, backend.pre_build, verbose=verbose)
         packages = _resolve_package_dirs(root, backend)
         _compile_all(packages, pkg_dir, backend, verbose=verbose)
         _copy_native_libs(root, lib_dir, backend.native_libs)
