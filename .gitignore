@@ -1,6 +1,7 @@
-# Agent plans and skill artifacts
-docs/plans/
-docs/superpowers/
+# Local working docs (project context, specs, plans)
+docs/
+specs/
+plans/
 
 __pycache__/
 *.py[cod]
