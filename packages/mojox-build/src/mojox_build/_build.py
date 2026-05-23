@@ -394,7 +394,7 @@ def build_editable_wheel(
 
         packages = _resolve_package_dirs(root, backend)
         platlib.mkdir(parents=True, exist_ok=True)
-        _write_editable_hook(root, platlib, packages)
+        _write_editable_hook(platlib, packages)
 
         _copy_native_libs(root, lib_dir, backend.native_libs)
         _build_binaries(root, scripts_dir, backend.binaries, backend, verbose=verbose)
@@ -419,7 +419,6 @@ def build_editable_wheel(
 
 
 def _write_editable_hook(
-    root: Path,
     platlib: Path,
     packages: list[Path],
 ) -> None:

@@ -7,7 +7,7 @@ import sysconfig
 _SUBCOMMANDS = {"run", "build", "test", "repl", "doc", "package", "format", "debug"}
 
 
-def _check(pkg_path: str) -> None:
+def _check() -> None:
     """Run `mojo package` in validation-only mode."""
     import tempfile
     from pathlib import Path
@@ -67,7 +67,7 @@ def main():
 
     # Intercept 'check' subcommand before exec
     if len(sys.argv) > 1 and sys.argv[1] == "check":
-        _check(pkg)
+        _check()
         return
 
     # Inject -I after the subcommand, only for subcommands that accept it
