@@ -5,6 +5,7 @@ Self-contained — no imports beyond stdlib.
 """
 import json
 import os
+import sys
 
 
 def _ensure():
@@ -27,7 +28,6 @@ def _ensure():
         try:
             os.symlink(src, link)
         except OSError as e:
-            import sys
             print(
                 f"mojox-editable: failed to symlink {name} -> {src}: {e}",
                 file=sys.stderr,

@@ -12,17 +12,12 @@ def _check() -> None:
     import tempfile
     from pathlib import Path
 
-    from mojox_build._build import _compile_mojopkg
+    from mojox_build._build import _compile_mojopkg, _resolve_package_dirs
     from mojox_build._config import load
 
     root = Path.cwd()
     _, backend = load(root / "pyproject.toml")
-
-    if backend.packages is not None:
-        packages = [root / name for name in backend.packages]
-    else:
-        pkg_root = root / backend.package_root
-        packages = [p for p in sorted(pkg_root.iterdir()) if p.is_dir()]
+    packages = _resolve_package_dirs(root, backend)
 
     # Filter by --package if provided
     filter_name = None
