@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -355,6 +356,85 @@ def build_wheel(
         _zip_dir(staging, wheel_directory / wheel_name, dist_info.name, backend.wheel_exclude)
 
     return wheel_name
+
+
+def build_editable_wheel(
+    root: Path,
+    project: ProjectMetadata,
+    backend: BackendConfig,
+    *,
+    wheel_directory: Path,
+    verbose: bool = False,
+) -> str:
+    """Build an editable wheel that symlinks source dirs at runtime.
+
+    Instead of compiling .mojopkg files, the wheel contains a .pth hook
+    that creates symlinks from site-packages/mojo_packages/<pkg> to the
+    project's source directories. Source changes are picked up immediately.
+    """
+    name = normalize_name(project.name)
+    version = project.version
+    platform_tag = host_platform_tag()
+    tag = f"py3-none-{platform_tag}"
+    wheel_name = f"{name}-{version}-{tag}.whl"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        staging = Path(tmpdir)
+        data_dir = staging / f"{name}-{version}.data"
+        platlib = data_dir / "platlib"
+        pkg_dir = platlib / "mojo_packages"
+        lib_dir = pkg_dir / "lib"
+        scripts_dir = data_dir / "scripts"
+        dist_info = staging / f"{name}-{version}.dist-info"
+        dist_info.mkdir()
+
+        _run_pre_build(root, backend.pre_build, verbose=verbose)
+        from ._preflight import check_post_pre_build
+        check_post_pre_build(root, backend)
+
+        packages = _resolve_package_dirs(root, backend)
+        platlib.mkdir(parents=True, exist_ok=True)
+        _write_editable_hook(root, platlib, packages)
+
+        _copy_native_libs(root, lib_dir, backend.native_libs)
+        _build_binaries(root, scripts_dir, backend.binaries, backend, verbose=verbose)
+
+        license_relpaths = _copy_license_files(
+            root, dist_info, project.license_files
+        )
+        (dist_info / "METADATA").write_text(
+            render_metadata(project, root, license_relpaths)
+        )
+        (dist_info / "WHEEL").write_text(
+            render_wheel_file(
+                tag=tag,
+                root_is_purelib=False,
+                generator_version=GENERATOR_VERSION,
+            )
+        )
+
+        _zip_dir(staging, wheel_directory / wheel_name, dist_info.name, backend.wheel_exclude)
+
+    return wheel_name
+
+
+def _write_editable_hook(
+    root: Path,
+    platlib: Path,
+    packages: list[Path],
+) -> None:
+    """Write the .pth, hook module, and manifest for editable installs."""
+    hook_template = Path(__file__).parent / "_editable_hook.py"
+    shutil.copy2(hook_template, platlib / "_mojox_editable_hook.py")
+    (platlib / "_mojox_editable.pth").write_text("import _mojox_editable_hook\n")
+    manifest = {
+        "packages": {
+            pkg.name: str(pkg.resolve()) for pkg in packages
+        }
+    }
+    (platlib / "_mojox_editable_manifest.json").write_text(
+        json.dumps(manifest, indent=2) + "\n"
+    )
 
 
 # ============================================================
