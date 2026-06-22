@@ -20,8 +20,9 @@ from pathlib import Path
 
 from ._config import BackendConfig, BinaryEntry, ProjectMetadata, normalize_name
 from ._metadata import render_metadata, render_wheel_file
+from ._toolchain import Toolchain
 
-GENERATOR_VERSION = "0.3.0"
+GENERATOR_VERSION = "0.4.0"
 
 # ZIP can't represent dates before 1980; SOURCE_DATE_EPOCH=0 must clamp up.
 _ZIP_EPOCH_FLOOR = 315532800  # 1980-01-01 UTC
@@ -75,14 +76,35 @@ def _run_pre_build(
             )
 
 
-def _compile_mojopkg(
+def _compile_package(
     source_dir: Path,
-    output: Path,
+    out_dir: Path,
     cfg: BackendConfig,
+    toolchain: Toolchain,
     *,
     verbose: bool,
-) -> None:
-    cmd = ["mojo", "package", str(source_dir), "-o", str(output)]
+) -> Path:
+    """Compile one source dir into a precompiled Mojo package.
+
+    The command and output extension depend on the Mojo toolchain: Mojo >= 1.0
+    uses `mojo precompile` → `.mojoc`, older toolchains use `mojo package` →
+    `.mojopkg` (see `Toolchain`).
+
+    Args:
+        source_dir: Directory of `.mojo` sources forming one package.
+        out_dir: Directory the compiled package is written into.
+        cfg: Backend configuration supplying `-D` defines and extra flags.
+        toolchain: Resolved Mojo toolchain (command + extension).
+        verbose: Whether to stream compiler stdout/stderr.
+
+    Returns:
+        The path of the compiled package written under `out_dir`.
+
+    Raises:
+        RuntimeError: If the compile command exits non-zero.
+    """
+    output = out_dir / f"{source_dir.name}{toolchain.extension}"
+    cmd = ["mojo", toolchain.subcommand, str(source_dir), "-o", str(output)]
     # Auto-inject -I for uv-installed Mojo packages so cross-package imports
     # resolve during PEP 517 builds (mirrors the mojox CLI wrapper's behavior).
     pkg_path = sysconfig.get_path("platlib") + "/mojo_packages"
@@ -95,7 +117,7 @@ def _compile_mojopkg(
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(
-            f"`mojo package` failed for {source_dir.name}:\n"
+            f"`mojo {toolchain.subcommand}` failed for {source_dir.name}:\n"
             f"  cmd:    {' '.join(cmd)}\n"
             f"  stderr: {result.stderr.strip()}"
         )
@@ -104,6 +126,7 @@ def _compile_mojopkg(
             print(result.stdout, file=sys.stderr, end="")
         if result.stderr:
             print(result.stderr, file=sys.stderr, end="")
+    return output
 
 
 def _compile_binary(
@@ -116,7 +139,7 @@ def _compile_binary(
 ) -> None:
     """Compile one `.mojo` entrypoint into an executable via `mojo build`.
 
-    Mirrors `_compile_mojopkg`'s `-I site-packages/mojo_packages` injection so
+    Mirrors `_compile_package`'s `-I site-packages/mojo_packages` injection so
     cross-package imports (the project's own runtime deps, installed in the
     build env) resolve.
 
@@ -205,18 +228,23 @@ def _compile_all(
     verbose: bool,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    tasks = [(src, out_dir / f"{src.name}.mojopkg") for src in packages]
-
-    if len(tasks) <= 1:
-        for src, out in tasks:
-            _compile_mojopkg(src, out, cfg, verbose=verbose)
+    if not packages:
         return
 
-    workers = min(len(tasks), 8)
+    # Detect the toolchain once (cached) and share it across all packages so
+    # every package in the wheel uses the same command + extension.
+    toolchain = Toolchain.detect()
+
+    if len(packages) <= 1:
+        for src in packages:
+            _compile_package(src, out_dir, cfg, toolchain, verbose=verbose)
+        return
+
+    workers = min(len(packages), 8)
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [
-            pool.submit(_compile_mojopkg, src, out, cfg, verbose=verbose)
-            for src, out in tasks
+            pool.submit(_compile_package, src, out_dir, cfg, toolchain, verbose=verbose)
+            for src in packages
         ]
         for f in concurrent.futures.as_completed(futures):
             f.result()
@@ -368,7 +396,7 @@ def build_editable_wheel(
 ) -> str:
     """Build an editable wheel that symlinks source dirs at runtime.
 
-    Instead of compiling .mojopkg files, the wheel contains a .pth hook
+    Instead of compiling packages, the wheel contains a .pth hook
     that creates symlinks from site-packages/mojo_packages/<pkg> to the
     project's source directories. Source changes are picked up immediately.
     """

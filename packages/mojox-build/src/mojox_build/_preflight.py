@@ -53,7 +53,7 @@ def _check_package_dirs(root: Path, backend: BackendConfig) -> None:
             )
         return
 
-    # Binary-only projects (no .mojopkg output) opt out of package discovery
+    # Binary-only projects (no compiled-package output) opt out of package discovery
     # by setting `packages = []`. Treat a missing src/ as fatal only when no
     # other build output is declared.
     if backend.binaries:
@@ -68,7 +68,7 @@ def _check_package_dirs(root: Path, backend: BackendConfig) -> None:
     if not any(p.is_dir() for p in pkg_root.iterdir()):
         raise BuildConfigError(
             f"no package directories found under {pkg_root}. Each top-level "
-            f"directory becomes one .mojopkg in the wheel."
+            f"directory becomes one compiled Mojo package in the wheel."
         )
 
 

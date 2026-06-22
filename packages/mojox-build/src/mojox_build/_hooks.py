@@ -120,7 +120,7 @@ def hook_get_requires_for_build_sdist(config_settings: dict | None = None) -> li
 # ============================================================
 # PEP 660 — editable installs
 # ============================================================
-# Instead of compiling .mojopkg, the editable wheel contains a .pth
+# Instead of compiling packages, the editable wheel contains a .pth
 # hook that symlinks source directories into mojo_packages/ at runtime.
 # Source changes are picked up immediately — no reinstall needed.
 

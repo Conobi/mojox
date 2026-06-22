@@ -3,17 +3,22 @@ import os
 import sys
 import sysconfig
 
-# Mojo subcommands that accept -I for import paths
-_SUBCOMMANDS = {"run", "build", "test", "repl", "doc", "package", "format", "debug"}
+# Mojo subcommands that accept -I for import paths. Both `package` (Mojo < 1.0)
+# and its `precompile` successor (Mojo >= 1.0) are included so import injection
+# works whichever toolchain is installed.
+_SUBCOMMANDS = {
+    "run", "build", "test", "repl", "doc", "package", "precompile", "format", "debug",
+}
 
 
 def _check() -> None:
-    """Run `mojo package` in validation-only mode."""
+    """Validate every configured package by compiling it to a throwaway dir."""
     import tempfile
     from pathlib import Path
 
-    from mojox_build._build import _compile_mojopkg, _resolve_package_dirs
+    from mojox_build._build import _compile_package, _resolve_package_dirs
     from mojox_build._config import load
+    from mojox_build._toolchain import Toolchain
 
     root = Path.cwd()
     _, backend = load(root / "pyproject.toml")
@@ -36,12 +41,13 @@ def _check() -> None:
             print(f"No package named '{filter_name}' found.", file=sys.stderr)
             sys.exit(1)
 
+    toolchain = Toolchain.detect()
     all_passed = True
     with tempfile.TemporaryDirectory() as tmpdir:
+        out_dir = Path(tmpdir)
         for pkg in packages:
-            out = Path(tmpdir) / f"{pkg.name}.mojopkg"
             try:
-                _compile_mojopkg(pkg, out, backend, verbose=False)
+                _compile_package(pkg, out_dir, backend, toolchain, verbose=False)
                 print(f"{pkg.name}: OK")
             except RuntimeError as e:
                 all_passed = False

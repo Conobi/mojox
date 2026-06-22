@@ -5,7 +5,7 @@ CLI wrapper for Mojo with automatic package discovery.
 `mojox` is ~15 lines of Python. On every invocation it:
 
 1. Finds `<site-packages>/mojo_packages/` via `sysconfig`.
-2. Injects `-I` so `mojo` sees installed `.mojopkg` files.
+2. Injects `-I` so `mojo` sees installed `.mojoc` / `.mojopkg` files.
 3. Augments `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH` for native libs in `<pkg>/lib`.
 4. Hands off to `mojo._entrypoints.exec_mojo` (the same entry point the bundled `mojo` binary uses).
 
@@ -24,10 +24,10 @@ uv tool install mojox       # globally
 uv run mojox run my_app.mojo
 uv run mojox build my_app.mojo
 uv run mojox test tests/
-uv run mojox package my_lib -o my_lib.mojopkg
+uv run mojox precompile my_lib -o my_lib.mojoc   # `package … -o …mojopkg` on Mojo < 1.0
 ```
 
-Subcommands that get `-I` injected: `run`, `build`, `package`, `test`, `repl`, `doc`, `format`, `debug`.
+Subcommands that get `-I` injected: `run`, `build`, `precompile`, `package`, `test`, `repl`, `doc`, `format`, `debug`.
 
 Top-level flags (`mojox --version`, etc.) pass through untouched.
 
