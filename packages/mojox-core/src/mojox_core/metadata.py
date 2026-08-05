@@ -59,6 +59,7 @@ def serialize(
                     "kind": e.kind.value,
                     "packages": list(e.packages),
                     "provenance": e.provenance,
+                    "native_lib_dirs": list(e.native_lib_dirs),
                 }
                 for e in env.include_sequence
             ],

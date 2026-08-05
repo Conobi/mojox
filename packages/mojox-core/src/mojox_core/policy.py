@@ -112,16 +112,23 @@ def resolve(
     if "flags" in cli_overrides:
         flags.extend(cli_overrides["flags"])
 
-    # Jobs
-    jobs_raw = cli_overrides.get("jobs") or settings.jobs or _DEFAULT_JOBS
+    # Jobs — explicit None checks to avoid treating 0 as falsy
+    jobs_raw = cli_overrides.get("jobs")
+    if jobs_raw is None:
+        jobs_raw = settings.jobs
+    if jobs_raw is None:
+        jobs_raw = _DEFAULT_JOBS
     jobs = int(jobs_raw)
     jobs_compile = jobs
     jobs_tests = 1 if not manifest.test_parallel else jobs
 
-    # Timeout
-    timeout_s = int(
-        cli_overrides.get("timeout") or settings.timeout_s or _DEFAULT_TIMEOUT
-    )
+    # Timeout — explicit None checks to avoid treating 0 as falsy
+    timeout_raw = cli_overrides.get("timeout")
+    if timeout_raw is None:
+        timeout_raw = settings.timeout_s
+    if timeout_raw is None:
+        timeout_raw = _DEFAULT_TIMEOUT
+    timeout_s = int(timeout_raw)
 
     # Lints
     lints = manifest.lints

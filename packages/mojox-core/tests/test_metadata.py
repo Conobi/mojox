@@ -71,7 +71,7 @@ class TestSerialization:
         graph, env, policy, commands, toolchain = _make_fixture()
         doc1 = serialize(graph, env, policy, commands, toolchain, ())
         doc2 = serialize(graph, env, policy, commands, toolchain, ())
-        assert json.dumps(doc1, sort_keys=True) == json.dumps(doc2, sort_keys=True)
+        assert json.dumps(doc1) == json.dumps(doc2)
 
     def test_stdout_is_json_only(self):
         graph, env, policy, commands, toolchain = _make_fixture()

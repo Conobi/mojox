@@ -187,8 +187,10 @@ class TestPrecompilation:
         test_cmds = [c for c in cmds if c.kind == CommandKind.RUN_TEST]
         if any(c.kind == CommandKind.COMPILE_PACKAGE for c in cmds):
             for c in test_cmds:
-                argv_str = " ".join(c.argv)
-                assert "-I" in argv_str
+                argv = list(c.argv)
+                i_paths = [argv[i + 1] for i in range(len(argv) - 1) if argv[i] == "-I"]
+                assert any(".mojox/build/pkg" in p for p in i_paths), \
+                    f"expected precompile output dir in -I paths, got {i_paths}"
 
     def test_plan_below_threshold_skips_precompile(self):
         graph = TargetGraph(
@@ -304,4 +306,6 @@ class TestCommandEnv:
         cmds = plan(graph, _make_env(), _make_policy(), _make_toolchain(), _make_host())
         for c in cmds:
             assert isinstance(c.env, dict)
-            assert len(c.env) > 0
+            assert set(c.env.keys()) == {"PATH", "HOME"}, \
+                f"env should contain only PATH and HOME, got {set(c.env.keys())}"
+            assert c.env["PATH"] == "/venv/bin"

@@ -173,6 +173,9 @@ def _build_check_example_command(
     if policy.optimize is not None:
         argv.append(f"-O{policy.optimize}")
 
+    if policy.debug_level and policy.debug_level != "none":
+        argv.extend(["--debug-level", policy.debug_level])
+
     for path in include_sequence:
         argv.extend(["-I", path])
 
@@ -210,6 +213,9 @@ def _build_compile_binary_command(
 
     if policy.optimize is not None:
         argv.append(f"-O{policy.optimize}")
+
+    if policy.debug_level and policy.debug_level != "none":
+        argv.extend(["--debug-level", policy.debug_level])
 
     for path in include_sequence:
         argv.extend(["-I", path])

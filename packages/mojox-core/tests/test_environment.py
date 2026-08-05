@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from mojox_core._errors import ConfigError
 from mojox_core._types import DistEntry, DistKind, ResolvedEnv
 from mojox_core.environment import build_env
 
@@ -66,5 +67,5 @@ class TestBuildEnv:
             _dist("x", "/pkg", kind=DistKind.SOURCE, packages=("x",)),
             _dist("x-pre", "/pkg", kind=DistKind.PRECOMPILED, packages=("x",)),
         ]
-        with pytest.raises(Exception, match="source-shadows-precompiled"):
+        with pytest.raises(ConfigError, match="source-shadows-precompiled"):
             build_env(dists, None, "/venv/bin/mojo", "1.0.0b2")
