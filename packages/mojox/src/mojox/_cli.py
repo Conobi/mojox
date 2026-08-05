@@ -1,80 +1,384 @@
-"""Wrapper around mojo that auto-injects -I for installed Mojo packages."""
+"""mojox CLI: build, test, and run Mojo projects.
+
+Subcommands:
+  test      Run test targets (dev profile by default)
+  run       Run a single Mojo file (dev profile by default)
+  build     Compile binary targets (release profile by default)
+  check     Validate manifest and run lints (no compiler needed)
+  metadata  Output the build plan as JSON
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
 import os
 import sys
-import sysconfig
-
-# Mojo subcommands that accept -I for import paths. Both `package` (Mojo < 1.0)
-# and its `precompile` successor (Mojo >= 1.0) are included so import injection
-# works whichever toolchain is installed.
-_SUBCOMMANDS = {
-    "run", "build", "test", "repl", "doc", "package", "precompile", "format", "debug",
-}
+from pathlib import Path
 
 
-def _check() -> None:
-    """Validate every configured package by compiling it to a throwaway dir."""
-    import tempfile
-    from pathlib import Path
+def build_parser() -> argparse.ArgumentParser:
+    """Build the CLI argument parser with all subcommands."""
+    parser = argparse.ArgumentParser(
+        prog="mojox",
+        description="Build, test, and run Mojo projects.",
+    )
+    sub = parser.add_subparsers(dest="subcommand", required=True)
 
-    from mojox_build._build import _compile_package, _resolve_package_dirs
-    from mojox_build._config import load
-    from mojox_build._toolchain import Toolchain
+    test_p = sub.add_parser("test", help="Run test targets")
+    test_p.set_defaults(profile="dev")
+    _add_common_flags(test_p)
+
+    run_p = sub.add_parser("run", help="Run a Mojo file")
+    run_p.add_argument("file", help="The .mojo file to run")
+    run_p.set_defaults(profile="dev")
+    _add_common_flags(run_p)
+
+    build_p = sub.add_parser("build", help="Compile binary targets")
+    build_p.set_defaults(profile="release")
+    _add_common_flags(build_p)
+
+    check_p = sub.add_parser("check", help="Validate manifest and run lints")
+    check_p.add_argument("--no-config", action="store_true", default=False,
+                         help="Disable settings file discovery")
+    check_p.add_argument("--config-file", default=None,
+                         help="Explicit config file path")
+
+    meta_p = sub.add_parser("metadata", help="Output build plan as JSON")
+    meta_p.set_defaults(profile="dev")
+    _add_common_flags(meta_p)
+
+    return parser
+
+
+def _add_common_flags(parser: argparse.ArgumentParser) -> None:
+    """Add flags shared across exec-capable subcommands."""
+    parser.add_argument("--profile", default=argparse.SUPPRESS,
+                        help="Build profile (dev, release, or user-defined)")
+    parser.add_argument("--jobs", "-j", type=int, default=None,
+                        help="Maximum concurrent compilations")
+    parser.add_argument("--timeout", type=int, default=None,
+                        help="Per-target timeout in seconds")
+    parser.add_argument("--dry-run", action="store_true", default=False,
+                        help="Show planned commands without executing")
+    parser.add_argument("--no-config", action="store_true", default=False,
+                        help="Disable settings file discovery")
+    parser.add_argument("--config-file", default=None,
+                        help="Explicit config file path")
+    parser.add_argument("-D", "--define", action="append", default=[], dest="defines",
+                        help="Define a compile-time variable (KEY=VALUE)")
+    parser.add_argument("--flag", action="append", default=[], dest="flags",
+                        help="Extra flag passed through to the compiler")
+
+
+def _build_cli_overrides(args: argparse.Namespace) -> dict:
+    """Extract CLI override dict from parsed arguments."""
+    overrides: dict = {}
+    if getattr(args, "jobs", None) is not None:
+        overrides["jobs"] = args.jobs
+    if getattr(args, "timeout", None) is not None:
+        overrides["timeout"] = args.timeout
+    if getattr(args, "defines", None):
+        defines = {}
+        for d in args.defines:
+            if "=" in d:
+                k, v = d.split("=", 1)
+                defines[k] = v
+            else:
+                defines[d] = ""
+        overrides["defines"] = defines
+    if getattr(args, "flags", None):
+        overrides["flags"] = tuple(args.flags)
+    return overrides
+
+
+def _resolve_pipeline(args: argparse.Namespace):
+    """Run the shared resolution pipeline.
+
+    Returns (manifest, graph, env, policy, toolchain, host, settings, commands).
+    """
+    from mojox_core import (
+        ConfigError, discover, plan, resolve, parse_manifest,
+    )
+    from mojox_core.io.environment import read_distributions, read_host_facts, read_lockfile
+    from mojox_core.io.manifest import read as read_manifest
+    from mojox_core.io.toolchain import resolve as resolve_toolchain
+    from mojox_core.environment import build_env
+
+    from ._settings_reader import read_settings
 
     root = Path.cwd()
-    _, backend = load(root / "pyproject.toml")
-    packages = _resolve_package_dirs(root, backend)
+    pyproject_path = root / "pyproject.toml"
 
-    # Filter by --package if provided
-    filter_name = None
-    args = sys.argv[2:]
-    i = 0
-    while i < len(args):
-        if args[i] == "--package" and i + 1 < len(args):
-            filter_name = args[i + 1]
-            i += 2
-        else:
-            i += 1
+    try:
+        raw = read_manifest(pyproject_path)
+    except ConfigError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(2)
 
-    if filter_name:
-        packages = [p for p in packages if p.name == filter_name]
-        if not packages:
-            print(f"No package named '{filter_name}' found.", file=sys.stderr)
-            sys.exit(1)
+    try:
+        manifest = parse_manifest(raw)
+    except ConfigError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(2)
 
-    toolchain = Toolchain.detect()
-    all_passed = True
-    with tempfile.TemporaryDirectory() as tmpdir:
-        out_dir = Path(tmpdir)
-        for pkg in packages:
-            try:
-                _compile_package(pkg, out_dir, backend, toolchain, verbose=False)
-                print(f"{pkg.name}: OK")
-            except RuntimeError as e:
-                all_passed = False
-                print(f"{pkg.name}: FAILED")
-                print(str(e), file=sys.stderr)
+    config_file = Path(args.config_file) if getattr(args, "config_file", None) else None
+    no_config = getattr(args, "no_config", False)
+    settings = read_settings(
+        root, env=dict(os.environ),
+        no_config=no_config,
+        config_file=config_file,
+    )
 
-    sys.exit(0 if all_passed else 1)
+    try:
+        toolchain = resolve_toolchain()
+    except ConfigError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(2)
+
+    dists = read_distributions()
+    lock_data = read_lockfile(root)
+    host = read_host_facts(root)
+
+    try:
+        env = build_env(
+            dists, lock_data,
+            mojo_path=toolchain.mojo_path,
+            mojo_version=toolchain.version,
+        )
+    except ConfigError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(2)
+
+    try:
+        graph = discover(manifest, root)
+    except ConfigError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(2)
+
+    cli_overrides = _build_cli_overrides(args)
+    profile_name = args.profile
+    try:
+        policy = resolve(manifest, profile_name, cli_overrides, settings)
+    except ConfigError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(2)
+
+    commands = plan(graph, env, policy, toolchain, host)
+
+    return manifest, graph, env, policy, toolchain, host, settings, commands
 
 
-def main():
-    pkg = sysconfig.get_path("platlib") + "/mojo_packages"
-    lib = pkg + "/lib"
+def _cmd_test(args: argparse.Namespace) -> None:
+    """Execute the test subcommand."""
+    from ._exec import run_commands
+    from ._output import render_dry_run, render_summary, render_diagnostics
 
-    # Set library paths (read by mojo's exec_mojo -> os.execve)
-    for var in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"):
-        existing = os.environ.get(var, "")
-        os.environ[var] = f"{lib}:{existing}" if existing else lib
+    manifest, graph, env, policy, toolchain, host, settings, commands = _resolve_pipeline(args)
 
-    # Intercept 'check' subcommand before exec
-    if len(sys.argv) > 1 and sys.argv[1] == "check":
-        _check()
+    if env.diagnostics:
+        render_diagnostics(env.diagnostics)
+
+    if args.dry_run:
+        render_dry_run(commands)
         return
 
-    # Inject -I after the subcommand, only for subcommands that accept it
-    if len(sys.argv) > 1 and sys.argv[1] in _SUBCOMMANDS:
-        sys.argv.insert(2, f"-I{pkg}")
+    outcomes = run_commands(
+        commands,
+        max_workers=policy.jobs_tests,
+        extra_env=settings.env if settings.env else None,
+    )
+    render_summary(outcomes)
 
-    from mojo._entrypoints import exec_mojo
+    from ._types import OutcomeKind
+    if any(o.kind != OutcomeKind.PASS for o in outcomes):
+        sys.exit(1)
 
-    exec_mojo()
+
+def _cmd_run(args: argparse.Namespace) -> None:
+    """Execute the run subcommand for a single file."""
+    from mojox_core import (
+        ConfigError, plan, resolve, parse_manifest,
+    )
+    from mojox_core._types import LintConfig, Policy, Target, TargetGraph, TargetKind
+    from mojox_core.io.environment import read_distributions, read_host_facts, read_lockfile
+    from mojox_core.io.manifest import read as read_manifest
+    from mojox_core.io.toolchain import resolve as resolve_toolchain
+    from mojox_core.environment import build_env
+
+    from ._exec import run_command
+    from ._output import render_diagnostics
+    from ._settings_reader import read_settings
+
+    root = Path.cwd()
+
+    # Try to read manifest for policy resolution; fall back to defaults
+    try:
+        raw = read_manifest(root / "pyproject.toml")
+        manifest = parse_manifest(raw)
+    except Exception:
+        manifest = None
+
+    config_file = Path(args.config_file) if getattr(args, "config_file", None) else None
+    no_config = getattr(args, "no_config", False)
+    settings = read_settings(root, env=dict(os.environ), no_config=no_config, config_file=config_file)
+
+    try:
+        toolchain = resolve_toolchain()
+    except ConfigError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(2)
+
+    dists = read_distributions()
+    lock_data = read_lockfile(root)
+    host = read_host_facts(root)
+    env = build_env(dists, lock_data, mojo_path=toolchain.mojo_path, mojo_version=toolchain.version)
+
+    if env.diagnostics:
+        render_diagnostics(env.diagnostics)
+
+    cli_overrides = _build_cli_overrides(args)
+
+    if manifest is not None:
+        policy = resolve(manifest, args.profile, cli_overrides, settings)
+    else:
+        from mojox_core.policy import BUILTIN_DEV
+        policy = Policy(
+            optimize=cli_overrides.get("optimize", BUILTIN_DEV.optimize),
+            debug_level=BUILTIN_DEV.debug_level or "line-tables",
+            defines=cli_overrides.get("defines", dict(BUILTIN_DEV.defines)),
+            flags=tuple(cli_overrides.get("flags", ())),
+            include_paths=(),
+            lints=LintConfig(),
+            jobs=1, jobs_compile=1, jobs_tests=1,
+            timeout_s=cli_overrides.get("timeout", 300),
+        )
+
+    graph = TargetGraph(
+        targets=(Target(TargetKind.TEST, args.file, f"run::{args.file}"),),
+        edges=(),
+    )
+    commands = plan(graph, env, policy, toolchain, host)
+
+    if args.dry_run:
+        from ._output import render_dry_run
+        render_dry_run(commands)
+        return
+
+    outcome = run_command(commands[0], extra_env=settings.env if settings.env else None)
+    print(outcome.stdout, end="")
+    if outcome.stderr:
+        print(outcome.stderr, end="", file=sys.stderr)
+    sys.exit(outcome.exit_code or 0)
+
+
+def _cmd_build(args: argparse.Namespace) -> None:
+    """Execute the build subcommand."""
+    from ._exec import run_commands
+    from ._output import render_dry_run, render_summary, render_diagnostics
+    from mojox_core import CommandKind
+
+    manifest, graph, env, policy, toolchain, host, settings, commands = _resolve_pipeline(args)
+
+    build_commands = tuple(
+        c for c in commands
+        if c.kind in (CommandKind.COMPILE_PACKAGE, CommandKind.COMPILE_BINARY)
+    )
+
+    if env.diagnostics:
+        render_diagnostics(env.diagnostics)
+
+    if args.dry_run:
+        render_dry_run(build_commands)
+        return
+
+    outcomes = run_commands(
+        build_commands,
+        max_workers=policy.jobs_compile,
+        extra_env=settings.env if settings.env else None,
+    )
+    render_summary(outcomes)
+
+    from ._types import OutcomeKind
+    if any(o.kind != OutcomeKind.PASS for o in outcomes):
+        sys.exit(1)
+
+
+def _cmd_check(args: argparse.Namespace) -> None:
+    """Execute the check subcommand: manifest validation + lints."""
+    from mojox_core import ConfigError, parse_manifest
+    from mojox_core.io.manifest import read as read_manifest
+
+    from ._lints import lint_bare_assert, lint_path_source
+    from ._settings_reader import read_settings
+
+    root = Path.cwd()
+    pyproject_path = root / "pyproject.toml"
+
+    try:
+        raw = read_manifest(pyproject_path)
+        manifest = parse_manifest(raw)
+        print(f"manifest: {manifest.name} {manifest.version}", file=sys.stderr)
+    except ConfigError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(2)
+
+    config_file = Path(args.config_file) if args.config_file else None
+    no_config = args.no_config
+    settings = read_settings(root, env=dict(os.environ), no_config=no_config, config_file=config_file)
+    if settings.config_paths:
+        for p in settings.config_paths:
+            print(f"config: {p}", file=sys.stderr)
+
+    findings = []
+    findings.extend(lint_path_source(pyproject_path))
+
+    for test_root in manifest.test_roots:
+        tr_path = root / test_root
+        if tr_path.is_dir():
+            for mojo_file in tr_path.rglob("test_*.mojo"):
+                findings.extend(lint_bare_assert(mojo_file))
+
+    if findings:
+        for f in findings:
+            loc = f"{f.file}:{f.line}: " if f.line else f"{f.file}: "
+            print(f"lint: {loc}{f.message}", file=sys.stderr)
+        sys.exit(1)
+
+    print("check: OK", file=sys.stderr)
+
+
+def _cmd_metadata(args: argparse.Namespace) -> None:
+    """Execute the metadata subcommand: output build plan as JSON."""
+    from mojox_core import serialize
+    from ._output import render_diagnostics
+
+    manifest, graph, env, policy, toolchain, host, settings, commands = _resolve_pipeline(args)
+
+    if env.diagnostics:
+        render_diagnostics(env.diagnostics)
+
+    doc = serialize(graph, env, policy, commands, toolchain, env.diagnostics)
+    json.dump(doc, sys.stdout, indent=2, sort_keys=False)
+    sys.stdout.write("\n")
+
+
+def main() -> None:
+    """CLI entry point."""
+    parser = build_parser()
+    args = parser.parse_args()
+
+    if args.subcommand == "check":
+        _cmd_check(args)
+    elif args.subcommand == "metadata":
+        _cmd_metadata(args)
+    elif args.subcommand == "test":
+        _cmd_test(args)
+    elif args.subcommand == "run":
+        _cmd_run(args)
+    elif args.subcommand == "build":
+        _cmd_build(args)
+
+
+if __name__ == "__main__":
+    main()

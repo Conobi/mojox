@@ -1,1 +1,1 @@
-"""mojox: CLI wrapper for Mojo with automatic package discovery."""
+"""mojox: CLI and execution layer for Mojo build tooling."""
