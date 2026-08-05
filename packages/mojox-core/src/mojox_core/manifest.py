@@ -155,7 +155,10 @@ def _parse_path_list(
     raw = mojox[key]
     if not isinstance(raw, list):
         raise ConfigError(f"tool.mojox.{key}", f"expected a list, got {type(raw).__name__}")
-    return tuple(_normalise_path(str(p), f"tool.mojox.{key}") for p in raw)
+    for i, p in enumerate(raw):
+        if not isinstance(p, str):
+            raise ConfigError(f"tool.mojox.{key}[{i}]", f"expected a string, got {type(p).__name__}")
+    return tuple(_normalise_path(p, f"tool.mojox.{key}") for p in raw)
 
 
 def _parse_path_list_optional(mojox: dict, key: str) -> tuple[str, ...] | None:
@@ -250,8 +253,27 @@ def _parse_binaries(items: list) -> tuple[BinaryEntry, ...]:
     return tuple(out)
 
 
-def _parse_lints(raw: dict) -> LintConfig:
+def _parse_lints(raw: object) -> LintConfig:
     """Parse the lints table into a LintConfig."""
+    if not isinstance(raw, dict):
+        raise ConfigError("tool.mojox.lints", f"expected a table, got {type(raw).__name__}")
+    _VALID_WARNINGS = frozenset({"error"})
+    _VALID_LINT_LEVELS = frozenset({"warn"})
+    if "warnings" in raw and raw["warnings"] not in _VALID_WARNINGS:
+        raise ConfigError(
+            "tool.mojox.lints.warnings",
+            f"must be 'error', got {raw['warnings']!r}",
+        )
+    if "missing-doc-strings" in raw and raw["missing-doc-strings"] not in _VALID_LINT_LEVELS:
+        raise ConfigError(
+            "tool.mojox.lints.missing-doc-strings",
+            f"must be 'warn', got {raw['missing-doc-strings']!r}",
+        )
+    if "unstable-apis" in raw and raw["unstable-apis"] not in _VALID_LINT_LEVELS:
+        raise ConfigError(
+            "tool.mojox.lints.unstable-apis",
+            f"must be 'warn', got {raw['unstable-apis']!r}",
+        )
     return LintConfig(
         warnings_as_errors=raw.get("warnings") == "error",
         missing_doc_strings=raw.get("missing-doc-strings") == "warn",
@@ -276,6 +298,27 @@ def _parse_pre_build(items: list) -> tuple[tuple[str, ...], ...]:
     return tuple(out)
 
 
+def _parse_defines_for_key(table: dict, key_path: str) -> dict[str, str]:
+    """Parse a defines sub-table, validating it is a dict of strings."""
+    raw = table.get("defines", {})
+    if not isinstance(raw, dict):
+        raise ConfigError(key_path, f"expected a table, got {type(raw).__name__}")
+    return {str(k): str(v) for k, v in raw.items()}
+
+
+def _parse_str_list_for_key(table: dict, key: str, key_path: str) -> tuple[str, ...]:
+    """Parse a string-list value from *table[key]*, raising on bad types."""
+    raw = table.get(key, ())
+    if isinstance(raw, str):
+        raise ConfigError(key_path, "expected a list, got string")
+    if not isinstance(raw, (list, tuple)):
+        raise ConfigError(key_path, f"expected a list, got {type(raw).__name__}")
+    for i, item in enumerate(raw):
+        if not isinstance(item, str):
+            raise ConfigError(f"{key_path}[{i}]", f"expected a string, got {type(item).__name__}")
+    return tuple(raw)
+
+
 def _parse_profiles(raw: dict) -> dict[str, Profile]:
     """Parse profile tables into Profile objects."""
     profiles: dict[str, Profile] = {}
@@ -290,7 +333,7 @@ def _parse_profiles(raw: dict) -> dict[str, Profile]:
             debug_level=_parse_debug_level(
                 table.get("debug-level"), f"tool.mojox.profile.{name}.debug-level"
             ),
-            defines={str(k): str(v) for k, v in table.get("defines", {}).items()},
-            flags=tuple(table.get("flags", ())),
+            defines=_parse_defines_for_key(table, f"tool.mojox.profile.{name}.defines"),
+            flags=_parse_str_list_for_key(table, "flags", f"tool.mojox.profile.{name}.flags"),
         )
     return profiles

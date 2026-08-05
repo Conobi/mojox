@@ -160,3 +160,43 @@ class TestErrors:
         }
         with pytest.raises(ConfigError, match="absolute"):
             parse_manifest(d)
+
+    def test_lints_string_instead_of_table(self):
+        d = {
+            "project": {"name": "x", "version": "1.0.0"},
+            "tool": {"mojox": {"lints": "error"}},
+        }
+        with pytest.raises(ConfigError, match="lints"):
+            parse_manifest(d)
+
+    def test_lints_invalid_warnings_value(self):
+        d = {
+            "project": {"name": "x", "version": "1.0.0"},
+            "tool": {"mojox": {"lints": {"warnings": "warn"}}},
+        }
+        with pytest.raises(ConfigError, match="warnings"):
+            parse_manifest(d)
+
+    def test_profile_defines_list_instead_of_dict(self):
+        d = {
+            "project": {"name": "x", "version": "1.0.0"},
+            "tool": {"mojox": {"profile": {"dev": {"defines": [1, 2]}}}},
+        }
+        with pytest.raises(ConfigError, match="defines"):
+            parse_manifest(d)
+
+    def test_profile_flags_not_a_list(self):
+        d = {
+            "project": {"name": "x", "version": "1.0.0"},
+            "tool": {"mojox": {"profile": {"dev": {"flags": 42}}}},
+        }
+        with pytest.raises(ConfigError, match="flags"):
+            parse_manifest(d)
+
+    def test_test_roots_element_not_string(self):
+        d = {
+            "project": {"name": "x", "version": "1.0.0"},
+            "tool": {"mojox": {"test-roots": [42]}},
+        }
+        with pytest.raises(ConfigError, match="test-roots"):
+            parse_manifest(d)
