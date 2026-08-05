@@ -7,7 +7,7 @@ from pathlib import PurePosixPath
 
 import pytest
 
-from mojox._exec import run_command
+from mojox._exec import run_command, run_commands
 from mojox._types import OutcomeKind
 from mojox_core import Command, CommandKind
 
@@ -87,3 +87,77 @@ class TestRunCommand:
         outcome = run_command(cmd)
         assert outcome.kind == OutcomeKind.COMPILE_ERROR
         assert outcome.exit_code is None
+
+
+class TestRunCommands:
+    def test_empty_command_list(self):
+        """Empty input returns empty output."""
+        results = run_commands(())
+        assert results == ()
+
+    def test_sequential_execution(self):
+        """Multiple independent commands all execute."""
+        cmd1 = _cmd((sys.executable, "-c", "print('one')"), target_id="test::one")
+        cmd2 = _cmd((sys.executable, "-c", "print('two')"), target_id="test::two")
+        results = run_commands((cmd1, cmd2), max_workers=1)
+        assert len(results) == 2
+        assert results[0].kind == OutcomeKind.PASS
+        assert results[1].kind == OutcomeKind.PASS
+
+    def test_depends_on_ordering(self):
+        """Commands with depends_on wait for dependencies to complete."""
+        precompile = _cmd(
+            (sys.executable, "-c", "import time; time.sleep(0.1); print('precompiled')"),
+            kind=CommandKind.COMPILE_PACKAGE,
+            target_id="lib::mylib",
+        )
+        test = _cmd(
+            (sys.executable, "-c", "print('tested')"),
+            target_id="test::t.mojo",
+            depends_on=("lib::mylib",),
+        )
+        results = run_commands((precompile, test), max_workers=2)
+        assert len(results) == 2
+        assert results[0].command.target_id == "lib::mylib"
+        assert results[1].command.target_id == "test::t.mojo"
+        assert results[0].kind == OutcomeKind.PASS
+        assert results[1].kind == OutcomeKind.PASS
+
+    def test_failure_in_dependency_skips_dependents(self):
+        """When a dependency fails, its dependents are skipped."""
+        precompile = _cmd(
+            (sys.executable, "-c", "import sys; sys.exit(1)"),
+            kind=CommandKind.COMPILE_PACKAGE,
+            target_id="lib::mylib",
+        )
+        test = _cmd(
+            (sys.executable, "-c", "print('should not run')"),
+            target_id="test::t.mojo",
+            depends_on=("lib::mylib",),
+        )
+        results = run_commands((precompile, test), max_workers=2)
+        assert results[0].kind == OutcomeKind.FAIL
+        assert results[1].kind == OutcomeKind.FAIL
+        assert "dependency" in results[1].stderr.lower()
+
+    def test_concurrent_independent_commands(self):
+        """Independent commands run concurrently."""
+        cmds = tuple(
+            _cmd(
+                (sys.executable, "-c", f"print({i})"),
+                target_id=f"test::t{i}.mojo",
+            )
+            for i in range(4)
+        )
+        results = run_commands(cmds, max_workers=4)
+        assert len(results) == 4
+        assert all(r.kind == OutcomeKind.PASS for r in results)
+
+    def test_extra_env_passed_through(self):
+        """extra_env is forwarded to each command."""
+        cmd = _cmd(
+            (sys.executable, "-c", "import os; print(os.environ.get('MY_VAR', 'absent'))"),
+            env={"PATH": f"{sys.prefix}/bin:/usr/bin:/bin", "HOME": ""},
+        )
+        results = run_commands((cmd,), extra_env={"MY_VAR": "present"})
+        assert "present" in results[0].stdout

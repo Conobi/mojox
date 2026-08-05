@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from mojox_core import Command
 
@@ -102,3 +103,116 @@ def run_command(
         diagnostics=parse_diagnostics(result.stderr),
         elapsed_s=elapsed,
     )
+
+
+def run_commands(
+    commands: tuple[Command, ...],
+    *,
+    max_workers: int = 1,
+    extra_env: dict[str, str] | None = None,
+) -> tuple[Outcome, ...]:
+    """Run a sequence of Commands with concurrency and dependency ordering.
+
+    Commands whose ``depends_on`` references have not all completed
+    successfully are skipped with a FAIL outcome. Independent commands
+    run concurrently up to ``max_workers``.
+
+    Args:
+        commands: The commands to execute, in planner order.
+        max_workers: Maximum concurrent subprocess invocations.
+        extra_env: Additional env vars merged into each command
+            (from LocalSettings.env).
+
+    Returns:
+        A tuple of Outcomes in the same order as the input commands.
+    """
+    if not commands:
+        return ()
+
+    completed: dict[str, Outcome] = {}
+    results: list[Outcome | None] = [None] * len(commands)
+
+    no_deps: list[tuple[int, Command]] = []
+    has_deps: list[tuple[int, Command]] = []
+
+    for i, cmd in enumerate(commands):
+        if cmd.depends_on:
+            has_deps.append((i, cmd))
+        else:
+            no_deps.append((i, cmd))
+
+    if no_deps:
+        _run_phase(no_deps, completed, results, max_workers, extra_env)
+    if has_deps:
+        _run_phase(has_deps, completed, results, max_workers, extra_env)
+
+    return tuple(r for r in results if r is not None)
+
+
+def _run_phase(
+    phase: list[tuple[int, Command]],
+    completed: dict[str, Outcome],
+    results: list[Outcome | None],
+    max_workers: int,
+    extra_env: dict[str, str] | None,
+) -> None:
+    """Run a batch of commands concurrently, checking deps before submission."""
+    if len(phase) == 1:
+        idx, cmd = phase[0]
+        outcome = _run_or_skip(cmd, completed, extra_env)
+        results[idx] = outcome
+        completed[cmd.target_id] = outcome
+        return
+
+    workers = min(max_workers, len(phase))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        future_to_idx: dict = {}
+        for idx, cmd in phase:
+            skip_outcome = _check_dependencies(cmd, completed)
+            if skip_outcome is not None:
+                results[idx] = skip_outcome
+                completed[cmd.target_id] = skip_outcome
+                continue
+            future = pool.submit(run_command, cmd, extra_env=extra_env)
+            future_to_idx[future] = (idx, cmd)
+
+        for future in as_completed(future_to_idx):
+            idx, cmd = future_to_idx[future]
+            outcome = future.result()
+            results[idx] = outcome
+            completed[cmd.target_id] = outcome
+
+
+def _run_or_skip(
+    cmd: Command,
+    completed: dict[str, Outcome],
+    extra_env: dict[str, str] | None,
+) -> Outcome:
+    """Run a command or skip it if dependencies failed."""
+    skip = _check_dependencies(cmd, completed)
+    if skip is not None:
+        return skip
+    return run_command(cmd, extra_env=extra_env)
+
+
+def _check_dependencies(
+    cmd: Command,
+    completed: dict[str, Outcome],
+) -> Outcome | None:
+    """Check if all dependencies completed successfully.
+
+    Returns a skip Outcome if any dependency failed, None otherwise.
+    """
+    for dep_id in cmd.depends_on:
+        dep_outcome = completed.get(dep_id)
+        if dep_outcome is None or dep_outcome.kind != OutcomeKind.PASS:
+            return Outcome(
+                command=cmd,
+                kind=OutcomeKind.FAIL,
+                exit_code=None,
+                stdout="",
+                stderr=f"Dependency {dep_id!r} failed; skipping {cmd.target_id!r}.",
+                diagnostics=(),
+                elapsed_s=0.0,
+            )
+    return None
