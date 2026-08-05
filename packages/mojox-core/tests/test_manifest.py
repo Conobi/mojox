@@ -112,3 +112,51 @@ class TestErrors:
         }
         with pytest.raises(ConfigError, match="duplicate"):
             parse_manifest(d)
+
+    def test_flags_string_instead_of_list(self):
+        d = {
+            "project": {"name": "x", "version": "1.0.0"},
+            "tool": {"mojox": {"flags": "-Xlinker"}},
+        }
+        with pytest.raises(ConfigError, match="flags"):
+            parse_manifest(d)
+
+    def test_defines_list_instead_of_dict(self):
+        d = {
+            "project": {"name": "x", "version": "1.0.0"},
+            "tool": {"mojox": {"defines": ["FAST=true"]}},
+        }
+        with pytest.raises(ConfigError, match="defines"):
+            parse_manifest(d)
+
+    def test_test_roots_not_a_list(self):
+        d = {
+            "project": {"name": "x", "version": "1.0.0"},
+            "tool": {"mojox": {"test-roots": 5}},
+        }
+        with pytest.raises(ConfigError, match="test-roots"):
+            parse_manifest(d)
+
+    def test_absolute_test_root_rejected(self):
+        d = {
+            "project": {"name": "x", "version": "1.0.0"},
+            "tool": {"mojox": {"test-roots": ["/etc"]}},
+        }
+        with pytest.raises(ConfigError, match="absolute"):
+            parse_manifest(d)
+
+    def test_absolute_package_root_rejected(self):
+        d = {
+            "project": {"name": "x", "version": "1.0.0"},
+            "tool": {"mojox": {"package-root": "/etc"}},
+        }
+        with pytest.raises(ConfigError, match="absolute"):
+            parse_manifest(d)
+
+    def test_absolute_rlib_seed_rejected(self):
+        d = {
+            "project": {"name": "x", "version": "1.0.0"},
+            "tool": {"mojox": {"rlib-seed": "/etc/passwd"}},
+        }
+        with pytest.raises(ConfigError, match="absolute"):
+            parse_manifest(d)
