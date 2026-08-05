@@ -167,7 +167,7 @@ def _build_check_example_command(
     host: HostFacts,
     precompiled_ids: list[str],
 ) -> Command:
-    """Build a check-example command."""
+    """Build a check-example command with optimization, defines, and thread count."""
     argv: list[str] = [toolchain.mojo_path, "build", target.path]
 
     if policy.optimize is not None:
@@ -178,6 +178,9 @@ def _build_check_example_command(
 
     for key, value in sorted(policy.defines.items()):
         argv.extend(["-D", f"{key}={value}"])
+
+    num_threads = max(1, host.cpu_count // max(1, policy.jobs_compile))
+    argv.extend(["--num-threads", str(num_threads)])
 
     argv.extend(policy.flags)
 

@@ -224,6 +224,27 @@ class TestThreadDivision:
                     assert threads == max(1, host.cpu_count // 4)
 
 
+class TestCheckExampleThreads:
+    def test_check_example_gets_num_threads(self):
+        graph = TargetGraph(
+            targets=(
+                Target(TargetKind.EXAMPLE, "examples/demo.mojo", "example::examples/demo.mojo"),
+            ),
+            edges=(),
+        )
+        pol = _make_policy(jobs=1, jobs_compile=4)
+        host = HostFacts(cpu_count=8, available_memory_mb=16384,
+                         manifest_dir=PurePosixPath("/project"))
+        cmds = plan(graph, _make_env(), pol, _make_toolchain(), host)
+        for c in cmds:
+            if c.kind == CommandKind.CHECK_EXAMPLE:
+                argv = list(c.argv)
+                assert "--num-threads" in argv
+                idx = argv.index("--num-threads")
+                threads = int(argv[idx + 1])
+                assert threads == max(1, host.cpu_count // 4)
+
+
 class TestFlagStripping:
     def test_optimize_never_reaches_lib_target(self):
         graph = TargetGraph(
