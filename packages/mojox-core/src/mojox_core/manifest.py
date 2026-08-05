@@ -1,0 +1,240 @@
+"""Parse a pyproject.toml dict into a frozen Manifest.
+
+This module is pure -- it receives an already-parsed dict and returns data.
+The IO reader that loads the TOML bytes lives in mojox_core.io.manifest.
+"""
+
+from __future__ import annotations
+
+import posixpath
+from pathlib import PurePosixPath
+
+from ._errors import ConfigError
+from ._types import BinaryEntry, LintConfig, Manifest, Profile
+
+_VALID_OPTIMIZE = frozenset({0, 1, 2, 3})
+_VALID_DEBUG_LEVELS = frozenset({"none", "line-tables", "full"})
+
+
+def parse_manifest(data: dict) -> Manifest:
+    """Parse a pyproject.toml dict into a frozen Manifest.
+
+    Every rejection is a ConfigError with key path and remediation.
+    No KeyError, no TypeError, no stack trace reaches the user.
+    """
+    project = _require_table(data, "project")
+    mojox = data.get("tool", {}).get("mojox", {})
+
+    name = _require_str(project, "project", "name")
+    version = _parse_version(project)
+
+    return Manifest(
+        name=name,
+        version=version,
+        description=project.get("description"),
+        readme=project.get("readme") if isinstance(project.get("readme"), str) else None,
+        license_expr=_parse_license(project),
+        license_files=tuple(project.get("license-files", ())),
+        requires_python=project.get("requires-python"),
+        dependencies=tuple(project.get("dependencies", ())),
+        optional_dependencies={
+            k: tuple(v) for k, v in project.get("optional-dependencies", {}).items()
+        },
+        keywords=tuple(project.get("keywords", ())),
+        authors=tuple(project.get("authors", ())),
+        maintainers=tuple(project.get("maintainers", ())),
+        urls=dict(project.get("urls", {})),
+        classifiers=tuple(project.get("classifiers", ())),
+        packages=_parse_packages(mojox),
+        package_root=str(mojox.get("package-root", "src")),
+        binaries=_parse_binaries(mojox.get("binaries", [])),
+        test_roots=tuple(mojox.get("test-roots", ("tests",))),
+        test_parallel=bool(mojox.get("test-parallel", False)),
+        defines={str(k): str(v) for k, v in mojox.get("defines", {}).items()},
+        flags=tuple(mojox.get("flags", ())),
+        lints=_parse_lints(mojox.get("lints", {})),
+        optimize=_parse_optimize(mojox.get("optimize"), "tool.mojox.optimize"),
+        debug_level=_parse_debug_level(mojox.get("debug-level"), "tool.mojox.debug-level"),
+        pre_build=_parse_pre_build(mojox.get("pre-build", [])),
+        native_libs=tuple(mojox.get("native-libs", ())),
+        source_include=tuple(mojox["source-include"]) if "source-include" in mojox else None,
+        source_exclude=tuple(mojox.get("source-exclude", ())),
+        wheel_exclude=tuple(mojox.get("wheel-exclude", ())),
+        profiles=_parse_profiles(mojox.get("profile", {})),
+        rlib_seed=mojox.get("rlib-seed"),
+    )
+
+
+# -- Helpers ---------------------------------------------------------------
+
+
+def _require_table(data: dict, key: str) -> dict:
+    """Require *key* to exist in *data* and be a dict (TOML table)."""
+    if key not in data:
+        raise ConfigError(key, f"missing [{key}] table")
+    val = data[key]
+    if not isinstance(val, dict):
+        raise ConfigError(key, f"expected a table, got {type(val).__name__}")
+    return val
+
+
+def _require_str(table: dict, prefix: str, key: str) -> str:
+    """Require *key* to exist in *table* and be a string."""
+    if key not in table:
+        raise ConfigError(f"{prefix}.{key}", "required field is missing")
+    val = table[key]
+    if not isinstance(val, str):
+        raise ConfigError(f"{prefix}.{key}", f"expected a string, got {type(val).__name__}")
+    return val
+
+
+def _parse_version(project: dict) -> str:
+    """Extract and validate the project version.
+
+    Rejects dynamic versions since mojox requires a static version string.
+    """
+    if "version" not in project:
+        dynamic = set(project.get("dynamic", []))
+        if "version" in dynamic:
+            raise ConfigError(
+                "project.version",
+                "declares `version` as dynamic, which mojox does not support -- "
+                "set project.version statically in pyproject.toml",
+            )
+        raise ConfigError("project.version", "required field is missing")
+    return str(project["version"])
+
+
+def _parse_license(project: dict) -> str | None:
+    """Parse the license field, handling both string and table forms."""
+    lic = project.get("license")
+    if lic is None:
+        return None
+    if isinstance(lic, str):
+        return lic
+    if isinstance(lic, dict):
+        return lic.get("text") or lic.get("file")
+    return None
+
+
+def _normalise_path(raw: str, key_path: str) -> str:
+    """Normalise a manifest path: must be relative, lexically cleaned."""
+    normalised = posixpath.normpath(raw)
+    if PurePosixPath(normalised).is_absolute():
+        raise ConfigError(
+            key_path,
+            f"absolute paths are not allowed in manifests, got {raw!r}. "
+            "Use a path relative to the project root.",
+        )
+    return normalised
+
+
+def _parse_packages(mojox: dict) -> tuple[str, ...] | None:
+    """Parse the packages list, normalising each path."""
+    if "packages" not in mojox:
+        return None
+    raw = mojox["packages"]
+    if not isinstance(raw, list):
+        raise ConfigError("tool.mojox.packages", f"expected a list, got {type(raw).__name__}")
+    return tuple(_normalise_path(str(p), "tool.mojox.packages") for p in raw)
+
+
+def _parse_optimize(value: object, key_path: str) -> int | None:
+    """Parse and validate the optimisation level (0--3)."""
+    if value is None:
+        return None
+    try:
+        level = int(value)  # type: ignore[arg-type]
+    except (ValueError, TypeError):
+        raise ConfigError(key_path, f"must be 0–3, got {value!r}")
+    if level not in _VALID_OPTIMIZE:
+        raise ConfigError(key_path, f"must be 0–3, got {value!r}")
+    return level
+
+
+def _parse_debug_level(value: object, key_path: str) -> str | None:
+    """Parse and validate the debug level."""
+    if value is None:
+        return None
+    s = str(value)
+    if s not in _VALID_DEBUG_LEVELS:
+        raise ConfigError(
+            key_path,
+            f"must be one of {sorted(_VALID_DEBUG_LEVELS)}, got {value!r}",
+        )
+    return s
+
+
+def _parse_binaries(items: list) -> tuple[BinaryEntry, ...]:
+    """Parse the binaries list, validating each entry for uniqueness."""
+    out: list[BinaryEntry] = []
+    seen: set[str] = set()
+    for i, item in enumerate(items):
+        key = f"tool.mojox.binaries[{i}]"
+        if isinstance(item, str):
+            source = item
+            name = PurePosixPath(item).stem
+        elif isinstance(item, dict):
+            if "source" not in item or "name" not in item:
+                raise ConfigError(key, "table form requires both `source` and `name` keys")
+            source = str(item["source"])
+            name = str(item["name"])
+        else:
+            raise ConfigError(key, f"expected a string or table, got {type(item).__name__}")
+        if not source:
+            raise ConfigError(key, "empty `source`")
+        if not name:
+            raise ConfigError(key, "empty `name`")
+        if "/" in name or "\\" in name:
+            raise ConfigError(key, f"`name` must be a bare filename, got {name!r}")
+        if name in seen:
+            raise ConfigError(key, f"duplicate binary name {name!r}")
+        seen.add(name)
+        out.append(BinaryEntry(source=source, name=name))
+    return tuple(out)
+
+
+def _parse_lints(raw: dict) -> LintConfig:
+    """Parse the lints table into a LintConfig."""
+    return LintConfig(
+        warnings_as_errors=raw.get("warnings") == "error",
+        missing_doc_strings=raw.get("missing-doc-strings") == "warn",
+        unstable_apis=raw.get("unstable-apis") == "warn",
+    )
+
+
+def _parse_pre_build(items: list) -> tuple[tuple[str, ...], ...]:
+    """Parse pre-build commands (shell strings or argv lists)."""
+    out: list[tuple[str, ...]] = []
+    for i, item in enumerate(items):
+        key = f"tool.mojox.pre-build[{i}]"
+        if isinstance(item, str):
+            out.append(("sh", "-c", item))
+        elif isinstance(item, list) and all(isinstance(x, str) for x in item):
+            out.append(tuple(item))
+        else:
+            raise ConfigError(
+                key,
+                "each entry must be a string (shell command) or a list of strings (argv)",
+            )
+    return tuple(out)
+
+
+def _parse_profiles(raw: dict) -> dict[str, Profile]:
+    """Parse profile tables into Profile objects."""
+    profiles: dict[str, Profile] = {}
+    for name, table in raw.items():
+        if not isinstance(table, dict):
+            raise ConfigError(
+                f"tool.mojox.profile.{name}",
+                f"expected a table, got {type(table).__name__}",
+            )
+        profiles[name] = Profile(
+            optimize=_parse_optimize(table.get("optimize"), f"tool.mojox.profile.{name}.optimize"),
+            debug_level=_parse_debug_level(
+                table.get("debug-level"), f"tool.mojox.profile.{name}.debug-level"
+            ),
+            defines={str(k): str(v) for k, v in table.get("defines", {}).items()},
+            flags=tuple(table.get("flags", ())),
+        )
+    return profiles
