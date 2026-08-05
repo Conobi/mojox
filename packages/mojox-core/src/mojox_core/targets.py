@@ -48,7 +48,7 @@ def discover(manifest: Manifest, root: Path) -> TargetGraph:
         pkg_root = root / manifest.package_root
         if pkg_root.is_dir():
             for child in sorted(pkg_root.iterdir()):
-                if child.is_dir() and not child.name.startswith("."):
+                if child.is_dir() and not child.name.startswith(".") and not _is_excluded(child.name):
                     rel = str(child.relative_to(root))
                     targets.append(Target(
                         kind=TargetKind.LIB,
@@ -109,7 +109,7 @@ def discover(manifest: Manifest, root: Path) -> TargetGraph:
                         path=rel,
                         target_id=f"example::{rel}",
                     ))
-            elif child.is_dir():
+            elif child.is_dir() and not _is_excluded(child.name):
                 main = child / "main.mojo"
                 if main.is_file():
                     rel = str(main.relative_to(root))

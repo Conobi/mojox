@@ -158,6 +158,46 @@ class TestExampleDiscovery:
         assert len(bins) == 1
 
 
+class TestLibDiscovery:
+    def test_egg_info_excluded_from_lib_discovery(self, tmp_path):
+        root = _make_tree(tmp_path, [
+            "src/mylib/__init__.mojo",
+            "src/mylib.egg-info/PKG-INFO",
+            "tests/.gitkeep",
+        ])
+        m = _minimal_manifest(test_roots=())
+        g = discover(m, root)
+        libs = [t for t in g.targets if t.kind == TargetKind.LIB]
+        assert len(libs) == 1
+        assert "egg-info" not in libs[0].path
+
+    def test_excluded_dirs_skipped_in_lib_discovery(self, tmp_path):
+        root = _make_tree(tmp_path, [
+            "src/mylib/__init__.mojo",
+            "src/build/something.mojo",
+            "tests/.gitkeep",
+        ])
+        m = _minimal_manifest(test_roots=())
+        g = discover(m, root)
+        libs = [t for t in g.targets if t.kind == TargetKind.LIB]
+        assert len(libs) == 1
+        assert "build" not in libs[0].path
+
+
+class TestExampleExclusion:
+    def test_excluded_dirs_skipped_in_example_discovery(self, tmp_path):
+        root = _make_tree(tmp_path, [
+            "examples/demo.mojo",
+            "examples/build/main.mojo",
+            "tests/.gitkeep",
+        ])
+        m = _minimal_manifest(test_roots=())
+        g = discover(m, root)
+        examples = [t for t in g.targets if t.kind == TargetKind.EXAMPLE]
+        assert len(examples) == 1
+        assert "demo" in examples[0].path
+
+
 class TestUnsearchedDirsWarning:
     def test_reports_unsearched_dirs_with_test_files(self, tmp_path):
         root = _make_tree(tmp_path, [
