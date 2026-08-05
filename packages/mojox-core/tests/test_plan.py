@@ -226,6 +226,22 @@ class TestThreadDivision:
                     assert threads == max(1, host.cpu_count // 4)
 
 
+class TestBinaryOutputName:
+    def test_binary_output_uses_configured_name(self):
+        graph = TargetGraph(
+            targets=(
+                Target(TargetKind.BIN, "src/app.mojo", "bin::myapp"),
+            ),
+            edges=(),
+        )
+        cmds = plan(graph, _make_env(), _make_policy(), _make_toolchain(), _make_host())
+        bin_cmds = [c for c in cmds if c.kind == CommandKind.COMPILE_BINARY]
+        assert len(bin_cmds) == 1
+        argv = list(bin_cmds[0].argv)
+        o_idx = argv.index("-o")
+        assert argv[o_idx + 1] == "myapp"
+
+
 class TestCheckExampleThreads:
     def test_check_example_gets_num_threads(self):
         graph = TargetGraph(

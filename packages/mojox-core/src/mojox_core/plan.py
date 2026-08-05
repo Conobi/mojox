@@ -208,7 +208,7 @@ def _build_compile_binary_command(
     precompiled_ids: list[str],
 ) -> Command:
     """Build a compile-binary command."""
-    output_name = PurePosixPath(target.path).stem
+    output_name = target.target_id.removeprefix("bin::")
     argv: list[str] = [toolchain.mojo_path, "build", target.path, "-o", output_name]
 
     if policy.optimize is not None:

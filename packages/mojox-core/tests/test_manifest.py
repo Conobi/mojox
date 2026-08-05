@@ -200,3 +200,11 @@ class TestErrors:
         }
         with pytest.raises(ConfigError, match="test-roots"):
             parse_manifest(d)
+
+    def test_binary_absolute_source_rejected(self):
+        d = {
+            "project": {"name": "x", "version": "1.0.0"},
+            "tool": {"mojox": {"binaries": [{"source": "/etc/passwd", "name": "evil"}]}},
+        }
+        with pytest.raises(ConfigError, match="absolute"):
+            parse_manifest(d)

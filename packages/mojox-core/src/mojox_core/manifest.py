@@ -240,6 +240,7 @@ def _parse_binaries(items: list) -> tuple[BinaryEntry, ...]:
             name = str(item["name"])
         else:
             raise ConfigError(key, f"expected a string or table, got {type(item).__name__}")
+        source = _normalise_path(source, key)
         if not source:
             raise ConfigError(key, "empty `source`")
         if not name:
