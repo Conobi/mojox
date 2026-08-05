@@ -13,6 +13,7 @@ from ._types import (
     Command,
     CommandKind,
     HostFacts,
+    LintConfig,
     Policy,
     ResolvedEnv,
     Target,
@@ -22,6 +23,20 @@ from ._types import (
 )
 
 _PRECOMPILE_THRESHOLD = 2
+
+
+def _append_lint_flags(argv: list[str], lints: LintConfig) -> None:
+    """Append compiler lint flags to an argv list.
+
+    Only flags whose corresponding LintConfig field is True are emitted.
+    These flags are stripped from lib targets (same scope as -O, -D).
+    """
+    if lints.warnings_as_errors:
+        argv.append("--Werror")
+    if lints.missing_doc_strings:
+        argv.append("--diagnose-missing-doc-strings")
+    if lints.unstable_apis:
+        argv.append("--warn-on-unstable-apis")
 
 
 def plan(
@@ -145,6 +160,7 @@ def _build_run_test_command(
     num_threads = max(1, host.cpu_count // max(1, policy.jobs_tests))
     argv.extend(["--num-threads", str(num_threads)])
 
+    _append_lint_flags(argv, policy.lints)
     argv.extend(policy.flags)
 
     return Command(
@@ -185,6 +201,7 @@ def _build_check_example_command(
     num_threads = max(1, host.cpu_count // max(1, policy.jobs_compile))
     argv.extend(["--num-threads", str(num_threads)])
 
+    _append_lint_flags(argv, policy.lints)
     argv.extend(policy.flags)
 
     return Command(
@@ -226,6 +243,7 @@ def _build_compile_binary_command(
     num_threads = max(1, host.cpu_count // max(1, policy.jobs_compile))
     argv.extend(["--num-threads", str(num_threads)])
 
+    _append_lint_flags(argv, policy.lints)
     argv.extend(policy.flags)
 
     return Command(

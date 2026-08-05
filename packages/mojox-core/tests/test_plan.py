@@ -325,3 +325,106 @@ class TestCommandEnv:
             assert set(c.env.keys()) == {"PATH", "HOME"}, \
                 f"env should contain only PATH and HOME, got {set(c.env.keys())}"
             assert c.env["PATH"] == "/venv/bin"
+
+
+class TestLintFlagTranslation:
+    """Lint flags must appear on non-lib commands and never on lib commands."""
+
+    def test_warnings_as_errors_emits_werror(self):
+        """Policy with warnings_as_errors=True emits --Werror on test commands."""
+        graph = TargetGraph(
+            targets=(
+                Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
+            ),
+            edges=(),
+        )
+        pol = _make_policy(lints=LintConfig(warnings_as_errors=True))
+        cmds = plan(graph, _make_env(), pol, _make_toolchain(), _make_host())
+        assert len(cmds) == 1
+        assert "--Werror" in cmds[0].argv
+
+    def test_missing_doc_strings_emits_flag(self):
+        """Policy with missing_doc_strings=True emits --diagnose-missing-doc-strings."""
+        graph = TargetGraph(
+            targets=(
+                Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
+            ),
+            edges=(),
+        )
+        pol = _make_policy(lints=LintConfig(missing_doc_strings=True))
+        cmds = plan(graph, _make_env(), pol, _make_toolchain(), _make_host())
+        assert len(cmds) == 1
+        assert "--diagnose-missing-doc-strings" in cmds[0].argv
+
+    def test_unstable_apis_emits_flag(self):
+        """Policy with unstable_apis=True emits --warn-on-unstable-apis."""
+        graph = TargetGraph(
+            targets=(
+                Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
+            ),
+            edges=(),
+        )
+        pol = _make_policy(lints=LintConfig(unstable_apis=True))
+        cmds = plan(graph, _make_env(), pol, _make_toolchain(), _make_host())
+        assert len(cmds) == 1
+        assert "--warn-on-unstable-apis" in cmds[0].argv
+
+    def test_lint_flags_never_reach_lib_target(self):
+        """Lint flags must never appear in COMPILE_PACKAGE commands."""
+        graph = TargetGraph(
+            targets=(
+                Target(TargetKind.LIB, "src/mylib", "lib::src/mylib"),
+                Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
+                Target(TargetKind.TEST, "tests/test_b.mojo", "test::tests/test_b.mojo"),
+            ),
+            edges=(),
+        )
+        pol = _make_policy(
+            lints=LintConfig(
+                warnings_as_errors=True,
+                missing_doc_strings=True,
+                unstable_apis=True,
+            ),
+        )
+        cmds = plan(graph, _make_env(), pol, _make_toolchain(), _make_host())
+        lint_flags = {"--Werror", "--diagnose-missing-doc-strings", "--warn-on-unstable-apis"}
+        for c in cmds:
+            if c.kind == CommandKind.COMPILE_PACKAGE:
+                for flag in lint_flags:
+                    assert flag not in c.argv, (
+                        f"lint flag {flag} must not appear in COMPILE_PACKAGE command"
+                    )
+
+    def test_no_lint_flags_when_all_false(self):
+        """Default LintConfig (all False) emits no lint flags."""
+        graph = TargetGraph(
+            targets=(
+                Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
+            ),
+            edges=(),
+        )
+        pol = _make_policy()  # default LintConfig: all False
+        cmds = plan(graph, _make_env(), pol, _make_toolchain(), _make_host())
+        lint_flags = {"--Werror", "--diagnose-missing-doc-strings", "--warn-on-unstable-apis"}
+        for c in cmds:
+            for flag in lint_flags:
+                assert flag not in c.argv, (
+                    f"lint flag {flag} should not appear when LintConfig is default"
+                )
+
+    def test_lint_flags_on_example_and_binary(self):
+        """Lint flags appear on EXAMPLE and BIN target commands."""
+        graph = TargetGraph(
+            targets=(
+                Target(TargetKind.EXAMPLE, "examples/demo.mojo", "example::examples/demo.mojo"),
+                Target(TargetKind.BIN, "src/app.mojo", "bin::myapp"),
+            ),
+            edges=(),
+        )
+        pol = _make_policy(lints=LintConfig(warnings_as_errors=True))
+        cmds = plan(graph, _make_env(), pol, _make_toolchain(), _make_host())
+        assert len(cmds) == 2
+        for c in cmds:
+            assert "--Werror" in c.argv, (
+                f"--Werror missing from {c.kind.name} command"
+            )
