@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -419,8 +420,6 @@ def run_ore_pipeline(
         from step 6 on success, ``COMPILE_ERROR`` on steps 1-5 failure,
         ``TIMEOUT`` or ``CRASH`` as appropriate.
     """
-    from mojox_core import Command  # local to avoid circular import at module level
-
     env = dict(cmd.env)
     if extra_env:
         merged = dict(extra_env)
@@ -624,6 +623,9 @@ def run_ore_pipeline(
 
 # Module-level cached probe result, populated lazily by _try_ore_run.
 _cached_probe: OreProbeResult | None = None
+# Serializes the cache-miss → build → put path so concurrent workers
+# don't redundantly build the .ore (~29s each).
+_ore_build_lock = threading.Lock()
 
 
 def _try_ore_run(
@@ -667,7 +669,7 @@ def _try_ore_run(
 
     if not probe.available:
         print(
-            f"ore: LLVM tool '{probe.missing_tool}' not found, "
+            f"ore-unavailable: LLVM tool '{probe.missing_tool}' not found, "
             "falling back to mojo run",
             file=sys.stderr,
         )
@@ -681,12 +683,16 @@ def _try_ore_run(
     cached_path = cache.get(key)
 
     if cached_path is None:
-        # Cache miss — build and cache the .ore.
-        cached_path = _build_and_cache_ore(
-            cmd, ctx, probe, cache, key, extra_env=extra_env,
-        )
-        if cached_path is None:
-            return None
+        with _ore_build_lock:
+            # Double-check after acquiring the lock — another thread may
+            # have built and cached the .ore while we waited.
+            cached_path = cache.get(key)
+            if cached_path is None:
+                cached_path = _build_and_cache_ore(
+                    cmd, ctx, probe, cache, key, extra_env=extra_env,
+                )
+                if cached_path is None:
+                    return None
 
     # Run through the ore pipeline with the cached .ore.
     return run_ore_pipeline(cmd, ctx, probe, cached_path, extra_env=extra_env)
@@ -732,7 +738,7 @@ def _build_and_cache_ore(
         )
         if cmd_includes and set(cmd_includes) != set(ctx.include_paths):
             print(
-                "ore: seed include paths differ from target, "
+                "ore-seed-include-mismatch: seed include paths differ from target, "
                 "falling back to mojo run",
                 file=sys.stderr,
             )
@@ -748,6 +754,16 @@ def _build_and_cache_ore(
     for inc in ctx.include_paths:
         include_args.extend(["-I", inc])
 
+    # Forward -D defines from the original command so the seed is
+    # compiled with the same profile flags (e.g. -D ASSERT=all).
+    define_args: list[str] = []
+    argv_list = list(cmd.argv)
+    for i, arg in enumerate(argv_list):
+        if arg == "-D" and i + 1 < len(argv_list):
+            define_args.extend(["-D", argv_list[i + 1]])
+        elif arg.startswith("-D") and len(arg) > 2:
+            define_args.append(arg)
+
     with tempfile.TemporaryDirectory(prefix="ore-seed-") as td:
         work = Path(td)
         seed_bc = work / "seed.bc"
@@ -762,6 +778,7 @@ def _build_and_cache_ore(
             "-o",
             str(seed_bc),
         ]
+        mojo_args.extend(define_args)
         mojo_args.extend(include_args)
         mojo_args.append(str(seed_source))
 
@@ -774,8 +791,8 @@ def _build_and_cache_ore(
         )
         if compile_result.returncode != 0:
             print(
-                f"ore: seed compilation failed (exit {compile_result.returncode}), "
-                "falling back to mojo run",
+                f"ore-seed-compile-failed: seed compilation failed "
+                f"(exit {compile_result.returncode}), falling back to mojo run",
                 file=sys.stderr,
             )
             return None
@@ -783,7 +800,7 @@ def _build_and_cache_ore(
         # Build .ore from seed bitcode.
         success, stderr = _build_ore(seed_bc, probe, ore_output)
         if not success:
-            print(f"ore: .ore build failed: {stderr}, falling back to mojo run", file=sys.stderr)
+            print(f"ore-unavailable: .ore build failed: {stderr}, falling back to mojo run", file=sys.stderr)
             return None
 
         # Cache the result.
