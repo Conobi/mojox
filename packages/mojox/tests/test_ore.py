@@ -416,3 +416,68 @@ class TestOreExecIntegration:
 
         sig = inspect.signature(run_commands)
         assert "ore_context" in sig.parameters
+
+
+class TestCliIntegration:
+    """CLI integration: --no-ore flag and OreContext construction."""
+
+    def test_no_ore_flag_in_parser(self):
+        """The --no-ore flag is accepted by the argument parser."""
+        from mojox._cli import build_parser
+
+        parser = build_parser()
+        args = parser.parse_args(["test", "--no-ore"])
+        assert args.no_ore is True
+
+    def test_ore_enabled_by_default(self):
+        """Without --no-ore, ore is not explicitly disabled."""
+        from mojox._cli import build_parser
+
+        parser = build_parser()
+        args = parser.parse_args(["test"])
+        assert args.no_ore is False
+
+    def test_no_ore_flag_on_build_subcommand(self):
+        """The --no-ore flag is accepted by the build subcommand."""
+        from mojox._cli import build_parser
+
+        parser = build_parser()
+        args = parser.parse_args(["build", "--no-ore"])
+        assert args.no_ore is True
+
+    def test_no_ore_flag_on_run_subcommand(self):
+        """The --no-ore flag is accepted by the run subcommand."""
+        from mojox._cli import build_parser
+
+        parser = build_parser()
+        args = parser.parse_args(["run", "--no-ore", "main.mojo"])
+        assert args.no_ore is True
+
+    def test_no_ore_flag_on_metadata_subcommand(self):
+        """The --no-ore flag is accepted by the metadata subcommand."""
+        from mojox._cli import build_parser
+
+        parser = build_parser()
+        args = parser.parse_args(["metadata", "--no-ore"])
+        assert args.no_ore is True
+
+    def test_resolve_runtime_lib_dir_returns_path(self):
+        """_resolve_runtime_lib_dir returns a Path."""
+        from mojox._cli import _resolve_runtime_lib_dir
+
+        result = _resolve_runtime_lib_dir()
+        assert isinstance(result, Path)
+
+    def test_dist_version_unknown_package(self):
+        """_dist_version returns 'unknown' for non-existent packages."""
+        from mojox._cli import _dist_version
+
+        assert _dist_version("nonexistent-package-xyz-999") == "unknown"
+
+    def test_dist_version_known_package(self):
+        """_dist_version returns a version string for installed packages."""
+        from mojox._cli import _dist_version
+
+        version = _dist_version("pytest")
+        assert version != "unknown"
+        assert len(version) > 0

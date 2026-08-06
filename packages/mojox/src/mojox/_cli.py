@@ -69,6 +69,9 @@ def _add_common_flags(parser: argparse.ArgumentParser) -> None:
                         help="Define a compile-time variable (KEY=VALUE)")
     parser.add_argument("--flag", action="append", default=[], dest="flags",
                         help="Extra flag passed through to the compiler")
+    parser.add_argument("--no-ore", action="store_true", default=False,
+                        dest="no_ore",
+                        help="Disable ore acceleration for this invocation")
 
 
 def _build_cli_overrides(args: argparse.Namespace) -> dict:
@@ -92,10 +95,42 @@ def _build_cli_overrides(args: argparse.Namespace) -> dict:
     return overrides
 
 
+def _resolve_runtime_lib_dir() -> Path:
+    """Find the Mojo runtime library directory.
+
+    Attempts to locate the ``modular`` package's ``lib`` subdirectory.
+    Falls back to ``/usr/lib`` when the modular package is not installed.
+
+    Returns:
+        Path to the directory containing Mojo runtime libraries.
+    """
+    try:
+        import modular
+        return Path(modular.__path__[0]) / "lib"
+    except ImportError:
+        return Path("/usr/lib")
+
+
+def _dist_version(name: str) -> str:
+    """Get the installed version of a distribution.
+
+    Args:
+        name: The distribution (package) name to look up.
+
+    Returns:
+        The version string, or ``"unknown"`` if the package is not installed.
+    """
+    import importlib.metadata
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
+
+
 def _resolve_pipeline(args: argparse.Namespace):
     """Run the shared resolution pipeline.
 
-    Returns (manifest, graph, env, policy, toolchain, host, settings, commands).
+    Returns (manifest, graph, env, policy, toolchain, host, settings, commands, ore_context).
     """
     from mojox_core import (
         ConfigError, discover, plan, resolve, parse_manifest,
@@ -166,7 +201,26 @@ def _resolve_pipeline(args: argparse.Namespace):
 
     commands = plan(graph, env, policy, toolchain, host)
 
-    return manifest, graph, env, policy, toolchain, host, settings, commands
+    from ._ore import OreContext
+
+    no_ore = getattr(args, "no_ore", False)
+    is_release = profile_name == "release"
+    runtime_lib_dir = _resolve_runtime_lib_dir()
+
+    ore_context = OreContext(
+        enabled=not no_ore and not is_release,
+        seed=Path(manifest.ore_seed) if manifest.ore_seed else None,
+        include_paths=policy.include_paths,
+        compiler_version=toolchain.version,
+        mojo_path=toolchain.mojo_path,
+        runtime_lib_dir=runtime_lib_dir,
+        dep_versions=tuple(
+            (d.name, _dist_version(d.name))
+            for d in env.include_sequence
+        ),
+    )
+
+    return manifest, graph, env, policy, toolchain, host, settings, commands, ore_context
 
 
 def _cmd_test(args: argparse.Namespace) -> None:
@@ -174,7 +228,9 @@ def _cmd_test(args: argparse.Namespace) -> None:
     from ._exec import run_commands
     from ._output import render_dry_run, render_summary, render_diagnostics
 
-    manifest, graph, env, policy, toolchain, host, settings, commands = _resolve_pipeline(args)
+    manifest, graph, env, policy, toolchain, host, settings, commands, ore_context = (
+        _resolve_pipeline(args)
+    )
 
     if env.diagnostics:
         render_diagnostics(env.diagnostics)
@@ -187,6 +243,7 @@ def _cmd_test(args: argparse.Namespace) -> None:
         commands,
         max_workers=policy.jobs_tests,
         extra_env=settings.env if settings.env else None,
+        ore_context=ore_context,
     )
     render_summary(outcomes)
 
@@ -267,7 +324,30 @@ def _cmd_run(args: argparse.Namespace) -> None:
         render_dry_run(commands)
         return
 
-    outcome = run_command(commands[0], extra_env=settings.env if settings.env else None)
+    from ._ore import OreContext
+
+    no_ore = getattr(args, "no_ore", False)
+    is_release = args.profile == "release"
+    runtime_lib_dir = _resolve_runtime_lib_dir()
+
+    ore_context = OreContext(
+        enabled=not no_ore and not is_release,
+        seed=Path(manifest.ore_seed) if manifest is not None and manifest.ore_seed else None,
+        include_paths=policy.include_paths,
+        compiler_version=toolchain.version,
+        mojo_path=toolchain.mojo_path,
+        runtime_lib_dir=runtime_lib_dir,
+        dep_versions=tuple(
+            (d.name, _dist_version(d.name))
+            for d in env.include_sequence
+        ),
+    )
+
+    outcome = run_command(
+        commands[0],
+        extra_env=settings.env if settings.env else None,
+        ore_context=ore_context,
+    )
     print(outcome.stdout, end="")
     if outcome.stderr:
         print(outcome.stderr, end="", file=sys.stderr)
@@ -280,7 +360,9 @@ def _cmd_build(args: argparse.Namespace) -> None:
     from ._output import render_dry_run, render_summary, render_diagnostics
     from mojox_core import CommandKind
 
-    manifest, graph, env, policy, toolchain, host, settings, commands = _resolve_pipeline(args)
+    manifest, graph, env, policy, toolchain, host, settings, commands, ore_context = (
+        _resolve_pipeline(args)
+    )
 
     build_commands = tuple(
         c for c in commands
@@ -298,6 +380,7 @@ def _cmd_build(args: argparse.Namespace) -> None:
         build_commands,
         max_workers=policy.jobs_compile,
         extra_env=settings.env if settings.env else None,
+        ore_context=ore_context,
     )
     render_summary(outcomes)
 
@@ -355,7 +438,9 @@ def _cmd_metadata(args: argparse.Namespace) -> None:
     from mojox_core import serialize
     from ._output import render_diagnostics
 
-    manifest, graph, env, policy, toolchain, host, settings, commands = _resolve_pipeline(args)
+    manifest, graph, env, policy, toolchain, host, settings, commands, _ore_context = (
+        _resolve_pipeline(args)
+    )
 
     if env.diagnostics:
         render_diagnostics(env.diagnostics)
