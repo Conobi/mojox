@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from mojox_core import CommandKind
-from mojox._ore import OreContext
+from mojox._ore import OreContext, is_ore_eligible, _platform_link_flags
 
 
 class TestOreContext:
@@ -350,3 +350,49 @@ class TestOreCache:
         assert result_path.name == "lib.ore"
         assert result_path.parent.name == key
         assert result_path.exists()
+
+
+class TestOreEligibility:
+    """is_ore_eligible() gates ore acceleration by CommandKind."""
+
+    def test_run_test_eligible(self):
+        """RUN_TEST commands are eligible for ore acceleration."""
+        assert is_ore_eligible(CommandKind.RUN_TEST) is True
+
+    def test_check_example_eligible(self):
+        """CHECK_EXAMPLE commands are eligible for ore acceleration."""
+        assert is_ore_eligible(CommandKind.CHECK_EXAMPLE) is True
+
+    def test_run_eligible(self):
+        """RUN commands are eligible for ore acceleration."""
+        assert is_ore_eligible(CommandKind.RUN) is True
+
+    def test_compile_package_not_eligible(self):
+        """COMPILE_PACKAGE commands are not eligible for ore acceleration."""
+        assert is_ore_eligible(CommandKind.COMPILE_PACKAGE) is False
+
+    def test_compile_binary_not_eligible(self):
+        """COMPILE_BINARY commands are not eligible for ore acceleration."""
+        assert is_ore_eligible(CommandKind.COMPILE_BINARY) is False
+
+
+class TestPlatformLinkFlags:
+    """_platform_link_flags() returns OS-specific linker flags."""
+
+    def test_linux_flags(self, monkeypatch: pytest.MonkeyPatch):
+        """On Linux, returns --allow-multiple-definition."""
+        monkeypatch.setattr(sys, "platform", "linux")
+        flags = _platform_link_flags()
+        assert flags == ["-Wl,--allow-multiple-definition"]
+
+    def test_macos_flags(self, monkeypatch: pytest.MonkeyPatch):
+        """On macOS, returns -multiply_defined,suppress."""
+        monkeypatch.setattr(sys, "platform", "darwin")
+        flags = _platform_link_flags()
+        assert flags == ["-Wl,-multiply_defined,suppress"]
+
+    def test_unknown_platform_empty(self, monkeypatch: pytest.MonkeyPatch):
+        """On an unknown platform, returns an empty list."""
+        monkeypatch.setattr(sys, "platform", "freebsd13")
+        flags = _platform_link_flags()
+        assert flags == []
