@@ -21,6 +21,7 @@ from mojox_core.io.toolchain import resolve as resolve_toolchain
 from ._build import (
     GENERATOR_VERSION,
     _normalize_name,
+    _resolve_package_dirs,
     build_editable_wheel,
     build_sdist,
     build_wheel,
@@ -107,8 +108,8 @@ def hook_prepare_metadata_for_build_wheel(
         has_native = bool(manifest.native_libs) or bool(manifest.binaries)
         tag = f"py3-none-{host_platform_tag()}" if has_native else "py3-none-any"
 
-        has_packages = manifest.packages is not None or (root / manifest.package_root).is_dir()
-        compiler_version = toolchain.version if has_packages else None
+        has_compiled = bool(_resolve_package_dirs(root, manifest))
+        compiler_version = toolchain.version if has_compiled else None
 
         name = _normalize_name(manifest.name)
         dist_info_name = f"{name}-{manifest.version}.dist-info"
