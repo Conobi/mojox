@@ -11,6 +11,8 @@ optimization that shells out to LLVM tools.
 
 from __future__ import annotations
 
+import hashlib
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,7 +30,7 @@ class OreContext:
 
     Attributes:
         enabled: Whether ore acceleration is active for this invocation.
-        seed: Path to an existing .ore file to reuse, or None.
+        seed: Path to the ore-seed .mojo source file, or None for first-target-as-seed.
         include_paths: Extra include directories passed to the compiler.
         compiler_version: Version string of the active Mojo compiler.
         mojo_path: Absolute path to the ``mojo`` binary.
@@ -94,3 +96,104 @@ def probe_llvm_tools() -> OreProbeResult:
         llvm_nm=paths["llvm-nm"],
         clang=paths["clang"],
     )
+
+
+def compute_cache_key(
+    compiler_version: str,
+    dep_versions: tuple[tuple[str, str], ...],
+    seed_path: Path | None = None,
+) -> str:
+    """Compute a 24-character hex cache key from build inputs.
+
+    The key is the first 24 hex characters of a SHA-256 digest built from:
+
+    1. ``"compiler:{version}\\n"``
+    2. Sorted ``"dep:{name}=={ver}\\n"`` lines for each dependency
+    3. The seed file's raw bytes if *seed_path* is a regular file,
+       otherwise the literal ``"seed:implicit\\n"``
+
+    No file I/O is performed for dependency versions; only version strings
+    are hashed. The *seed_path* file is read only when it exists and is a
+    regular file.
+
+    Args:
+        compiler_version: The Mojo compiler version string.
+        dep_versions: Sorted (name, version) pairs for all dependencies.
+        seed_path: Optional path to the ore-seed source file.
+
+    Returns:
+        A 24-character lowercase hex digest string.
+    """
+    h = hashlib.sha256()
+    h.update(f"compiler:{compiler_version}\n".encode())
+
+    for name, ver in sorted(dep_versions):
+        h.update(f"dep:{name}=={ver}\n".encode())
+
+    if seed_path is not None and seed_path.is_file():
+        h.update(seed_path.read_bytes())
+    else:
+        h.update(b"seed:implicit\n")
+
+    return h.hexdigest()[:24]
+
+
+class OreCache:
+    """Manages cached .ore files in a directory, keyed by content hash.
+
+    Each cached artifact is stored at ``<cache_dir>/<key>/lib.ore``.
+    Writes are atomic: the source file is first copied to a temporary name
+    inside the key directory, then renamed into place via :func:`os.rename`.
+
+    Attributes:
+        cache_dir: Root directory for all cached .ore artifacts.
+    """
+
+    def __init__(self, cache_dir: Path) -> None:
+        """Initialise the cache at the given directory.
+
+        Args:
+            cache_dir: Root directory for cached .ore files. Created lazily
+                on the first :meth:`put` call.
+        """
+        self.cache_dir = cache_dir
+
+    def get(self, key: str) -> Path | None:
+        """Look up a cached .ore file by key.
+
+        Args:
+            key: The cache key (typically a 24-char hex digest).
+
+        Returns:
+            The path to ``lib.ore`` if it exists, or None on a cache miss.
+        """
+        candidate = self.cache_dir / key / "lib.ore"
+        if candidate.is_file():
+            return candidate
+        return None
+
+    def put(self, key: str, source: Path) -> Path:
+        """Atomically store a .ore file in the cache.
+
+        The *source* file is copied to a temporary name inside the key
+        directory, then atomically renamed to ``lib.ore``.  This ensures
+        concurrent readers never see a partially-written file.
+
+        Args:
+            key: The cache key to store under.
+            source: Path to the .ore file to cache.
+
+        Returns:
+            The final path to the cached ``lib.ore`` file.
+        """
+        key_dir = self.cache_dir / key
+        key_dir.mkdir(parents=True, exist_ok=True)
+
+        tmp_name = f".lib.ore.{os.getpid()}.tmp"
+        tmp_path = key_dir / tmp_name
+        final_path = key_dir / "lib.ore"
+
+        shutil.copy2(source, tmp_path)
+        os.rename(tmp_path, final_path)
+
+        return final_path

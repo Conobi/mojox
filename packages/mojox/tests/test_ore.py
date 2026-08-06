@@ -259,3 +259,94 @@ class TestProbeLlvmTools:
         result = probe_llvm_tools()
         with pytest.raises(AttributeError):
             result.available = False  # type: ignore[misc]
+
+
+class TestCacheKey:
+    """compute_cache_key() produces stable, input-sensitive hex digests."""
+
+    def test_key_changes_with_compiler_version(self):
+        """Different compiler versions produce different cache keys."""
+        from mojox._ore import compute_cache_key
+
+        key_a = compute_cache_key("2025.6.1", (("pkg", "1.0"),))
+        key_b = compute_cache_key("2025.7.0", (("pkg", "1.0"),))
+        assert key_a != key_b
+
+    def test_key_changes_with_dep_version(self):
+        """Different dependency versions produce different cache keys."""
+        from mojox._ore import compute_cache_key
+
+        key_a = compute_cache_key("2025.6.1", (("pkg", "1.0"),))
+        key_b = compute_cache_key("2025.6.1", (("pkg", "2.0"),))
+        assert key_a != key_b
+
+    def test_key_stable_for_same_inputs(self):
+        """Identical inputs produce the same cache key."""
+        from mojox._ore import compute_cache_key
+
+        deps = (("alpha", "1.0"), ("beta", "2.0"))
+        key_a = compute_cache_key("2025.6.1", deps)
+        key_b = compute_cache_key("2025.6.1", deps)
+        assert key_a == key_b
+        assert len(key_a) == 24
+
+    def test_key_changes_with_seed_content(self, tmp_path: Path):
+        """Providing a seed file changes the cache key."""
+        from mojox._ore import compute_cache_key
+
+        seed = tmp_path / "seed.mojo"
+        seed.write_text("fn main(): pass")
+
+        key_no_seed = compute_cache_key("2025.6.1", ())
+        key_with_seed = compute_cache_key("2025.6.1", (), seed_path=seed)
+        assert key_no_seed != key_with_seed
+
+        # Changing seed content changes the key.
+        seed.write_text("fn main(): print('hello')")
+        key_changed_seed = compute_cache_key("2025.6.1", (), seed_path=seed)
+        assert key_with_seed != key_changed_seed
+
+
+class TestOreCache:
+    """OreCache manages .ore files in a cache directory."""
+
+    def test_miss_on_empty_cache(self, tmp_path: Path):
+        """get() returns None when no matching key exists."""
+        from mojox._ore import OreCache
+
+        cache = OreCache(cache_dir=tmp_path / "ore-cache")
+        assert cache.get("nonexistent_key_abc123") is None
+
+    def test_roundtrip(self, tmp_path: Path):
+        """put() then get() returns a path with identical content."""
+        from mojox._ore import OreCache
+
+        cache = OreCache(cache_dir=tmp_path / "ore-cache")
+        source = tmp_path / "built.ore"
+        source.write_bytes(b"LLVM-ore-object-bytes-here")
+
+        key = "ore_test_cache_key_00001"
+        result_path = cache.put(key, source)
+        assert result_path.exists()
+        assert result_path.read_bytes() == b"LLVM-ore-object-bytes-here"
+
+        # get() should find it.
+        cached = cache.get(key)
+        assert cached is not None
+        assert cached.read_bytes() == b"LLVM-ore-object-bytes-here"
+
+    def test_atomic_write(self, tmp_path: Path):
+        """After put(), lib.ore exists at the expected path."""
+        from mojox._ore import OreCache
+
+        cache = OreCache(cache_dir=tmp_path / "ore-cache")
+        source = tmp_path / "built.ore"
+        source.write_bytes(b"object-data")
+
+        key = "ore_test_atomic_write_ok"  # 24 chars
+        result_path = cache.put(key, source)
+
+        # The file should be named lib.ore inside a key-named directory.
+        assert result_path.name == "lib.ore"
+        assert result_path.parent.name == key
+        assert result_path.exists()
