@@ -547,6 +547,7 @@ def run_ore_pipeline(
             "-o",
             str(binary),
             f"-L{ore_context.runtime_lib_dir}",
+            f"-Wl,-rpath,{ore_context.runtime_lib_dir}",
         ]
         link_args.extend(_RUNTIME_LIBS)
         link_args.extend(_platform_link_flags())
