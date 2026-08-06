@@ -18,11 +18,17 @@ from base64 import urlsafe_b64encode
 from fnmatch import fnmatch
 from pathlib import Path
 
-from ._config import BackendConfig, BinaryEntry, ProjectMetadata, normalize_name
-from ._metadata import render_metadata, render_wheel_file
-from ._toolchain import Toolchain
+from mojox_core import Manifest, Policy, Toolchain
 
-GENERATOR_VERSION = "0.4.0"
+from ._metadata import render_metadata, render_wheel_file
+
+GENERATOR_VERSION = "0.5.0"
+
+
+def _normalize_name(name: str) -> str:
+    """PEP 503 / PEP 491 normalization for wheel filenames."""
+    return name.lower().replace("-", "_").replace(".", "_")
+
 
 # ZIP can't represent dates before 1980; SOURCE_DATE_EPOCH=0 must clamp up.
 _ZIP_EPOCH_FLOOR = 315532800  # 1980-01-01 UTC
@@ -48,22 +54,21 @@ def host_platform_tag() -> str:
 
 def _run_pre_build(
     root: Path,
-    commands: list[list[str]],
+    commands: tuple[tuple[str, ...], ...],
     *,
     verbose: bool,
 ) -> None:
     """Run user-defined pre-build hooks before any Mojo compilation.
 
-    Each command runs with cwd=<project root>. Inherits the build env's PATH
-    (so build dependencies on PATH are available) and PYTHONPATH (so the build
-    env's site-packages is reachable). Any non-zero exit aborts the wheel
-    build with the captured stderr.
+    Each command runs with cwd=<project root>. Any non-zero exit
+    aborts the wheel build with the captured stderr.
     """
     for cmd in commands:
+        cmd_list = list(cmd)
         if verbose:
-            print(f"[mojox-build] pre-build: {' '.join(cmd)}", file=sys.stderr)
+            print(f"[mojox-build] pre-build: {' '.join(cmd_list)}", file=sys.stderr)
         result = subprocess.run(
-            cmd,
+            cmd_list,
             cwd=root,
             capture_output=not verbose,
             text=True,
@@ -71,7 +76,7 @@ def _run_pre_build(
         if result.returncode != 0:
             stderr = (result.stderr or "").strip() if not verbose else "(see above)"
             raise RuntimeError(
-                f"pre-build hook failed (exit {result.returncode}): {' '.join(cmd)}\n"
+                f"pre-build hook failed (exit {result.returncode}): {' '.join(cmd_list)}\n"
                 f"  stderr: {stderr}"
             )
 
@@ -79,40 +84,34 @@ def _run_pre_build(
 def _compile_package(
     source_dir: Path,
     out_dir: Path,
-    cfg: BackendConfig,
+    policy: Policy,
     toolchain: Toolchain,
     *,
     verbose: bool,
 ) -> Path:
-    """Compile one source dir into a precompiled Mojo package.
-
-    The command and output extension depend on the Mojo toolchain: Mojo >= 1.0
-    uses `mojo precompile` → `.mojoc`, older toolchains use `mojo package` →
-    `.mojopkg` (see `Toolchain`).
+    """Compile one source dir into a precompiled Mojo package (.mojoc).
 
     Args:
-        source_dir: Directory of `.mojo` sources forming one package.
+        source_dir: Directory of ``.mojo`` sources forming one package.
         out_dir: Directory the compiled package is written into.
-        cfg: Backend configuration supplying `-D` defines and extra flags.
-        toolchain: Resolved Mojo toolchain (command + extension).
+        policy: Resolved policy supplying ``-D`` defines and extra flags.
+        toolchain: Resolved Mojo toolchain.
         verbose: Whether to stream compiler stdout/stderr.
 
     Returns:
-        The path of the compiled package written under `out_dir`.
+        The path of the compiled package written under *out_dir*.
 
     Raises:
         RuntimeError: If the compile command exits non-zero.
     """
     output = out_dir / f"{source_dir.name}{toolchain.extension}"
-    cmd = ["mojo", toolchain.subcommand, str(source_dir), "-o", str(output)]
-    # Auto-inject -I for uv-installed Mojo packages so cross-package imports
-    # resolve during PEP 517 builds (mirrors the mojox CLI wrapper's behavior).
+    cmd = [toolchain.mojo_path, toolchain.subcommand, str(source_dir), "-o", str(output)]
     pkg_path = sysconfig.get_path("platlib") + "/mojo_packages"
     if os.path.isdir(pkg_path):
         cmd.extend(["-I", pkg_path])
-    for key, value in cfg.defines.items():
+    for key, value in policy.defines.items():
         cmd.extend(["-D", f"{key}={value}"])
-    cmd.extend(cfg.flags)
+    cmd.extend(policy.flags)
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -133,41 +132,31 @@ def _compile_binary(
     root: Path,
     source: str,
     output: Path,
-    cfg: BackendConfig,
+    policy: Policy,
+    toolchain: Toolchain,
     *,
     verbose: bool,
 ) -> None:
-    """Compile one `.mojo` entrypoint into an executable via `mojo build`.
+    """Compile one ``.mojo`` entrypoint into an executable via ``mojo build``.
 
-    Mirrors `_compile_package`'s `-I site-packages/mojo_packages` injection so
-    cross-package imports (the project's own runtime deps, installed in the
-    build env) resolve.
-
-    Also injects an `$ORIGIN`-relative RUNPATH pointing at the install-site
-    `modular/lib`. Without this, `mojo build` only embeds the build-env's
-    absolute path, which is an ephemeral PEP 517 temp dir — the binary can
-    no longer resolve `libKGENCompilerRTShared.so` etc. once installed.
+    Injects ``-I site-packages/mojo_packages`` and an ``$ORIGIN``-relative
+    RUNPATH so cross-package imports and the Mojo runtime resolve after
+    install.
     """
     src_path = root / source
-    cmd = ["mojo", "build", str(src_path), "-o", str(output)]
+    cmd = [toolchain.mojo_path, "build", str(src_path), "-o", str(output)]
     pkg_path = sysconfig.get_path("platlib") + "/mojo_packages"
     if os.path.isdir(pkg_path):
         cmd.extend(["-I", pkg_path])
-    for key, value in cfg.defines.items():
+    for key, value in policy.defines.items():
         cmd.extend(["-D", f"{key}={value}"])
 
-    # PEP 427 install layout: <wheel>.data/scripts/ → <venv>/bin/
-    # Inject two `$ORIGIN`-relative RUNPATHs for the venv install layout:
-    #   * modular/lib    → Mojo runtime (libKGENCompilerRTShared.so etc.)
-    #   * mojo_packages/lib → project + dep native-libs declared via
-    #                         [tool.mojox-build].native-libs, dlopened by
-    #                         bare soname from Mojo code.
     py_ver = sysconfig.get_python_version()
     site_pkg_rel = f"$ORIGIN/../lib/python{py_ver}/site-packages"
     for sub in ("modular/lib", "mojo_packages/lib"):
         cmd.extend(["-Xlinker", "-rpath", "-Xlinker", f"{site_pkg_rel}/{sub}"])
 
-    cmd.extend(cfg.flags)
+    cmd.extend(policy.flags)
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -186,11 +175,13 @@ def _compile_binary(
 def _build_binaries(
     root: Path,
     scripts_dir: Path,
-    binaries: list[BinaryEntry],
-    cfg: BackendConfig,
+    binaries: tuple,
+    policy: Policy,
+    toolchain: Toolchain,
     *,
     verbose: bool,
 ) -> None:
+    """Build all declared binary entries concurrently."""
     if not binaries:
         return
     scripts_dir.mkdir(parents=True, exist_ok=True)
@@ -198,14 +189,14 @@ def _build_binaries(
 
     if len(tasks) <= 1:
         for b, out in tasks:
-            _compile_binary(root, b.source, out, cfg, verbose=verbose)
+            _compile_binary(root, b.source, out, policy, toolchain, verbose=verbose)
             out.chmod(0o755)
         return
 
     workers = min(len(tasks), 8)
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
-            pool.submit(_compile_binary, root, b.source, out, cfg, verbose=verbose): out
+            pool.submit(_compile_binary, root, b.source, out, policy, toolchain, verbose=verbose): out
             for b, out in tasks
         }
         for f in concurrent.futures.as_completed(futures):
@@ -213,37 +204,36 @@ def _build_binaries(
             futures[f].chmod(0o755)
 
 
-def _resolve_package_dirs(root: Path, cfg: BackendConfig) -> list[Path]:
-    if cfg.packages is not None:
-        return [root / name for name in cfg.packages]
-    pkg_root = root / cfg.package_root
+def _resolve_package_dirs(root: Path, manifest: Manifest) -> list[Path]:
+    """Resolve the source directories that become compiled packages."""
+    if manifest.packages is not None:
+        return [root / name for name in manifest.packages]
+    pkg_root = root / manifest.package_root
     return [p for p in sorted(pkg_root.iterdir()) if p.is_dir()]
 
 
 def _compile_all(
     packages: list[Path],
     out_dir: Path,
-    cfg: BackendConfig,
+    policy: Policy,
+    toolchain: Toolchain,
     *,
     verbose: bool,
 ) -> None:
+    """Compile all source packages into precompiled .mojoc files."""
     out_dir.mkdir(parents=True, exist_ok=True)
     if not packages:
         return
 
-    # Detect the toolchain once (cached) and share it across all packages so
-    # every package in the wheel uses the same command + extension.
-    toolchain = Toolchain.detect()
-
     if len(packages) <= 1:
         for src in packages:
-            _compile_package(src, out_dir, cfg, toolchain, verbose=verbose)
+            _compile_package(src, out_dir, policy, toolchain, verbose=verbose)
         return
 
     workers = min(len(packages), 8)
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [
-            pool.submit(_compile_package, src, out_dir, cfg, toolchain, verbose=verbose)
+            pool.submit(_compile_package, src, out_dir, policy, toolchain, verbose=verbose)
             for src in packages
         ]
         for f in concurrent.futures.as_completed(futures):
@@ -275,6 +265,22 @@ def _copy_license_files(
                 copied.append(f"licenses/{src.name}")
                 seen.add(src.name)
     return copied
+
+
+def _write_provenance(
+    dist_info: Path,
+    toolchain: Toolchain,
+    generator_version: str,
+) -> None:
+    """Write mojox-provenance.json to the dist-info directory."""
+    provenance = {
+        "mojo_compiler_version": toolchain.version,
+        "mojox_build_version": generator_version,
+        "toolchain_surface": f"{toolchain.subcommand}/{toolchain.extension}",
+    }
+    (dist_info / "mojox-provenance.json").write_text(
+        json.dumps(provenance, indent=2, sort_keys=True) + "\n"
+    )
 
 
 # ============================================================
@@ -334,16 +340,36 @@ def _zip_dir(
 
 def build_wheel(
     root: Path,
-    project: ProjectMetadata,
-    backend: BackendConfig,
+    manifest: Manifest,
+    policy: Policy,
+    toolchain: Toolchain,
     *,
     wheel_directory: Path,
     verbose: bool = False,
 ) -> str:
-    name = normalize_name(project.name)
-    version = project.version
-    platform_tag = host_platform_tag()
-    tag = f"py3-none-{platform_tag}"
+    """Build a wheel containing compiled Mojo packages.
+
+    Args:
+        root: Project root directory.
+        manifest: Parsed project manifest.
+        policy: Resolved policy (defines, flags for the build profile).
+        toolchain: Resolved Mojo toolchain.
+        wheel_directory: Output directory for the wheel file.
+        verbose: Whether to stream compiler output.
+
+    Returns:
+        The wheel filename.
+    """
+    name = _normalize_name(manifest.name)
+    version = manifest.version
+
+    has_native = bool(manifest.native_libs) or bool(manifest.binaries)
+    if has_native:
+        platform_tag = host_platform_tag()
+        tag = f"py3-none-{platform_tag}"
+    else:
+        tag = "py3-none-any"
+
     wheel_name = f"{name}-{version}-{tag}.whl"
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -356,22 +382,23 @@ def build_wheel(
         dist_info = staging / f"{name}-{version}.dist-info"
         dist_info.mkdir()
 
-        _run_pre_build(root, backend.pre_build, verbose=verbose)
-        # Validate that pre-build produced the declared native libs (skipped in
-        # the initial preflight when pre_build is configured, since they may
-        # not exist yet at that point).
+        _run_pre_build(root, manifest.pre_build, verbose=verbose)
         from ._preflight import check_post_pre_build
-        check_post_pre_build(root, backend)
-        packages = _resolve_package_dirs(root, backend)
-        _compile_all(packages, pkg_dir, backend, verbose=verbose)
-        _copy_native_libs(root, lib_dir, backend.native_libs)
-        _build_binaries(root, scripts_dir, backend.binaries, backend, verbose=verbose)
+        check_post_pre_build(root, manifest)
+        packages = _resolve_package_dirs(root, manifest)
+        _compile_all(packages, pkg_dir, policy, toolchain, verbose=verbose)
+        _copy_native_libs(root, lib_dir, manifest.native_libs)
+        _build_binaries(root, scripts_dir, manifest.binaries, policy, toolchain, verbose=verbose)
+
+        has_compiled = bool(packages)
 
         license_relpaths = _copy_license_files(
-            root, dist_info, project.license_files
+            root, dist_info, list(manifest.license_files)
         )
+
+        compiler_version = toolchain.version if has_compiled else None
         (dist_info / "METADATA").write_text(
-            render_metadata(project, root, license_relpaths)
+            render_metadata(manifest, root, license_relpaths, compiler_version=compiler_version)
         )
         (dist_info / "WHEEL").write_text(
             render_wheel_file(
@@ -381,15 +408,21 @@ def build_wheel(
             )
         )
 
-        _zip_dir(staging, wheel_directory / wheel_name, dist_info.name, backend.wheel_exclude)
+        if has_compiled:
+            _write_provenance(
+                dist_info, toolchain, GENERATOR_VERSION,
+            )
+
+        _zip_dir(staging, wheel_directory / wheel_name, dist_info.name, list(manifest.wheel_exclude))
 
     return wheel_name
 
 
 def build_editable_wheel(
     root: Path,
-    project: ProjectMetadata,
-    backend: BackendConfig,
+    manifest: Manifest,
+    policy: Policy,
+    toolchain: Toolchain,
     *,
     wheel_directory: Path,
     verbose: bool = False,
@@ -400,10 +433,16 @@ def build_editable_wheel(
     that creates symlinks from site-packages/mojo_packages/<pkg> to the
     project's source directories. Source changes are picked up immediately.
     """
-    name = normalize_name(project.name)
-    version = project.version
-    platform_tag = host_platform_tag()
-    tag = f"py3-none-{platform_tag}"
+    name = _normalize_name(manifest.name)
+    version = manifest.version
+
+    has_native = bool(manifest.native_libs) or bool(manifest.binaries)
+    if has_native:
+        platform_tag = host_platform_tag()
+        tag = f"py3-none-{platform_tag}"
+    else:
+        tag = "py3-none-any"
+
     wheel_name = f"{name}-{version}-{tag}.whl"
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -416,22 +455,22 @@ def build_editable_wheel(
         dist_info = staging / f"{name}-{version}.dist-info"
         dist_info.mkdir()
 
-        _run_pre_build(root, backend.pre_build, verbose=verbose)
+        _run_pre_build(root, manifest.pre_build, verbose=verbose)
         from ._preflight import check_post_pre_build
-        check_post_pre_build(root, backend)
+        check_post_pre_build(root, manifest)
 
-        packages = _resolve_package_dirs(root, backend)
+        packages = _resolve_package_dirs(root, manifest)
         platlib.mkdir(parents=True, exist_ok=True)
-        _write_editable_hook(platlib, packages)
+        _write_editable_hook(platlib, packages, name)
 
-        _copy_native_libs(root, lib_dir, backend.native_libs)
-        _build_binaries(root, scripts_dir, backend.binaries, backend, verbose=verbose)
+        _copy_native_libs(root, lib_dir, manifest.native_libs)
+        _build_binaries(root, scripts_dir, manifest.binaries, policy, toolchain, verbose=verbose)
 
         license_relpaths = _copy_license_files(
-            root, dist_info, project.license_files
+            root, dist_info, list(manifest.license_files)
         )
         (dist_info / "METADATA").write_text(
-            render_metadata(project, root, license_relpaths)
+            render_metadata(manifest, root, license_relpaths)
         )
         (dist_info / "WHEEL").write_text(
             render_wheel_file(
@@ -441,7 +480,7 @@ def build_editable_wheel(
             )
         )
 
-        _zip_dir(staging, wheel_directory / wheel_name, dist_info.name, backend.wheel_exclude)
+        _zip_dir(staging, wheel_directory / wheel_name, dist_info.name, list(manifest.wheel_exclude))
 
     return wheel_name
 
@@ -449,18 +488,27 @@ def build_editable_wheel(
 def _write_editable_hook(
     platlib: Path,
     packages: list[Path],
+    dist_name: str,
 ) -> None:
-    """Write the .pth, hook module, and manifest for editable installs."""
+    """Write per-distribution .pth, hook module, and manifest for editable installs.
+
+    Files are qualified by *dist_name* so that two mojox projects
+    installed editable into the same venv do not clobber each other.
+    """
     hook_template = Path(__file__).parent / "_editable_hook.py"
-    shutil.copy2(hook_template, platlib / "_mojox_editable_hook.py")
-    (platlib / "_mojox_editable.pth").write_text("import _mojox_editable_hook\n")
-    manifest = {
+    hook_name = f"_mojox_editable_{dist_name}_hook.py"
+    manifest_name = f"_mojox_editable_{dist_name}_manifest.json"
+    pth_name = f"_mojox_editable_{dist_name}.pth"
+
+    shutil.copy2(hook_template, platlib / hook_name)
+    (platlib / pth_name).write_text(f"import {hook_name[:-3]}\n")
+    manifest_data = {
         "packages": {
             pkg.name: str(pkg.resolve()) for pkg in packages
         }
     }
-    (platlib / "_mojox_editable_manifest.json").write_text(
-        json.dumps(manifest, indent=2) + "\n"
+    (platlib / manifest_name).write_text(
+        json.dumps(manifest_data, indent=2) + "\n"
     )
 
 
@@ -473,18 +521,32 @@ _DEFAULT_SDIST_SKIP_TOP = {"dist", "build", "__pycache__", ".venv", ".git", ".to
 
 
 def _match_any(rel: str, patterns: list[str]) -> bool:
+    """Check if a relative path matches any of the given patterns."""
     return any(fnmatch(rel, pat) for pat in patterns)
 
 
-def _sdist_files(root: Path, cfg: BackendConfig) -> list[Path]:
-    if cfg.source_include:
+def _is_not_symlink(p: Path) -> bool:
+    """Return True if the path is not a symlink (safe to include)."""
+    return not p.is_symlink()
+
+
+def _sdist_files(root: Path, manifest: Manifest) -> list[Path]:
+    """Collect files for the sdist, always including README and license files.
+
+    Symlinks are refused on all Python versions to prevent directory-
+    escape attacks during sdist assembly.
+    """
+    if manifest.source_include:
         files: list[Path] = []
-        for pattern in cfg.source_include:
-            files.extend(p for p in root.glob(pattern) if p.is_file())
+        for pattern in manifest.source_include:
+            files.extend(
+                p for p in root.glob(pattern)
+                if p.is_file() and _is_not_symlink(p)
+            )
     else:
         files = []
         for p in root.rglob("*"):
-            if not p.is_file():
+            if not p.is_file() or p.is_symlink():
                 continue
             rel = p.relative_to(root)
             if any(part.startswith(".") for part in rel.parts):
@@ -493,34 +555,39 @@ def _sdist_files(root: Path, cfg: BackendConfig) -> list[Path]:
                 continue
             files.append(p)
 
-    if cfg.source_exclude:
+    if manifest.source_exclude:
         files = [
             p for p in files
-            if not _match_any(str(p.relative_to(root)).replace(os.sep, "/"), cfg.source_exclude)
+            if not _match_any(str(p.relative_to(root)).replace(os.sep, "/"), list(manifest.source_exclude))
         ]
 
-    # Always include pyproject.toml + readme + license files if they exist.
+    # Always include pyproject.toml, README, and license files.
     extras: list[Path] = []
-    for name in ("pyproject.toml",):
-        p = root / name
-        if p.is_file():
-            extras.append(p)
+    always_include = ["pyproject.toml"]
+    if manifest.readme:
+        always_include.append(manifest.readme)
+    extras = [root / name for name in always_include if (root / name).is_file()]
+    for pattern in manifest.license_files:
+        for lic in sorted(root.glob(pattern)):
+            if lic.is_file() and _is_not_symlink(lic):
+                extras.append(lic)
+
     return sorted(set(files) | set(extras))
 
 
 def build_sdist(
     root: Path,
-    project: ProjectMetadata,
-    backend: BackendConfig,
+    manifest: Manifest,
     *,
     sdist_directory: Path,
 ) -> str:
-    name = normalize_name(project.name)
-    version = project.version
+    """Build a source distribution (.tar.gz)."""
+    name = _normalize_name(manifest.name)
+    version = manifest.version
     sdist_name = f"{name}-{version}.tar.gz"
     sdist_path = sdist_directory / sdist_name
 
-    files = _sdist_files(root, backend)
+    files = _sdist_files(root, manifest)
     epoch = _tar_epoch()
 
     def _reset(info: tarfile.TarInfo) -> tarfile.TarInfo:
