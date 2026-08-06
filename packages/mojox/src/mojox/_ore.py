@@ -669,6 +669,7 @@ def _try_ore_run(
         print(
             f"ore: LLVM tool '{probe.missing_tool}' not found, "
             "falling back to mojo run",
+            file=sys.stderr,
         )
         return None
 
@@ -676,7 +677,7 @@ def _try_ore_run(
     key = compute_cache_key(
         ctx.compiler_version, ctx.dep_versions, seed_path=ctx.seed,
     )
-    cache = OreCache(cache_dir=Path.home() / ".cache" / "mojox" / "ore")
+    cache = OreCache(cache_dir=Path(str(cmd.cwd)) / ".mojox" / "cache" / "ore")
     cached_path = cache.get(key)
 
     if cached_path is None:
@@ -724,15 +725,16 @@ def _build_and_cache_ore(
     """
     seed_source = ctx.seed if ctx.seed is not None else Path(cmd.argv[-1])
 
-    # If explicit seed: verify include paths are present in the target.
+    # If explicit seed: verify it uses the same -I paths as targets.
     if ctx.seed is not None:
-        target_source = Path(cmd.argv[-1])
-        seed_parent = ctx.seed.resolve().parent
-        target_parent = target_source.resolve().parent
-        if seed_parent != target_parent:
+        cmd_includes = tuple(
+            cmd.argv[i + 1] for i, a in enumerate(cmd.argv[:-1]) if a == "-I"
+        )
+        if cmd_includes and set(cmd_includes) != set(ctx.include_paths):
             print(
-                f"ore: seed '{ctx.seed}' and target '{target_source}' "
-                "are in different directories; falling back to mojo run",
+                "ore: seed include paths differ from target, "
+                "falling back to mojo run",
+                file=sys.stderr,
             )
             return None
 
@@ -774,13 +776,14 @@ def _build_and_cache_ore(
             print(
                 f"ore: seed compilation failed (exit {compile_result.returncode}), "
                 "falling back to mojo run",
+                file=sys.stderr,
             )
             return None
 
         # Build .ore from seed bitcode.
         success, stderr = _build_ore(seed_bc, probe, ore_output)
         if not success:
-            print(f"ore: .ore build failed: {stderr}, falling back to mojo run")
+            print(f"ore: .ore build failed: {stderr}, falling back to mojo run", file=sys.stderr)
             return None
 
         # Cache the result.
