@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
+from pathlib import Path
 
 from mojox_build._build import _write_editable_hook
 
@@ -72,3 +75,53 @@ class TestEditableHookFiles:
 
         pth_content = (platlib / "_mojox_editable_my_lib.pth").read_text()
         assert "import _mojox_editable_my_lib_hook" in pth_content
+
+
+class TestEditableHookRuntime:
+    """Runtime hook: stale symlink purge."""
+
+    def _run_hook(self, platlib: Path, dist_name: str):
+        """Execute the editable hook's _ensure() in the given platlib."""
+        hook_file = platlib / f"_mojox_editable_{dist_name}_hook.py"
+        hook_src = hook_file.read_text()
+        # Override __file__ so the hook resolves paths relative to platlib
+        exec(compile(hook_src, str(hook_file), "exec"), {"__file__": str(hook_file)})
+
+    def test_stale_symlinks_purged(self, tmp_path):
+        """Removing a package from the manifest purges its stale symlink."""
+        pkg_a = tmp_path / "src" / "lib_a"
+        pkg_a.mkdir(parents=True)
+        pkg_b = tmp_path / "src" / "lib_b"
+        pkg_b.mkdir(parents=True)
+
+        platlib = tmp_path / "platlib"
+        platlib.mkdir()
+
+        # First install: both packages
+        _write_editable_hook(platlib, [pkg_a, pkg_b], "my_lib")
+        self._run_hook(platlib, "my_lib")
+
+        mojo_pkg_dir = platlib / "mojo_packages"
+        assert (mojo_pkg_dir / "lib_a").is_symlink()
+        assert (mojo_pkg_dir / "lib_b").is_symlink()
+
+        # Second install: only lib_a (lib_b removed)
+        _write_editable_hook(platlib, [pkg_a], "my_lib")
+        self._run_hook(platlib, "my_lib")
+
+        assert (mojo_pkg_dir / "lib_a").is_symlink()
+        assert not (mojo_pkg_dir / "lib_b").exists()
+
+    def test_owned_marker_updated(self, tmp_path):
+        """The _owned.json marker tracks currently declared packages."""
+        pkg = tmp_path / "src" / "mylib"
+        pkg.mkdir(parents=True)
+
+        platlib = tmp_path / "platlib"
+        platlib.mkdir()
+
+        _write_editable_hook(platlib, [pkg], "my_lib")
+        self._run_hook(platlib, "my_lib")
+
+        owned = json.loads((platlib / "_mojox_editable_my_lib_owned.json").read_text())
+        assert "mylib" in owned

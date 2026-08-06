@@ -18,7 +18,14 @@ from mojox_core import (
 from mojox_core.io.manifest import read as read_manifest
 from mojox_core.io.toolchain import resolve as resolve_toolchain
 
-from ._build import GENERATOR_VERSION, build_editable_wheel, build_sdist, build_wheel, host_platform_tag
+from ._build import (
+    GENERATOR_VERSION,
+    _normalize_name,
+    build_editable_wheel,
+    build_sdist,
+    build_wheel,
+    host_platform_tag,
+)
 from ._metadata import render_metadata, render_wheel_file
 from ._preflight import check as _preflight
 
@@ -33,15 +40,10 @@ def _verbose_from(config_settings: dict | None) -> bool:
     return str(v).lower() in {"1", "true", "yes", "on"}
 
 
-def _load(root: Path) -> tuple[Manifest, dict]:
-    """Load and parse pyproject.toml into a Manifest.
-
-    Returns the Manifest and the raw pyproject dict (for render_metadata
-    which needs the [project] table directly).
-    """
+def _load(root: Path) -> Manifest:
+    """Load and parse pyproject.toml into a Manifest."""
     raw = read_manifest(root / "pyproject.toml")
-    manifest = parse_manifest(raw)
-    return manifest, raw
+    return parse_manifest(raw)
 
 
 def _run(action, *args, **kwargs):
@@ -68,7 +70,7 @@ def hook_build_wheel(
 
     def _do() -> str:
         root = Path.cwd()
-        manifest, raw_data = _load(root)
+        manifest = _load(root)
         toolchain = resolve_toolchain()
         policy = resolve(manifest, manifest.build_profile, {}, LocalSettings.EMPTY)
         _preflight(root, manifest, toolchain)
@@ -99,17 +101,25 @@ def hook_prepare_metadata_for_build_wheel(
 
     def _do() -> str:
         root = Path.cwd()
-        manifest, _ = _load(root)
+        manifest = _load(root)
+        toolchain = resolve_toolchain()
+
+        has_native = bool(manifest.native_libs) or bool(manifest.binaries)
+        tag = f"py3-none-{host_platform_tag()}" if has_native else "py3-none-any"
+
+        has_packages = manifest.packages is not None or (root / manifest.package_root).is_dir()
+        compiler_version = toolchain.version if has_packages else None
+
         name = _normalize_name(manifest.name)
         dist_info_name = f"{name}-{manifest.version}.dist-info"
         dist_info = Path(metadata_directory) / dist_info_name
         dist_info.mkdir()
         (dist_info / "METADATA").write_text(
-            render_metadata(manifest, root, [])
+            render_metadata(manifest, root, [], compiler_version=compiler_version)
         )
         (dist_info / "WHEEL").write_text(
             render_wheel_file(
-                tag=f"py3-none-{host_platform_tag()}",
+                tag=tag,
                 root_is_purelib=False,
                 generator_version=GENERATOR_VERSION,
             )
@@ -133,7 +143,7 @@ def hook_build_sdist(
 
     def _do() -> str:
         root = Path.cwd()
-        manifest, _ = _load(root)
+        manifest = _load(root)
         return build_sdist(
             root, manifest, sdist_directory=Path(sdist_directory)
         )
@@ -162,7 +172,7 @@ def hook_build_editable(
 
     def _do() -> str:
         root = Path.cwd()
-        manifest, _ = _load(root)
+        manifest = _load(root)
         toolchain = resolve_toolchain()
         policy = resolve(manifest, manifest.build_profile, {}, LocalSettings.EMPTY)
         _preflight(root, manifest, toolchain)
@@ -190,8 +200,3 @@ def hook_prepare_metadata_for_build_editable(
 ) -> str:
     """Prepare editable-wheel metadata (delegates to the wheel variant)."""
     return hook_prepare_metadata_for_build_wheel(metadata_directory, config_settings)
-
-
-def _normalize_name(name: str) -> str:
-    """PEP 503 / PEP 491 normalization for wheel filenames."""
-    return name.lower().replace("-", "_").replace(".", "_")

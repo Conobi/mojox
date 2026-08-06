@@ -108,3 +108,47 @@ class TestPlatformTag:
         assert _normalize_name("My-Lib") == "my_lib"
         assert _normalize_name("my.lib") == "my_lib"
         assert _normalize_name("MYLIB") == "mylib"
+
+
+class TestContentBasedTag:
+    """Content-based platform tag: py3-none-any for pure Mojo, host tag for native."""
+
+    def test_pure_mojo_gets_any_tag(self, sample_pyproject):
+        """A manifest with no native-libs and no binaries yields py3-none-any."""
+        raw = read_manifest(sample_pyproject / "pyproject.toml")
+        manifest = parse_manifest(raw)
+        assert not manifest.native_libs
+        assert not manifest.binaries
+        has_native = bool(manifest.native_libs) or bool(manifest.binaries)
+        tag = f"py3-none-{host_platform_tag()}" if has_native else "py3-none-any"
+        assert tag == "py3-none-any"
+
+    def test_native_libs_gets_host_tag(self, sample_pyproject):
+        """A manifest with native-libs yields a host platform tag."""
+        pyproject = sample_pyproject / "pyproject.toml"
+        content = pyproject.read_text()
+        content = content.replace(
+            'package-root = "src"',
+            'package-root = "src"\nnative-libs = ["lib/libfoo.so"]',
+        )
+        pyproject.write_text(content)
+        raw = read_manifest(pyproject)
+        manifest = parse_manifest(raw)
+        has_native = bool(manifest.native_libs) or bool(manifest.binaries)
+        tag = f"py3-none-{host_platform_tag()}" if has_native else "py3-none-any"
+        assert "any" != tag.split("-")[-1]
+
+    def test_binaries_gets_host_tag(self, sample_pyproject):
+        """A manifest with binaries yields a host platform tag."""
+        pyproject = sample_pyproject / "pyproject.toml"
+        content = pyproject.read_text()
+        content = content.replace(
+            'package-root = "src"',
+            'package-root = "src"\n\n[[tool.mojox.binaries]]\nname = "myapp"\nsource = "src/main.mojo"',
+        )
+        pyproject.write_text(content)
+        raw = read_manifest(pyproject)
+        manifest = parse_manifest(raw)
+        has_native = bool(manifest.native_libs) or bool(manifest.binaries)
+        tag = f"py3-none-{host_platform_tag()}" if has_native else "py3-none-any"
+        assert "any" != tag.split("-")[-1]

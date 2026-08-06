@@ -240,7 +240,7 @@ def _compile_all(
             f.result()
 
 
-def _copy_native_libs(root: Path, lib_dir: Path, native_libs: list[str]) -> None:
+def _copy_native_libs(root: Path, lib_dir: Path, native_libs: tuple[str, ...]) -> None:
     if not native_libs:
         return
     lib_dir.mkdir(parents=True, exist_ok=True)
@@ -566,7 +566,7 @@ def _sdist_files(root: Path, manifest: Manifest) -> list[Path]:
     always_include = ["pyproject.toml"]
     if manifest.readme:
         always_include.append(manifest.readme)
-    extras = [root / name for name in always_include if (root / name).is_file()]
+    extras = [root / name for name in always_include if (root / name).is_file() and _is_not_symlink(root / name)]
     for pattern in manifest.license_files:
         for lic in sorted(root.glob(pattern)):
             if lic.is_file() and _is_not_symlink(lic):
