@@ -32,7 +32,7 @@ def _minimal_manifest(**overrides):
         test_parallel=False, defines={}, flags=(), lints=LintConfig(),
         optimize=None, debug_level=None, pre_build=(), native_libs=(),
         source_include=None, source_exclude=(), wheel_exclude=(),
-        profiles={}, rlib_seed=None, build_profile="release",
+        profiles={}, ore_seed=None, build_profile="release",
     )
     defaults.update(overrides)
     return Manifest(**defaults)

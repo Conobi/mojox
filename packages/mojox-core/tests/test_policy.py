@@ -44,7 +44,7 @@ def _minimal_manifest(**overrides) -> Manifest:
         source_exclude=(),
         wheel_exclude=(),
         profiles={},
-        rlib_seed=None,
+        ore_seed=None,
         build_profile="release",
     )
     defaults.update(overrides)

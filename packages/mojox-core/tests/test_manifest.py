@@ -23,7 +23,7 @@ class TestHappyPath:
         assert m.flags == ()
         assert m.optimize is None
         assert m.profiles == {}
-        assert m.rlib_seed is None
+        assert m.ore_seed is None
 
     def test_full_manifest(self, full_pyproject):
         m = parse_manifest(full_pyproject)
@@ -37,7 +37,7 @@ class TestHappyPath:
         assert m.flags == ("-Xlinker", "-rpath")
         assert m.optimize == 2
         assert m.debug_level == "full"
-        assert m.rlib_seed == "examples/seed.mojo"
+        assert m.ore_seed == "examples/seed.mojo"
         assert m.lints.warnings_as_errors is True
         assert m.lints.missing_doc_strings is True
         assert "dist" in m.profiles
@@ -153,10 +153,10 @@ class TestErrors:
         with pytest.raises(ConfigError, match="absolute"):
             parse_manifest(d)
 
-    def test_absolute_rlib_seed_rejected(self):
+    def test_absolute_ore_seed_rejected(self):
         d = {
             "project": {"name": "x", "version": "1.0.0"},
-            "tool": {"mojox": {"rlib-seed": "/etc/passwd"}},
+            "tool": {"mojox": {"ore-seed": "/etc/passwd"}},
         }
         with pytest.raises(ConfigError, match="absolute"):
             parse_manifest(d)
