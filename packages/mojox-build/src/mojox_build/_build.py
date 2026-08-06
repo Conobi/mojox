@@ -109,9 +109,13 @@ def _compile_package(
     pkg_path = sysconfig.get_path("platlib") + "/mojo_packages"
     if os.path.isdir(pkg_path):
         cmd.extend(["-I", pkg_path])
-    for key, value in policy.defines.items():
-        cmd.extend(["-D", f"{key}={value}"])
-    cmd.extend(policy.flags)
+    # mojo precompile only accepts -o, -I, and diagnostic flags.
+    # -D defines and policy flags are elaboration-time concerns that
+    # flow through at the consumer's mojo build, not at precompile.
+    if toolchain.subcommand != "precompile":
+        for key, value in policy.defines.items():
+            cmd.extend(["-D", f"{key}={value}"])
+        cmd.extend(policy.flags)
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
