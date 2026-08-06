@@ -76,7 +76,9 @@ def render_metadata(
             lines.append(f"Requires-Dist: {dep} ; extra == '{extra}'")
 
     if compiler_version is not None:
-        lines.append(f"Requires-Dist: mojo-compiler=={compiler_version}")
+        has_mojo_compiler = any("mojo-compiler" in d for d in manifest.dependencies)
+        if not has_mojo_compiler:
+            lines.append(f"Requires-Dist: mojo-compiler=={compiler_version}")
 
     body = ""
     if manifest.readme:
