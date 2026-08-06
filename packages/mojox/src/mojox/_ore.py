@@ -112,6 +112,7 @@ def compute_cache_key(
     compiler_version: str,
     dep_versions: tuple[tuple[str, str], ...],
     seed_path: Path | None = None,
+    defines: dict[str, str] | None = None,
 ) -> str:
     """Compute a 24-character hex cache key from build inputs.
 
@@ -119,17 +120,15 @@ def compute_cache_key(
 
     1. ``"compiler:{version}\\n"``
     2. Sorted ``"dep:{name}=={ver}\\n"`` lines for each dependency
-    3. The seed file's raw bytes if *seed_path* is a regular file,
+    3. Sorted ``"define:{key}={value}\\n"`` lines for active defines
+    4. The seed file's raw bytes if *seed_path* is a regular file,
        otherwise the literal ``"seed:implicit\\n"``
-
-    No file I/O is performed for dependency versions; only version strings
-    are hashed. The *seed_path* file is read only when it exists and is a
-    regular file.
 
     Args:
         compiler_version: The Mojo compiler version string.
         dep_versions: Sorted (name, version) pairs for all dependencies.
         seed_path: Optional path to the ore-seed source file.
+        defines: Active profile defines (e.g. ``{"ASSERT": "all"}``).
 
     Returns:
         A 24-character lowercase hex digest string.
@@ -139,6 +138,10 @@ def compute_cache_key(
 
     for name, ver in sorted(dep_versions):
         h.update(f"dep:{name}=={ver}\n".encode())
+
+    if defines:
+        for key, value in sorted(defines.items()):
+            h.update(f"define:{key}={value}\n".encode())
 
     if seed_path is not None and seed_path.is_file():
         h.update(seed_path.read_bytes())
@@ -675,9 +678,18 @@ def _try_ore_run(
         )
         return None
 
-    # Compute cache key and check cache.
+    # Extract defines from the command for cache key computation.
+    cmd_defines: dict[str, str] = {}
+    argv_list = list(cmd.argv)
+    for i, arg in enumerate(argv_list):
+        if arg == "-D" and i + 1 < len(argv_list):
+            parts = argv_list[i + 1].split("=", 1)
+            if len(parts) == 2:
+                cmd_defines[parts[0]] = parts[1]
+
     key = compute_cache_key(
-        ctx.compiler_version, ctx.dep_versions, seed_path=ctx.seed,
+        ctx.compiler_version, ctx.dep_versions,
+        seed_path=ctx.seed, defines=cmd_defines,
     )
     cache = OreCache(cache_dir=Path(str(cmd.cwd)) / ".mojox" / "cache" / "ore")
     cached_path = cache.get(key)
