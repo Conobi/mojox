@@ -54,11 +54,6 @@ def lint_bare_assert(path: Path) -> list[LintFinding]:
         if stripped.startswith("#"):
             continue
 
-        # Skip lines that begin with a string literal (crude but
-        # sufficient for the patterns we care about).
-        if stripped.startswith(('"""', "'''", '"', "'")):
-            continue
-
         # Match bare `assert <expr>` but not `assert_*` helpers.
         if re.match(r"\s*assert[\s(]", line) and not re.match(r"\s*assert_", line):
             findings.append(LintFinding(

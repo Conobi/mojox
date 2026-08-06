@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 from pathlib import PurePosixPath
 
-from mojox._output import render_summary, render_dry_run
+from mojox._output import render_summary, render_dry_run, render_diagnostics
 from mojox._types import Outcome, OutcomeKind
 from mojox_core import Command, CommandKind, Diagnostic
 
@@ -107,3 +107,87 @@ class TestRenderDryRun:
         render_dry_run((cmd,), stream=buf)
         output = buf.getvalue()
         assert "/workspace/project" in output
+
+
+class TestRenderDiagnostics:
+    def test_full_location(self):
+        """Diagnostic with file, line, and column renders all three."""
+        diag = Diagnostic(
+            kind="error",
+            message="type mismatch",
+            file="test.mojo",
+            line=5,
+            column=10,
+        )
+        buf = io.StringIO()
+        render_diagnostics((diag,), stream=buf)
+        output = buf.getvalue()
+        assert "test.mojo:5:10: error: type mismatch\n" == output
+
+    def test_file_only(self):
+        """Diagnostic with file but no line/column."""
+        diag = Diagnostic(
+            kind="warning",
+            message="unused import",
+            file="lib.mojo",
+        )
+        buf = io.StringIO()
+        render_diagnostics((diag,), stream=buf)
+        output = buf.getvalue()
+        assert "lib.mojo: warning: unused import\n" == output
+
+    def test_file_and_line_no_column(self):
+        """Diagnostic with file and line but no column."""
+        diag = Diagnostic(
+            kind="error",
+            message="syntax error",
+            file="main.mojo",
+            line=42,
+        )
+        buf = io.StringIO()
+        render_diagnostics((diag,), stream=buf)
+        output = buf.getvalue()
+        assert "main.mojo:42: error: syntax error\n" == output
+
+    def test_note_kind_prefix_suppressed(self):
+        """Note-kind diagnostics do not get a 'note: ' prefix."""
+        diag = Diagnostic(
+            kind="note",
+            message="see also: previous definition",
+            file="test.mojo",
+            line=1,
+            column=1,
+        )
+        buf = io.StringIO()
+        render_diagnostics((diag,), stream=buf)
+        output = buf.getvalue()
+        assert "test.mojo:1:1: see also: previous definition\n" == output
+        assert "note:" not in output
+
+    def test_error_kind_prefix_shown(self):
+        """Error-kind diagnostics get an 'error: ' prefix."""
+        diag = Diagnostic(
+            kind="error",
+            message="undeclared variable",
+        )
+        buf = io.StringIO()
+        render_diagnostics((diag,), stream=buf)
+        output = buf.getvalue()
+        assert "error: undeclared variable\n" == output
+
+    def test_warning_kind_prefix_shown(self):
+        """Warning-kind diagnostics get a 'warning: ' prefix."""
+        diag = Diagnostic(
+            kind="warning",
+            message="unused variable",
+        )
+        buf = io.StringIO()
+        render_diagnostics((diag,), stream=buf)
+        output = buf.getvalue()
+        assert "warning: unused variable\n" == output
+
+    def test_empty_diagnostics(self):
+        """Empty diagnostics tuple produces no output."""
+        buf = io.StringIO()
+        render_diagnostics((), stream=buf)
+        assert buf.getvalue() == ""

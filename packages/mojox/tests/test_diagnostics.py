@@ -74,3 +74,10 @@ class TestParseDiagnostics:
         line = '{"kind":"error","message":"bad","file":"t.mojo","line":1,"column":1,"source_text":"let x = bad"}'
         result = parse_diagnostics(line)
         assert result[0].source_text == "let x = bad"
+
+    def test_non_dict_json_surfaced_verbatim(self):
+        """Valid JSON that is not a dict is surfaced verbatim as a note."""
+        result = parse_diagnostics("[1, 2, 3]\n")
+        assert len(result) == 1
+        assert result[0].kind == "note"
+        assert result[0].message == "[1, 2, 3]"

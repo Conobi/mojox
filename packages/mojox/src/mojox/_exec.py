@@ -84,7 +84,7 @@ def run_command(
 
     elapsed = time.monotonic() - start
 
-    if result.returncode is None or result.returncode < 0:
+    if result.returncode < 0:
         kind = OutcomeKind.CRASH
         exit_code = result.returncode
     elif result.returncode == 0:
@@ -116,6 +116,10 @@ def run_commands(
     Commands whose ``depends_on`` references have not all completed
     successfully are skipped with a FAIL outcome. Independent commands
     run concurrently up to ``max_workers``.
+
+    The current two-phase implementation supports commands with at most
+    one level of dependencies (e.g., precompile -> test). Deeper
+    dependency chains would require topological-order execution.
 
     Args:
         commands: The commands to execute, in planner order.

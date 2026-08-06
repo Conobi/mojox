@@ -59,6 +59,17 @@ class TestLintBareAssert:
         findings = lint_bare_assert(test_file)
         assert len(findings) == 3
 
+    def test_assert_paren_form_detected(self, tmp_path):
+        """The assert(cond) form (no space) is also detected."""
+        test_file = tmp_path / "test_foo.mojo"
+        test_file.write_text(
+            "def test_it():\n"
+            "    assert(x == 1)\n"
+        )
+        findings = lint_bare_assert(test_file)
+        assert len(findings) == 1
+        assert findings[0].line == 2
+
     def test_assert_in_comment_not_flagged(self, tmp_path):
         test_file = tmp_path / "test_foo.mojo"
         test_file.write_text(
@@ -69,7 +80,8 @@ class TestLintBareAssert:
         findings = lint_bare_assert(test_file)
         assert len(findings) == 0
 
-    def test_assert_in_string_not_flagged(self, tmp_path):
+    def test_assert_in_middle_of_line_not_flagged(self, tmp_path):
+        """A line starting with 'var' that contains 'assert' mid-line is not flagged."""
         test_file = tmp_path / "test_foo.mojo"
         test_file.write_text(
             'def test_it():\n'

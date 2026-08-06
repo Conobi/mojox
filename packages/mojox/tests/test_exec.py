@@ -88,6 +88,15 @@ class TestRunCommand:
         assert outcome.kind == OutcomeKind.COMPILE_ERROR
         assert outcome.exit_code is None
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="signals not available on Windows")
+    def test_signal_death_produces_crash_outcome(self):
+        """A process killed by a signal produces a CRASH outcome."""
+        cmd = _cmd((sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"))
+        outcome = run_command(cmd)
+        assert outcome.kind == OutcomeKind.CRASH
+        assert outcome.exit_code is not None
+        assert outcome.exit_code < 0
+
 
 class TestRunCommands:
     def test_empty_command_list(self):
