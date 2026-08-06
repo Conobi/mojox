@@ -83,6 +83,7 @@ class TestFrozenDataclasses:
             classifiers=(),
             profiles={},
             rlib_seed=None,
+            build_profile="release",
         )
         assert m.name == "mylib"
         with pytest.raises(AttributeError):

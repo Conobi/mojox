@@ -146,6 +146,7 @@ class Manifest:
     wheel_exclude: tuple[str, ...]
     profiles: dict[str, Profile]
     rlib_seed: str | None
+    build_profile: str
 
 
 @dataclass(frozen=True)

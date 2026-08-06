@@ -208,3 +208,26 @@ class TestErrors:
         }
         with pytest.raises(ConfigError, match="absolute"):
             parse_manifest(d)
+
+
+class TestBuildProfile:
+    def test_default_is_release(self, base_project):
+        data = {"project": base_project}
+        m = parse_manifest(data)
+        assert m.build_profile == "release"
+
+    def test_custom_build_profile(self, base_project):
+        data = {
+            "project": base_project,
+            "tool": {"mojox": {"build-profile": "dev"}},
+        }
+        m = parse_manifest(data)
+        assert m.build_profile == "dev"
+
+    def test_non_string_build_profile_raises(self, base_project):
+        data = {
+            "project": base_project,
+            "tool": {"mojox": {"build-profile": 123}},
+        }
+        with pytest.raises(ConfigError):
+            parse_manifest(data)

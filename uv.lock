@@ -51,12 +51,14 @@ name = "mojox-build"
 version = "0.4.0"
 source = { editable = "packages/mojox-build" }
 dependencies = [
+    { name = "mojox-core" },
     { name = "packaging" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "mojox-core", editable = "packages/mojox-core" },
     { name = "packaging", specifier = ">=23.0" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=1.1.0" },
 ]

@@ -6,6 +6,15 @@ import pytest
 
 
 @pytest.fixture
+def base_project() -> dict:
+    """Minimal valid [project] table with no tool.mojox keys."""
+    return {
+        "name": "mylib",
+        "version": "1.0.0",
+    }
+
+
+@pytest.fixture
 def minimal_pyproject() -> dict:
     """Minimal valid pyproject.toml as a parsed dict."""
     return {

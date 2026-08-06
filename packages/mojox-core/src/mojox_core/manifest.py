@@ -64,6 +64,7 @@ def parse_manifest(data: dict) -> Manifest:
         wheel_exclude=_parse_str_list(mojox, "wheel-exclude"),
         profiles=_parse_profiles(mojox.get("profile", {})),
         rlib_seed=_parse_optional_path(mojox, "rlib-seed"),
+        build_profile=_parse_build_profile(mojox),
     )
 
 
@@ -318,6 +319,17 @@ def _parse_str_list_for_key(table: dict, key: str, key_path: str) -> tuple[str, 
         if not isinstance(item, str):
             raise ConfigError(f"{key_path}[{i}]", f"expected a string, got {type(item).__name__}")
     return tuple(raw)
+
+
+def _parse_build_profile(mojox: dict) -> str:
+    """Parse the build-profile key, defaulting to 'release'."""
+    raw = mojox.get("build-profile", "release")
+    if not isinstance(raw, str):
+        raise ConfigError(
+            "tool.mojox.build-profile",
+            f"expected a string, got {type(raw).__name__}",
+        )
+    return raw
 
 
 def _parse_profiles(raw: dict) -> dict[str, Profile]:
