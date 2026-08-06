@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import shutil
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
-from mojox_core import CommandKind
+from mojox_core import Command, CommandKind
 from mojox._ore import OreContext, is_ore_eligible, _platform_link_flags
 
 
@@ -481,3 +481,71 @@ class TestCliIntegration:
         version = _dist_version("pytest")
         assert version != "unknown"
         assert len(version) > 0
+
+
+class TestOreActivation:
+    """Edge cases for ore activation, deactivation, and platform flags."""
+
+    def test_disabled_on_release_profile(self):
+        """OreContext.enabled is False for release profile."""
+        ctx = OreContext(
+            enabled=False,
+            seed=None,
+            include_paths=("/venv/mojo_packages",),
+            compiler_version="1.0.0b2",
+            mojo_path="/usr/bin/mojo",
+            runtime_lib_dir=Path("/usr/lib"),
+            dep_versions=(("navette", "0.5.0"),),
+        )
+        assert not ctx.enabled
+
+    def test_disabled_with_no_ore_flag(self):
+        """OreContext.enabled is False when --no-ore is passed."""
+        ctx = OreContext(
+            enabled=False,
+            seed=None,
+            include_paths=("/venv/mojo_packages",),
+            compiler_version="1.0.0b2",
+            mojo_path="/usr/bin/mojo",
+            runtime_lib_dir=Path("/usr/lib"),
+            dep_versions=(),
+        )
+        assert not ctx.enabled
+
+    def test_skipped_with_no_deps(self):
+        """Ore is silently skipped when include_paths is empty (no deps)."""
+        from mojox._ore import _try_ore_run
+
+        ctx = OreContext(
+            enabled=True,
+            seed=None,
+            include_paths=(),
+            compiler_version="1.0.0b2",
+            mojo_path="/usr/bin/mojo",
+            runtime_lib_dir=Path("/usr/lib"),
+            dep_versions=(),
+        )
+        cmd = Command(
+            argv=("mojo", "run", "test.mojo"),
+            cwd=PurePosixPath("/tmp"),
+            env={},
+            kind=CommandKind.RUN_TEST,
+            target_id="test::test.mojo",
+            timeout_s=300,
+            outputs=(),
+            depends_on=(),
+        )
+        result = _try_ore_run(cmd, ctx)
+        assert result is None
+
+    def test_platform_link_flags_linux(self, monkeypatch):
+        """Linux uses --allow-multiple-definition."""
+        monkeypatch.setattr("mojox._ore.sys.platform", "linux")
+        flags = _platform_link_flags()
+        assert "-Wl,--allow-multiple-definition" in flags
+
+    def test_platform_link_flags_darwin(self, monkeypatch):
+        """macOS uses -multiply_defined,suppress."""
+        monkeypatch.setattr("mojox._ore.sys.platform", "darwin")
+        flags = _platform_link_flags()
+        assert "-Wl,-multiply_defined,suppress" in flags
