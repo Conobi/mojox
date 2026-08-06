@@ -4,16 +4,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ._config import ProjectMetadata
+from mojox_core import Manifest
 
 
 def _person(p: dict) -> tuple[str | None, str | None]:
+    """Extract name and email from a person dict."""
     name = p.get("name", "").strip() or None
     email = p.get("email", "").strip() or None
     return name, email
 
 
 def _render_person_line(p: dict, *, kind: str) -> str | None:
+    """Render one Author/Maintainer metadata line."""
     name, email = _person(p)
     if email:
         rendered = f"{name} <{email}>" if name else email
@@ -24,54 +26,64 @@ def _render_person_line(p: dict, *, kind: str) -> str | None:
 
 
 def render_metadata(
-    project: ProjectMetadata,
+    manifest: Manifest,
     root: Path,
     license_relpaths: list[str],
+    *,
+    compiler_version: str | None = None,
 ) -> str:
+    """Render PEP 621 / 643 METADATA content.
+
+    When *compiler_version* is not None, a ``Requires-Dist: mojo-compiler==<version>``
+    line is emitted so that uv's resolver enforces compiler compatibility.
+    """
     lines: list[str] = [
         "Metadata-Version: 2.4",
-        f"Name: {project.name}",
-        f"Version: {project.version}",
+        f"Name: {manifest.name}",
+        f"Version: {manifest.version}",
     ]
-    if project.description:
-        lines.append(f"Summary: {project.description}")
-    if project.requires_python:
-        lines.append(f"Requires-Python: {project.requires_python}")
-    if project.license:
-        lines.append(f"License-Expression: {project.license}")
+    if manifest.description:
+        lines.append(f"Summary: {manifest.description}")
+    if manifest.requires_python:
+        lines.append(f"Requires-Python: {manifest.requires_python}")
+    if manifest.license_expr:
+        lines.append(f"License-Expression: {manifest.license_expr}")
     for rel in license_relpaths:
         lines.append(f"License-File: {rel}")
 
-    for kw in project.keywords:
+    for kw in manifest.keywords:
         lines.append(f"Keywords: {kw}")
-    for cls in project.classifiers:
+    for cls in manifest.classifiers:
         lines.append(f"Classifier: {cls}")
 
-    for person in project.authors:
+    for person in manifest.authors:
         rendered = _render_person_line(person, kind="Author")
         if rendered:
             lines.append(rendered)
-    for person in project.maintainers:
+    for person in manifest.maintainers:
         rendered = _render_person_line(person, kind="Maintainer")
         if rendered:
             lines.append(rendered)
 
-    for label, url in project.urls.items():
+    for label, url in manifest.urls.items():
         lines.append(f"Project-URL: {label}, {url}")
 
-    for dep in project.dependencies:
+    for dep in manifest.dependencies:
         lines.append(f"Requires-Dist: {dep}")
-    for extra, deps in project.optional_dependencies.items():
+    for extra, deps in manifest.optional_dependencies.items():
         lines.append(f"Provides-Extra: {extra}")
         for dep in deps:
             lines.append(f"Requires-Dist: {dep} ; extra == '{extra}'")
 
+    if compiler_version is not None:
+        lines.append(f"Requires-Dist: mojo-compiler=={compiler_version}")
+
     body = ""
-    if project.readme:
-        readme_path = root / project.readme
+    if manifest.readme:
+        readme_path = root / manifest.readme
         if readme_path.is_file():
             body = readme_path.read_text(encoding="utf-8")
-            lower = project.readme.lower()
+            lower = manifest.readme.lower()
             content_type = (
                 "text/markdown"
                 if lower.endswith(".md")
@@ -90,6 +102,7 @@ def render_wheel_file(
     root_is_purelib: bool,
     generator_version: str,
 ) -> str:
+    """Render PEP 427 WHEEL file content."""
     return (
         "Wheel-Version: 1.0\n"
         f"Generator: mojox-build {generator_version}\n"
