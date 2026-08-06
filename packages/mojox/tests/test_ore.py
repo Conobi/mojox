@@ -396,3 +396,23 @@ class TestPlatformLinkFlags:
         monkeypatch.setattr(sys, "platform", "freebsd13")
         flags = _platform_link_flags()
         assert flags == []
+
+
+class TestOreExecIntegration:
+    """Verify ore_context parameter is accepted by exec layer functions."""
+
+    def test_run_command_accepts_ore_context(self):
+        """run_command signature includes ore_context parameter."""
+        import inspect
+        from mojox._exec import run_command
+
+        sig = inspect.signature(run_command)
+        assert "ore_context" in sig.parameters
+
+    def test_run_commands_accepts_ore_context(self):
+        """run_commands signature includes ore_context parameter."""
+        import inspect
+        from mojox._exec import run_commands
+
+        sig = inspect.signature(run_commands)
+        assert "ore_context" in sig.parameters

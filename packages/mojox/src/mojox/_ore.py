@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from mojox_core import CommandKind
+from mojox_core import Command, CommandKind
 
 from ._diagnostics import parse_diagnostics
 from ._types import Outcome, OutcomeKind
@@ -618,3 +618,170 @@ def run_ore_pipeline(
             diagnostics=parse_diagnostics(step6.stderr),
             elapsed_s=elapsed,
         )
+
+
+# -- Exec-layer integration ---------------------------------------------------
+
+# Module-level cached probe result, populated lazily by _try_ore_run.
+_cached_probe: OreProbeResult | None = None
+
+
+def _try_ore_run(
+    cmd: Command,
+    ctx: OreContext,
+    *,
+    extra_env: dict[str, str] | None = None,
+) -> Outcome | None:
+    """Attempt to run *cmd* through the ore pipeline.
+
+    Returns an :class:`Outcome` on success, or ``None`` to signal that
+    the caller should fall back to the standard ``mojo run`` path.
+
+    Guards:
+    - If ``ctx.include_paths`` is empty, returns None (no deps means
+      the .ore would be empty and the overhead is not worthwhile).
+    - If the LLVM probe fails, returns None.
+    - On any build/cache failure, returns None (fallback).
+
+    The LLVM tool probe result is cached at module level so subsequent
+    calls within the same process skip the ``shutil.which`` overhead.
+
+    Args:
+        cmd: The command to execute via ore acceleration.
+        ctx: The ore configuration snapshot.
+        extra_env: Additional environment variables (from LocalSettings.env).
+
+    Returns:
+        An Outcome if the ore pipeline succeeded, or None to fall back.
+    """
+    global _cached_probe  # noqa: PLW0603
+
+    # No include paths → no library code to pre-compile.
+    if not ctx.include_paths:
+        return None
+
+    # Probe LLVM tools (cached across calls within the process).
+    if _cached_probe is None:
+        _cached_probe = probe_llvm_tools()
+    probe = _cached_probe
+
+    if not probe.available:
+        print(
+            f"ore: LLVM tool '{probe.missing_tool}' not found, "
+            "falling back to mojo run",
+        )
+        return None
+
+    # Compute cache key and check cache.
+    key = compute_cache_key(
+        ctx.compiler_version, ctx.dep_versions, seed_path=ctx.seed,
+    )
+    cache = OreCache(cache_dir=Path.home() / ".cache" / "mojox" / "ore")
+    cached_path = cache.get(key)
+
+    if cached_path is None:
+        # Cache miss — build and cache the .ore.
+        cached_path = _build_and_cache_ore(
+            cmd, ctx, probe, cache, key, extra_env=extra_env,
+        )
+        if cached_path is None:
+            return None
+
+    # Run through the ore pipeline with the cached .ore.
+    return run_ore_pipeline(cmd, ctx, probe, cached_path, extra_env=extra_env)
+
+
+def _build_and_cache_ore(
+    cmd: Command,
+    ctx: OreContext,
+    probe: OreProbeResult,
+    cache: OreCache,
+    key: str,
+    *,
+    extra_env: dict[str, str] | None = None,
+) -> Path | None:
+    """Build a .ore from the seed and store it in the cache.
+
+    If an explicit seed is configured, its include paths are verified
+    against the targets. On mismatch a warning is printed and None is
+    returned.
+
+    The seed is compiled to LLVM bitcode via ``mojo build --emit
+    llvm-bitcode``, then :func:`_build_ore` produces the .ore object.
+    The result is stored via :meth:`OreCache.put`.
+
+    Args:
+        cmd: The command whose source is used as implicit seed when
+            ``ctx.seed`` is None.
+        ctx: The ore configuration snapshot.
+        probe: A successful LLVM probe result.
+        cache: The ore cache to store into.
+        key: The cache key for this build.
+        extra_env: Additional environment variables (from LocalSettings.env).
+
+    Returns:
+        The path to the cached .ore file, or None on failure.
+    """
+    seed_source = ctx.seed if ctx.seed is not None else Path(cmd.argv[-1])
+
+    # If explicit seed: verify include paths are present in the target.
+    if ctx.seed is not None:
+        target_source = Path(cmd.argv[-1])
+        seed_parent = ctx.seed.resolve().parent
+        target_parent = target_source.resolve().parent
+        if seed_parent != target_parent:
+            print(
+                f"ore: seed '{ctx.seed}' and target '{target_source}' "
+                "are in different directories; falling back to mojo run",
+            )
+            return None
+
+    env = dict(cmd.env)
+    if extra_env:
+        merged = dict(extra_env)
+        merged.update(env)
+        env = merged
+
+    include_args: list[str] = []
+    for inc in ctx.include_paths:
+        include_args.extend(["-I", inc])
+
+    with tempfile.TemporaryDirectory(prefix="ore-seed-") as td:
+        work = Path(td)
+        seed_bc = work / "seed.bc"
+        ore_output = work / "lib.ore"
+
+        # Compile seed to LLVM bitcode.
+        mojo_args = [
+            ctx.mojo_path,
+            "build",
+            "--emit",
+            "llvm-bitcode",
+            "-o",
+            str(seed_bc),
+        ]
+        mojo_args.extend(include_args)
+        mojo_args.append(str(seed_source))
+
+        compile_result = subprocess.run(
+            mojo_args,
+            cwd=str(cmd.cwd),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        if compile_result.returncode != 0:
+            print(
+                f"ore: seed compilation failed (exit {compile_result.returncode}), "
+                "falling back to mojo run",
+            )
+            return None
+
+        # Build .ore from seed bitcode.
+        success, stderr = _build_ore(seed_bc, probe, ore_output)
+        if not success:
+            print(f"ore: .ore build failed: {stderr}, falling back to mojo run")
+            return None
+
+        # Cache the result.
+        return cache.put(key, ore_output)
