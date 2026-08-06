@@ -243,6 +243,8 @@ def _cmd_run(args: argparse.Namespace) -> None:
         policy = resolve(manifest, args.profile, cli_overrides, settings)
     else:
         from mojox_core.policy import BUILTIN_DEV
+        jobs = cli_overrides.get("jobs") or settings.jobs or 1
+        timeout = cli_overrides.get("timeout") or settings.timeout_s or 300
         policy = Policy(
             optimize=cli_overrides.get("optimize", BUILTIN_DEV.optimize),
             debug_level=BUILTIN_DEV.debug_level or "line-tables",
@@ -250,8 +252,8 @@ def _cmd_run(args: argparse.Namespace) -> None:
             flags=tuple(cli_overrides.get("flags", ())),
             include_paths=(),
             lints=LintConfig(),
-            jobs=1, jobs_compile=1, jobs_tests=1,
-            timeout_s=cli_overrides.get("timeout", 300),
+            jobs=jobs, jobs_compile=jobs, jobs_tests=jobs,
+            timeout_s=timeout,
         )
 
     graph = TargetGraph(
@@ -269,7 +271,7 @@ def _cmd_run(args: argparse.Namespace) -> None:
     print(outcome.stdout, end="")
     if outcome.stderr:
         print(outcome.stderr, end="", file=sys.stderr)
-    sys.exit(outcome.exit_code or 0)
+    sys.exit(outcome.exit_code if outcome.exit_code is not None else 1)
 
 
 def _cmd_build(args: argparse.Namespace) -> None:

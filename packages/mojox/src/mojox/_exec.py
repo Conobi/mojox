@@ -81,6 +81,17 @@ def run_command(
             diagnostics=(),
             elapsed_s=elapsed,
         )
+    except OSError as e:
+        elapsed = time.monotonic() - start
+        return Outcome(
+            command=cmd,
+            kind=OutcomeKind.COMPILE_ERROR,
+            exit_code=None,
+            stdout="",
+            stderr=f"OS error running {cmd.argv[0]}: {e}",
+            diagnostics=(),
+            elapsed_s=elapsed,
+        )
 
     elapsed = time.monotonic() - start
 
@@ -150,7 +161,8 @@ def run_commands(
     if has_deps:
         _run_phase(has_deps, completed, results, max_workers, extra_env)
 
-    return tuple(r for r in results if r is not None)
+    assert all(r is not None for r in results), "unfilled result slots"
+    return tuple(results)  # type: ignore[arg-type]
 
 
 def _run_phase(

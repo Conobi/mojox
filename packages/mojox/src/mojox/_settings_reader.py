@@ -4,7 +4,7 @@ The reader walks from the manifest directory up to the .git boundary to
 find project-level config, and checks $XDG_CONFIG_HOME/mojox/config.toml
 for user-level config.  Security: directories between the config file and
 a trusted boundary are checked for ownership and permissions using
-``openat(O_NOFOLLOW)`` and ``fstat`` to prevent TOCTOU races.
+``os.open(O_NOFOLLOW)`` and ``os.fstat`` to prevent TOCTOU races.
 
 The walk stops early at ``$HOME`` or at a filesystem mount boundary
 (``st_dev`` change) to avoid escaping the user's project area.
@@ -65,12 +65,21 @@ def read_settings(
         return parse_settings(None, None, env)
 
     if config_file is not None:
+        from mojox_core import ConfigError
+
+        if not config_file.is_file():
+            raise ConfigError(
+                "config-file",
+                f"--config-file {config_file} does not exist",
+            )
         data = _safe_read_toml(config_file)
+        if data is None:
+            raise ConfigError(
+                "config-file",
+                f"--config-file {config_file} could not be read",
+            )
         result = parse_settings(None, data, env)
-        loaded: list[str] = []
-        if data is not None:
-            loaded.append(str(config_file))
-        return replace(result, config_paths=tuple(loaded))
+        return replace(result, config_paths=(str(config_file),))
 
     user_data: dict | None = None
     project_data: dict | None = None
@@ -386,12 +395,17 @@ def _safe_read_toml(path: Path) -> dict | None:
         if _HAS_O_NOFOLLOW:
             o_nofollow = os.O_NOFOLLOW  # type: ignore[attr-defined]
             fd = os.open(str(path), os.O_RDONLY | o_nofollow)
+            f = None
             try:
-                with os.fdopen(fd, "rb") as f:
-                    return tomllib.load(f)
+                f = os.fdopen(fd, "rb")
+                return tomllib.load(f)
             except Exception:
-                # fd is consumed by fdopen; don't close again
+                if f is None:
+                    os.close(fd)
                 return None
+            finally:
+                if f is not None:
+                    f.close()
         else:
             with open(path, "rb") as f:
                 return tomllib.load(f)

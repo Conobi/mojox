@@ -143,6 +143,14 @@ class TestDiscovery:
         assert settings.jobs == 16
         assert settings.timeout_s == 120
 
+    def test_explicit_config_file_missing_raises(self, tmp_path):
+        """--config-file pointing to a nonexistent file raises ConfigError."""
+        from mojox_core import ConfigError
+
+        missing = tmp_path / "nonexistent.toml"
+        with pytest.raises(ConfigError):
+            read_settings(tmp_path, env={}, config_file=missing)
+
     def test_no_config_returns_empty(self, tmp_path, monkeypatch):
         """When no config files exist, returns empty settings."""
         monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
