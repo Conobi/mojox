@@ -247,6 +247,60 @@ def is_ore_eligible(kind: CommandKind) -> bool:
     return kind in _ORE_ELIGIBLE_KINDS
 
 
+def _extract_planner_flags(
+    argv: tuple[str, ...] | list[str],
+    source_file: str,
+) -> tuple[list[str], list[str]]:
+    """Extract defines and extra flags from a planner-emitted argv.
+
+    Splits the planner's ``mojo run ... <source>`` argv into two lists:
+
+    - **defines:** ``-D KEY=VALUE`` pairs (both space-separated and joined forms)
+    - **extra_flags:** everything else the ore pipeline should forward
+      (``-O{level}``, ``--debug-level``, ``--num-threads``, lint flags,
+      ``policy.flags``)
+
+    Skips the mojo binary (argv[0]), the verb (argv[1]), ``-I`` paths
+    (handled separately via ``ore_context.include_paths``), and the
+    source file (appended last by callers).
+
+    Args:
+        argv: The full command argv from the planner.
+        source_file: The source file path (skipped in extraction).
+
+    Returns:
+        A ``(defines, extra_flags)`` tuple of string lists.
+    """
+    defines: list[str] = []
+    extra_flags: list[str] = []
+    argv_list = list(argv)
+    skip_next = False
+    for i, arg in enumerate(argv_list):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "-D" and i + 1 < len(argv_list):
+            defines.extend(["-D", argv_list[i + 1]])
+            skip_next = True
+        elif arg.startswith("-D") and len(arg) > 2:
+            defines.append(arg)
+        elif arg == "-I" and i + 1 < len(argv_list):
+            skip_next = True
+        elif arg == "--num-threads" and i + 1 < len(argv_list):
+            extra_flags.extend(["--num-threads", argv_list[i + 1]])
+            skip_next = True
+        elif arg == "--debug-level" and i + 1 < len(argv_list):
+            extra_flags.extend(["--debug-level", argv_list[i + 1]])
+            skip_next = True
+        elif arg.startswith("-O") and len(arg) >= 3:
+            extra_flags.append(arg)
+        elif arg == source_file:
+            continue
+        elif arg.startswith("-") and i >= 2:
+            extra_flags.append(arg)
+    return defines, extra_flags
+
+
 # -- LLVM pipeline helpers ---------------------------------------------------
 
 # Runtime libraries linked when producing the final executable.
@@ -447,42 +501,7 @@ def run_ore_pipeline(
     source_file = cmd.argv[-1]
     start = time.monotonic()
 
-    # Forward relevant flags from the original command.
-    # The planner emits -O{level}, --debug-level, -D defines,
-    # --num-threads, lint flags, and policy.flags into cmd.argv.
-    # We must forward all of them so that ore step 1 compiles with
-    # the same semantics as a direct ``mojo run``.
-    # -I paths are handled separately via ore_context.include_paths.
-    defines: list[str] = []
-    extra_flags: list[str] = []
-    argv_list = list(cmd.argv)
-    skip_next = False
-    for i, arg in enumerate(argv_list):
-        if skip_next:
-            skip_next = False
-            continue
-        if arg == "-D" and i + 1 < len(argv_list):
-            defines.extend(["-D", argv_list[i + 1]])
-            skip_next = True
-        elif arg.startswith("-D") and len(arg) > 2:
-            defines.append(arg)
-        elif arg == "-I" and i + 1 < len(argv_list):
-            # Include paths come from ore_context, skip here.
-            skip_next = True
-        elif arg == "--num-threads" and i + 1 < len(argv_list):
-            extra_flags.extend(["--num-threads", argv_list[i + 1]])
-            skip_next = True
-        elif arg == "--debug-level" and i + 1 < len(argv_list):
-            extra_flags.extend(["--debug-level", argv_list[i + 1]])
-            skip_next = True
-        elif arg.startswith("-O") and len(arg) >= 3:
-            extra_flags.append(arg)
-        elif arg == source_file:
-            # Source file is appended last, not as a flag.
-            continue
-        elif arg.startswith("-") and i >= 2:
-            # Any other flag (policy.flags, lint flags, etc.).
-            extra_flags.append(arg)
+    defines, extra_flags = _extract_planner_flags(cmd.argv, source_file)
 
     # Include paths from ore_context.
     include_args: list[str] = []
@@ -846,27 +865,9 @@ def _build_and_cache_ore(
     for inc in ctx.include_paths:
         include_args.extend(["-I", inc])
 
-    # Forward -D defines and profile flags from the original command
-    # so the seed is compiled with the same semantics (e.g. -D ASSERT=all,
-    # -O0, --debug-level line-tables).
-    define_args: list[str] = []
-    profile_args: list[str] = []
-    argv_list = list(cmd.argv)
-    skip_next = False
-    for i, arg in enumerate(argv_list):
-        if skip_next:
-            skip_next = False
-            continue
-        if arg == "-D" and i + 1 < len(argv_list):
-            define_args.extend(["-D", argv_list[i + 1]])
-            skip_next = True
-        elif arg.startswith("-D") and len(arg) > 2:
-            define_args.append(arg)
-        elif arg.startswith("-O") and len(arg) >= 3:
-            profile_args.append(arg)
-        elif arg == "--debug-level" and i + 1 < len(argv_list):
-            profile_args.extend(["--debug-level", argv_list[i + 1]])
-            skip_next = True
+    define_args, profile_args = _extract_planner_flags(
+        cmd.argv, str(seed_source),
+    )
 
     with tempfile.TemporaryDirectory(prefix="ore-seed-") as td:
         work = Path(td)

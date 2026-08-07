@@ -19,6 +19,7 @@ from mojox._ore import (
     OreContext,
     OreProbeResult,
     _build_ore,
+    _extract_planner_flags,
     _extract_user_symbols,
     run_ore_pipeline,
 )
@@ -1051,3 +1052,240 @@ class TestPipelineEdgeCases:
         assert func_args == []
         assert "--rglob=static_string" in step3_args
         assert "--rglob=global_constant" in step3_args
+
+
+# -- Invariant 5: argv-completeness ------------------------------------------
+
+
+class TestArgvCompleteness:
+    """Every planner flag must survive the ore pipeline's flag extraction.
+
+    Instead of checking hardcoded flag names, this test compares the
+    set of flags in the original command against those in ore's step 1,
+    accounting for the expected differences (verb change, -I from
+    ore_context, source file position).
+    """
+
+    def test_all_source_flags_appear_in_step1(self, tmp_path: Path):
+        """Step 1 argv contains every flag from the source command."""
+        ore_context = _make_ore_context(tmp_path)
+        probe = _make_probe()
+        ore_path = tmp_path / "lib.ore"
+        ore_path.touch()
+
+        cmd = _make_command(
+            extra_argv=(
+                "-O0",
+                "--debug-level", "line-tables",
+                "-I", "/deps/include",
+                "-D", "ASSERT=all",
+                "--num-threads", "4",
+                "--some-lint-flag",
+                "--custom-policy-flag",
+            ),
+        )
+
+        mock = PipelineMock(capture_steps=(1,))
+        with patch("mojox._ore.subprocess.run", side_effect=mock):
+            run_ore_pipeline(cmd, ore_context, probe, ore_path)
+
+        step1 = mock.captured[1]
+
+        source_flags = set(cmd.argv) - {cmd.argv[0], cmd.argv[1], cmd.argv[-1]}
+        source_flags -= {"-I", "/deps/include"}
+
+        for flag in source_flags:
+            assert flag in step1, f"planner flag {flag!r} missing from ore step 1"
+
+    def test_extract_planner_flags_roundtrips(self):
+        """_extract_planner_flags captures every flag type the planner emits."""
+        argv = (
+            "/usr/bin/mojo", "run",
+            "-O0",
+            "--debug-level", "line-tables",
+            "-I", "/deps/include",
+            "-D", "ASSERT=all",
+            "-DDEBUG=1",
+            "--num-threads", "4",
+            "--some-lint-flag",
+            "test.mojo",
+        )
+        defines, extra = _extract_planner_flags(argv, "test.mojo")
+
+        assert "-D" in defines
+        assert "ASSERT=all" in defines
+        assert "-DDEBUG=1" in defines
+        assert "-O0" in extra
+        assert "--debug-level" in extra
+        assert "line-tables" in extra
+        assert "--num-threads" in extra
+        assert "4" in extra
+        assert "--some-lint-flag" in extra
+        # -I and source file must NOT appear
+        assert "-I" not in defines and "-I" not in extra
+        assert "/deps/include" not in defines and "/deps/include" not in extra
+        assert "test.mojo" not in defines and "test.mojo" not in extra
+
+
+# -- Missing coverage: define forwarding to seed build -----------------------
+
+
+class TestSeedDefineForwarding:
+    """_build_and_cache_ore must forward -D defines to the seed compilation."""
+
+    def test_defines_forwarded_to_seed_build(self, tmp_path: Path):
+        """-D ASSERT=all from the command appears in seed mojo build args."""
+        from mojox._ore import _build_and_cache_ore, OreCache
+
+        ore_context = _make_ore_context(tmp_path)
+        probe = _make_probe()
+        cache = OreCache(cache_dir=tmp_path / "ore-cache")
+        cmd = _make_command(extra_argv=("-D", "ASSERT=all", "-DDEBUG=1"))
+
+        captured_args: list[str] = []
+        call_count = {"n": 0}
+
+        def mock_run(args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                captured_args.extend(args)
+                bc_path = args[args.index("-o") + 1]
+                Path(bc_path).touch()
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            elif call_count["n"] == 2:
+                o_idx = args.index("-o")
+                Path(args[o_idx + 1]).touch()
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            elif call_count["n"] == 3:
+                o_idx = args.index("-o")
+                Path(args[o_idx + 1]).touch()
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with patch("mojox._ore.subprocess.run", side_effect=mock_run):
+            _build_and_cache_ore(
+                cmd, ore_context, probe, cache, "test_key_seed_defines",
+            )
+
+        d_idx = captured_args.index("-D")
+        assert captured_args[d_idx + 1] == "ASSERT=all"
+        assert "-DDEBUG=1" in captured_args
+
+    def test_num_threads_forwarded_to_seed_build(self, tmp_path: Path):
+        """--num-threads from the command appears in seed build args."""
+        from mojox._ore import _build_and_cache_ore, OreCache
+
+        ore_context = _make_ore_context(tmp_path)
+        probe = _make_probe()
+        cache = OreCache(cache_dir=tmp_path / "ore-cache")
+        cmd = _make_command(extra_argv=("--num-threads", "4"))
+
+        captured_args: list[str] = []
+        call_count = {"n": 0}
+
+        def mock_run(args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                captured_args.extend(args)
+                bc_path = args[args.index("-o") + 1]
+                Path(bc_path).touch()
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            elif call_count["n"] == 2:
+                o_idx = args.index("-o")
+                Path(args[o_idx + 1]).touch()
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            elif call_count["n"] == 3:
+                o_idx = args.index("-o")
+                Path(args[o_idx + 1]).touch()
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with patch("mojox._ore.subprocess.run", side_effect=mock_run):
+            _build_and_cache_ore(
+                cmd, ore_context, probe, cache, "test_key_seed_threads",
+            )
+
+        assert "--num-threads" in captured_args
+        nt_idx = captured_args.index("--num-threads")
+        assert captured_args[nt_idx + 1] == "4"
+
+
+# -- Missing coverage: _try_ore_run full orchestration -----------------------
+
+
+class TestTryOreRunOrchestration:
+    """_try_ore_run cache-miss → _build_and_cache_ore → run_ore_pipeline."""
+
+    def test_cache_miss_builds_and_runs(self, tmp_path: Path, monkeypatch):
+        """On cache miss, _try_ore_run builds .ore, caches it, and runs."""
+        from mojox._types import OutcomeKind
+        from mojox._ore import _try_ore_run
+        import mojox._ore as ore_mod
+
+        monkeypatch.setattr(ore_mod, "_cached_probe", _make_probe())
+
+        ctx = _make_ore_context(tmp_path)
+        cmd = _make_command(cwd=str(tmp_path))
+
+        call_count = {"n": 0}
+        phase = {"current": "seed"}
+
+        def mock_run(args, **kwargs):
+            call_count["n"] += 1
+
+            if phase["current"] == "seed":
+                if call_count["n"] == 1:
+                    bc_path = args[args.index("-o") + 1]
+                    Path(bc_path).touch()
+                    return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+                elif call_count["n"] == 2:
+                    o_idx = args.index("-o")
+                    Path(args[o_idx + 1]).touch()
+                    return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+                elif call_count["n"] == 3:
+                    o_idx = args.index("-o")
+                    Path(args[o_idx + 1]).touch()
+                    phase["current"] = "pipeline"
+                    call_count["n"] = 0
+                    return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+            if phase["current"] == "pipeline":
+                if call_count["n"] == 1:
+                    bc_path = args[args.index("-o") + 1]
+                    Path(bc_path).touch()
+                    return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+                elif call_count["n"] in (2, 3):
+                    return subprocess.CompletedProcess(
+                        args, 0,
+                        stdout="0000000000001000 T user_main\n",
+                        stderr="",
+                    )
+                elif call_count["n"] == 4:
+                    Path(args[-1]).touch()
+                    return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+                elif call_count["n"] == 5:
+                    o_idx = args.index("-o")
+                    Path(args[o_idx + 1]).touch()
+                    return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+                elif call_count["n"] == 6:
+                    o_idx = args.index("-o")
+                    Path(args[o_idx + 1]).touch()
+                    return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+                elif call_count["n"] == 7:
+                    return subprocess.CompletedProcess(
+                        args, 0, stdout="hello from ore\n", stderr="",
+                    )
+
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with patch("mojox._ore.subprocess.run", side_effect=mock_run):
+            outcome = _try_ore_run(cmd, ctx)
+
+        assert outcome is not None
+        assert outcome.kind == OutcomeKind.PASS
+        assert "hello from ore" in outcome.stdout
+
+        cache_dir = tmp_path / ".mojox" / "cache" / "ore"
+        assert cache_dir.exists()
+
+        monkeypatch.setattr(ore_mod, "_cached_probe", None)
