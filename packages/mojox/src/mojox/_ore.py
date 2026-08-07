@@ -440,16 +440,41 @@ def run_ore_pipeline(
     start = time.monotonic()
 
     # Forward relevant flags from the original command.
+    # The planner emits -O{level}, --debug-level, -D defines,
+    # --num-threads, lint flags, and policy.flags into cmd.argv.
+    # We must forward all of them so that ore step 1 compiles with
+    # the same semantics as a direct ``mojo run``.
+    # -I paths are handled separately via ore_context.include_paths.
     defines: list[str] = []
     extra_flags: list[str] = []
     argv_list = list(cmd.argv)
+    skip_next = False
     for i, arg in enumerate(argv_list):
+        if skip_next:
+            skip_next = False
+            continue
         if arg == "-D" and i + 1 < len(argv_list):
             defines.extend(["-D", argv_list[i + 1]])
+            skip_next = True
         elif arg.startswith("-D") and len(arg) > 2:
             defines.append(arg)
+        elif arg == "-I" and i + 1 < len(argv_list):
+            # Include paths come from ore_context, skip here.
+            skip_next = True
         elif arg == "--num-threads" and i + 1 < len(argv_list):
             extra_flags.extend(["--num-threads", argv_list[i + 1]])
+            skip_next = True
+        elif arg == "--debug-level" and i + 1 < len(argv_list):
+            extra_flags.extend(["--debug-level", argv_list[i + 1]])
+            skip_next = True
+        elif arg.startswith("-O") and len(arg) >= 3:
+            extra_flags.append(arg)
+        elif arg == source_file:
+            # Source file is appended last, not as a flag.
+            continue
+        elif arg.startswith("-") and i >= 2:
+            # Any other flag (policy.flags, lint flags, etc.).
+            extra_flags.append(arg)
 
     # Include paths from ore_context.
     include_args: list[str] = []

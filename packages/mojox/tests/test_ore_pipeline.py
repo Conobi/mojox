@@ -607,3 +607,93 @@ class TestTryOreRunGuards:
 
         # Restore to avoid poisoning other tests.
         monkeypatch.setattr(ore_mod, "_cached_probe", None)
+
+
+# -- Bug 10: forward ALL planner flags to ore pipeline step 1 ----------------
+
+
+class TestFlagCompleteness:
+    """The ore pipeline must forward ALL planner flags to mojo build.
+
+    The planner emits -O{level}, --debug-level, -I, -D, --num-threads,
+    lint flags, and policy.flags. Ore's step 1 must forward all of them.
+    Failure to do so silently changes compilation semantics (e.g. compiling
+    at -O3 instead of the dev profile's -O0).
+    """
+
+    def test_optimization_level_forwarded(self, tmp_path: Path):
+        """-O0 from the original command appears in step 1 args."""
+        ore_context = _make_ore_context(tmp_path)
+        probe = _make_probe()
+        ore_path = tmp_path / "lib.ore"
+        ore_path.touch()
+        cmd = _make_command(extra_argv=("-O0",))
+
+        mock = PipelineMock(capture_steps=(1,))
+
+        with patch("mojox._ore.subprocess.run", side_effect=mock):
+            run_ore_pipeline(cmd, ore_context, probe, ore_path)
+
+        assert "-O0" in mock.captured[1]
+
+    def test_debug_level_forwarded(self, tmp_path: Path):
+        """--debug-level line-tables appears in step 1 args."""
+        ore_context = _make_ore_context(tmp_path)
+        probe = _make_probe()
+        ore_path = tmp_path / "lib.ore"
+        ore_path.touch()
+        cmd = _make_command(extra_argv=("--debug-level", "line-tables"))
+
+        mock = PipelineMock(capture_steps=(1,))
+
+        with patch("mojox._ore.subprocess.run", side_effect=mock):
+            run_ore_pipeline(cmd, ore_context, probe, ore_path)
+
+        step1 = mock.captured[1]
+        assert "--debug-level" in step1
+        idx = step1.index("--debug-level")
+        assert step1[idx + 1] == "line-tables"
+
+    def test_arbitrary_policy_flags_forwarded(self, tmp_path: Path):
+        """Extra flags from policy.flags appear in step 1 args."""
+        ore_context = _make_ore_context(tmp_path)
+        probe = _make_probe()
+        ore_path = tmp_path / "lib.ore"
+        ore_path.touch()
+        cmd = _make_command(
+            extra_argv=("-O0", "--debug-level", "line-tables", "--some-flag"),
+        )
+
+        mock = PipelineMock(capture_steps=(1,))
+
+        with patch("mojox._ore.subprocess.run", side_effect=mock):
+            run_ore_pipeline(cmd, ore_context, probe, ore_path)
+
+        assert "--some-flag" in mock.captured[1]
+
+    def test_all_dev_profile_flags_forwarded(self, tmp_path: Path):
+        """A realistic dev-profile command has all flags in step 1."""
+        ore_context = _make_ore_context(tmp_path)
+        probe = _make_probe()
+        ore_path = tmp_path / "lib.ore"
+        ore_path.touch()
+        cmd = _make_command(
+            extra_argv=(
+                "-O0",
+                "--debug-level", "line-tables",
+                "-I", "/deps/include",
+                "-D", "ASSERT=all",
+                "--num-threads", "4",
+            ),
+        )
+
+        mock = PipelineMock(capture_steps=(1,))
+
+        with patch("mojox._ore.subprocess.run", side_effect=mock):
+            run_ore_pipeline(cmd, ore_context, probe, ore_path)
+
+        step1 = mock.captured[1]
+        assert "-O0" in step1
+        assert "--debug-level" in step1
+        assert "-D" in step1
+        assert "--num-threads" in step1
