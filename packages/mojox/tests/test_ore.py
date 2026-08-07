@@ -306,6 +306,30 @@ class TestCacheKey:
         key_changed_seed = compute_cache_key("2025.6.1", (), seed_path=seed)
         assert key_with_seed != key_changed_seed
 
+    def test_key_changes_with_optimization_level(self):
+        """Different optimization levels produce different cache keys."""
+        from mojox._ore import compute_cache_key
+
+        key_o0 = compute_cache_key("2025.6.1", (), opt_flags=("-O0",))
+        key_o3 = compute_cache_key("2025.6.1", (), opt_flags=("-O3",))
+        assert key_o0 != key_o3
+
+    def test_key_stable_with_same_opt_flags(self):
+        """Same optimization flags produce the same cache key."""
+        from mojox._ore import compute_cache_key
+
+        key_a = compute_cache_key("2025.6.1", (), opt_flags=("-O0", "--debug-level", "line-tables"))
+        key_b = compute_cache_key("2025.6.1", (), opt_flags=("-O0", "--debug-level", "line-tables"))
+        assert key_a == key_b
+
+    def test_key_changes_with_debug_level(self):
+        """Different debug levels produce different cache keys."""
+        from mojox._ore import compute_cache_key
+
+        key_a = compute_cache_key("2025.6.1", (), opt_flags=("--debug-level", "line-tables"))
+        key_b = compute_cache_key("2025.6.1", (), opt_flags=("--debug-level", "full"))
+        assert key_a != key_b
+
 
 class TestOreCache:
     """OreCache manages .ore files in a cache directory."""
