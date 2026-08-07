@@ -697,3 +697,147 @@ class TestFlagCompleteness:
         assert "--debug-level" in step1
         assert "-D" in step1
         assert "--num-threads" in step1
+
+
+# -- Bug 11: forward optimization/debug flags in ore seed build ---------------
+
+
+class TestBuildAndCacheOre:
+    """_build_and_cache_ore must forward all planner flags to the seed build
+    and handle failure paths correctly.
+    """
+
+    def _run_build_and_cache(
+        self,
+        tmp_path: Path,
+        cmd: Command,
+        *,
+        seed_compile_exit: int = 0,
+        ore_build_exit: int = 0,
+        capture_seed_args: bool = False,
+    ) -> tuple[Path | None, list[str]]:
+        """Run _build_and_cache_ore with mocked subprocess."""
+        from mojox._ore import _build_and_cache_ore, OreCache
+
+        ore_context = _make_ore_context(tmp_path)
+        probe = _make_probe()
+        cache = OreCache(cache_dir=tmp_path / "ore-cache")
+
+        captured_args: list[str] = []
+        call_count = {"n": 0}
+
+        def mock_run(args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                if capture_seed_args:
+                    captured_args.extend(args)
+                if seed_compile_exit != 0:
+                    return subprocess.CompletedProcess(
+                        args, seed_compile_exit, stdout="", stderr="compile error",
+                    )
+                bc_path = args[args.index("-o") + 1]
+                Path(bc_path).touch()
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            elif call_count["n"] == 2:
+                if ore_build_exit != 0:
+                    return subprocess.CompletedProcess(
+                        args, ore_build_exit, stdout="", stderr="extract error",
+                    )
+                o_idx = args.index("-o")
+                Path(args[o_idx + 1]).touch()
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            elif call_count["n"] == 3:
+                o_idx = args.index("-o")
+                Path(args[o_idx + 1]).touch()
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with patch("mojox._ore.subprocess.run", side_effect=mock_run):
+            result = _build_and_cache_ore(
+                cmd, ore_context, probe, cache, "test_key_000000000000",
+            )
+
+        return result, captured_args
+
+    def test_seed_build_forwards_optimization_level(self, tmp_path: Path):
+        """-O0 from the command appears in the seed's mojo build args."""
+        cmd = _make_command(extra_argv=("-O0",))
+        _, seed_args = self._run_build_and_cache(
+            tmp_path, cmd, capture_seed_args=True,
+        )
+        assert "-O0" in seed_args
+
+    def test_seed_build_forwards_debug_level(self, tmp_path: Path):
+        """--debug-level from the command appears in seed build args."""
+        cmd = _make_command(extra_argv=("--debug-level", "line-tables"))
+        _, seed_args = self._run_build_and_cache(
+            tmp_path, cmd, capture_seed_args=True,
+        )
+        assert "--debug-level" in seed_args
+        idx = seed_args.index("--debug-level")
+        assert seed_args[idx + 1] == "line-tables"
+
+    def test_seed_compile_failure_returns_none(self, tmp_path: Path):
+        """Seed compilation failure returns None (fallback)."""
+        cmd = _make_command()
+        result, _ = self._run_build_and_cache(
+            tmp_path, cmd, seed_compile_exit=1,
+        )
+        assert result is None
+
+    def test_seed_module_derived_from_source_stem(self, tmp_path: Path):
+        """seed_module passed to _build_ore is the source filename stem."""
+        from mojox._ore import _build_and_cache_ore, OreCache
+
+        ore_context = _make_ore_context(tmp_path)
+        probe = _make_probe()
+        cache = OreCache(cache_dir=tmp_path / "ore-cache")
+        cmd = _make_command(source="my_module.mojo")
+
+        captured_build_ore_args: list[str] = []
+        call_count = {"n": 0}
+
+        def mock_run(args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                bc_path = args[args.index("-o") + 1]
+                Path(bc_path).touch()
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            elif call_count["n"] == 2:
+                captured_build_ore_args.extend(args)
+                o_idx = args.index("-o")
+                Path(args[o_idx + 1]).touch()
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            elif call_count["n"] == 3:
+                o_idx = args.index("-o")
+                Path(args[o_idx + 1]).touch()
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with patch("mojox._ore.subprocess.run", side_effect=mock_run):
+            _build_and_cache_ore(
+                cmd, ore_context, probe, cache, "test_key_000000000001",
+            )
+
+        assert "--func=my_module::main()" in captured_build_ore_args
+
+    def test_seed_include_mismatch_returns_none(self, tmp_path: Path):
+        """Explicit seed with mismatched -I paths returns None."""
+        from mojox._ore import _build_and_cache_ore, OreCache
+
+        ore_context = _make_ore_context(
+            tmp_path,
+            include_paths=("/path/a",),
+            seed=tmp_path / "seed.mojo",
+        )
+        (tmp_path / "seed.mojo").touch()
+        probe = _make_probe()
+        cache = OreCache(cache_dir=tmp_path / "ore-cache")
+        cmd = _make_command(extra_argv=("-I", "/path/b"))
+
+        with patch("mojox._ore.subprocess.run"):
+            result = _build_and_cache_ore(
+                cmd, ore_context, probe, cache, "test_key_000000000002",
+            )
+
+        assert result is None

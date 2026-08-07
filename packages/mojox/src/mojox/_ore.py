@@ -831,15 +831,27 @@ def _build_and_cache_ore(
     for inc in ctx.include_paths:
         include_args.extend(["-I", inc])
 
-    # Forward -D defines from the original command so the seed is
-    # compiled with the same profile flags (e.g. -D ASSERT=all).
+    # Forward -D defines and profile flags from the original command
+    # so the seed is compiled with the same semantics (e.g. -D ASSERT=all,
+    # -O0, --debug-level line-tables).
     define_args: list[str] = []
+    profile_args: list[str] = []
     argv_list = list(cmd.argv)
+    skip_next = False
     for i, arg in enumerate(argv_list):
+        if skip_next:
+            skip_next = False
+            continue
         if arg == "-D" and i + 1 < len(argv_list):
             define_args.extend(["-D", argv_list[i + 1]])
+            skip_next = True
         elif arg.startswith("-D") and len(arg) > 2:
             define_args.append(arg)
+        elif arg.startswith("-O") and len(arg) >= 3:
+            profile_args.append(arg)
+        elif arg == "--debug-level" and i + 1 < len(argv_list):
+            profile_args.extend(["--debug-level", argv_list[i + 1]])
+            skip_next = True
 
     with tempfile.TemporaryDirectory(prefix="ore-seed-") as td:
         work = Path(td)
@@ -856,6 +868,7 @@ def _build_and_cache_ore(
             str(seed_bc),
         ]
         mojo_args.extend(define_args)
+        mojo_args.extend(profile_args)
         mojo_args.extend(include_args)
         mojo_args.append(str(seed_source))
 
