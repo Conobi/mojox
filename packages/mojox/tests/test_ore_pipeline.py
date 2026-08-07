@@ -841,3 +841,213 @@ class TestBuildAndCacheOre:
             )
 
         assert result is None
+
+
+# -- Bug 12: pipeline step failure propagation --------------------------------
+
+
+class TestPipelineStepFailures:
+    """Each pipeline step failure must produce COMPILE_ERROR."""
+
+    def test_step3_llvm_extract_failure(self, tmp_path: Path):
+        """llvm-extract failure in step 3 → COMPILE_ERROR."""
+        from mojox._types import OutcomeKind
+
+        ore_context = _make_ore_context(tmp_path)
+        probe = _make_probe()
+        ore_path = tmp_path / "lib.ore"
+        ore_path.touch()
+        cmd = _make_command()
+
+        call_count = {"n": 0}
+
+        def mock_run(args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                bc_path = args[args.index("-o") + 1]
+                Path(bc_path).touch()
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            elif call_count["n"] in (2, 3):
+                return subprocess.CompletedProcess(
+                    args, 0,
+                    stdout="0000000000001000 T user_main\n",
+                    stderr="",
+                )
+            elif call_count["n"] == 4:
+                return subprocess.CompletedProcess(
+                    args, 1, stdout="", stderr="llvm-extract: error",
+                )
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with patch("mojox._ore.subprocess.run", side_effect=mock_run):
+            outcome = run_ore_pipeline(cmd, ore_context, probe, ore_path)
+
+        assert outcome.kind == OutcomeKind.COMPILE_ERROR
+
+    def test_step4_llc_failure(self, tmp_path: Path):
+        """llc failure in step 4 → COMPILE_ERROR."""
+        from mojox._types import OutcomeKind
+
+        ore_context = _make_ore_context(tmp_path)
+        probe = _make_probe()
+        ore_path = tmp_path / "lib.ore"
+        ore_path.touch()
+        cmd = _make_command()
+
+        call_count = {"n": 0}
+
+        def mock_run(args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                bc_path = args[args.index("-o") + 1]
+                Path(bc_path).touch()
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            elif call_count["n"] in (2, 3):
+                return subprocess.CompletedProcess(
+                    args, 0,
+                    stdout="0000000000001000 T user_main\n",
+                    stderr="",
+                )
+            elif call_count["n"] == 4:
+                Path(args[-1]).touch()
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            elif call_count["n"] == 5:
+                return subprocess.CompletedProcess(
+                    args, 1, stdout="", stderr="llc: error",
+                )
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with patch("mojox._ore.subprocess.run", side_effect=mock_run):
+            outcome = run_ore_pipeline(cmd, ore_context, probe, ore_path)
+
+        assert outcome.kind == OutcomeKind.COMPILE_ERROR
+
+    def test_step5_clang_link_failure(self, tmp_path: Path):
+        """clang link failure in step 5 → COMPILE_ERROR."""
+        from mojox._types import OutcomeKind
+
+        ore_context = _make_ore_context(tmp_path)
+        probe = _make_probe()
+        ore_path = tmp_path / "lib.ore"
+        ore_path.touch()
+        cmd = _make_command()
+
+        call_count = {"n": 0}
+
+        def mock_run(args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                bc_path = args[args.index("-o") + 1]
+                Path(bc_path).touch()
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            elif call_count["n"] in (2, 3):
+                return subprocess.CompletedProcess(
+                    args, 0,
+                    stdout="0000000000001000 T user_main\n",
+                    stderr="",
+                )
+            elif call_count["n"] == 4:
+                Path(args[-1]).touch()
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            elif call_count["n"] == 5:
+                o_idx = args.index("-o")
+                Path(args[o_idx + 1]).touch()
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            elif call_count["n"] == 6:
+                return subprocess.CompletedProcess(
+                    args, 1, stdout="", stderr="clang: error: linker failed",
+                )
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with patch("mojox._ore.subprocess.run", side_effect=mock_run):
+            outcome = run_ore_pipeline(cmd, ore_context, probe, ore_path)
+
+        assert outcome.kind == OutcomeKind.COMPILE_ERROR
+
+
+# -- Edge cases in the ore pipeline -------------------------------------------
+
+
+class TestPipelineEdgeCases:
+    """Edge cases in the ore pipeline."""
+
+    def test_step6_timeout(self, tmp_path: Path):
+        """Binary timeout in step 6 → TIMEOUT outcome."""
+        from mojox._types import OutcomeKind
+
+        ore_context = _make_ore_context(tmp_path)
+        probe = _make_probe()
+        ore_path = tmp_path / "lib.ore"
+        ore_path.touch()
+        cmd = _make_command()
+
+        call_count = {"n": 0}
+
+        def mock_run(args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                bc_path = args[args.index("-o") + 1]
+                Path(bc_path).touch()
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            elif call_count["n"] in (2, 3):
+                return subprocess.CompletedProcess(
+                    args, 0,
+                    stdout="0000000000001000 T user_main\n",
+                    stderr="",
+                )
+            elif call_count["n"] == 4:
+                Path(args[-1]).touch()
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            elif call_count["n"] == 5:
+                o_idx = args.index("-o")
+                Path(args[o_idx + 1]).touch()
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            elif call_count["n"] == 6:
+                o_idx = args.index("-o")
+                Path(args[o_idx + 1]).touch()
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            elif call_count["n"] == 7:
+                raise subprocess.TimeoutExpired(args, 300, output=b"partial", stderr=b"")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with patch("mojox._ore.subprocess.run", side_effect=mock_run):
+            outcome = run_ore_pipeline(cmd, ore_context, probe, ore_path)
+
+        assert outcome.kind == OutcomeKind.TIMEOUT
+
+    def test_zero_user_symbols_produces_valid_step3(self, tmp_path: Path):
+        """When all symbols are in the ore, step 3 has no --func= args."""
+        ore_context = _make_ore_context(tmp_path)
+        probe = _make_probe()
+        ore_path = tmp_path / "lib.ore"
+        ore_path.touch()
+        cmd = _make_command()
+
+        nm_output = "0000000000001000 T lib_func\n"
+
+        mock = PipelineMock(
+            nm_stdout=nm_output,
+            capture_steps=(4,),
+        )
+        original_call = mock.__call__
+
+        def patched_call(args, **kwargs):
+            mock._call_count += 1
+            n = mock._call_count
+            if n in mock.capture_steps:
+                mock.captured[n].extend(args)
+            if n in (2, 3):
+                return subprocess.CompletedProcess(
+                    args, 0, stdout=nm_output, stderr="",
+                )
+            mock._call_count -= 1
+            return original_call(args, **kwargs)
+
+        with patch("mojox._ore.subprocess.run", side_effect=patched_call):
+            outcome = run_ore_pipeline(cmd, ore_context, probe, ore_path)
+
+        step3_args = mock.captured[4]
+        func_args = [a for a in step3_args if a.startswith("--func=")]
+        assert func_args == []
+        assert "--rglob=static_string" in step3_args
+        assert "--rglob=global_constant" in step3_args
