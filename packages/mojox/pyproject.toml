@@ -23,6 +23,10 @@ packages = ["src/mojox"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = ["-m", "not integration"]
+markers = [
+    "integration: requires real mojo compiler and/or LLVM tools",
+]
 
 [tool.mypy]
 strict = true
