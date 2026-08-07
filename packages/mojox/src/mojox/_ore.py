@@ -288,6 +288,8 @@ def _extract_planner_flags(
             defines.append(arg)
         elif arg == "-I" and i + 1 < len(argv_list):
             skip_next = True
+        elif arg.startswith("-I") and len(arg) > 2:
+            continue
         elif arg == "--num-threads" and i + 1 < len(argv_list):
             extra_flags.extend(["--num-threads", argv_list[i + 1]])
             skip_next = True

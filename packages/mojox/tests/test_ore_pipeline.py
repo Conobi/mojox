@@ -19,6 +19,7 @@ from mojox._ore import (
     OreContext,
     OreProbeResult,
     _build_ore,
+    _defines_to_dict,
     _extract_planner_flags,
     _extract_user_symbols,
     run_ore_pipeline,
@@ -1290,3 +1291,77 @@ class TestTryOreRunOrchestration:
         assert cache_dir.exists()
 
         monkeypatch.setattr(ore_mod, "_cached_probe", None)
+
+
+# -- _defines_to_dict unit tests --------------------------------------------
+
+
+class TestDefinesToDict:
+    """_defines_to_dict converts raw define arg lists to dicts."""
+
+    def test_empty_list(self):
+        """Empty input returns empty dict."""
+        assert _defines_to_dict([]) == {}
+
+    def test_space_separated_form(self):
+        """-D KEY=VALUE → {KEY: VALUE}."""
+        assert _defines_to_dict(["-D", "ASSERT=all"]) == {"ASSERT": "all"}
+
+    def test_joined_form(self):
+        """-DKEY=VALUE → {KEY: VALUE}."""
+        assert _defines_to_dict(["-DDEBUG=1"]) == {"DEBUG": "1"}
+
+    def test_mixed_forms(self):
+        """Both forms in one list."""
+        result = _defines_to_dict(["-D", "ASSERT=all", "-DDEBUG=1"])
+        assert result == {"ASSERT": "all", "DEBUG": "1"}
+
+    def test_define_without_equals_skipped(self):
+        """A define without '=' is silently skipped."""
+        assert _defines_to_dict(["-D", "NOEQUALS"]) == {}
+
+    def test_bare_d_at_end_of_list(self):
+        """Bare -D at end of list is silently skipped."""
+        assert _defines_to_dict(["-D"]) == {}
+
+    def test_value_with_equals(self):
+        """Value containing '=' is preserved."""
+        result = _defines_to_dict(["-D", "PATH=/usr/bin:/bin"])
+        assert result == {"PATH": "/usr/bin:/bin"}
+
+
+# -- _build_and_cache_ore ore-build failure ----------------------------------
+
+
+class TestBuildAndCacheOreFailure:
+    """_build_and_cache_ore returns None when _build_ore fails."""
+
+    def test_ore_build_failure_returns_none(self, tmp_path: Path):
+        """_build_ore failure (llvm-extract/llc) returns None."""
+        from mojox._ore import _build_and_cache_ore, OreCache
+
+        ore_context = _make_ore_context(tmp_path)
+        probe = _make_probe()
+        cache = OreCache(cache_dir=tmp_path / "ore-cache")
+        cmd = _make_command()
+
+        call_count = {"n": 0}
+
+        def mock_run(args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                bc_path = args[args.index("-o") + 1]
+                Path(bc_path).touch()
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            elif call_count["n"] == 2:
+                return subprocess.CompletedProcess(
+                    args, 1, stdout="", stderr="llvm-extract failed",
+                )
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with patch("mojox._ore.subprocess.run", side_effect=mock_run):
+            result = _build_and_cache_ore(
+                cmd, ore_context, probe, cache, "test_key_ore_build_fail",
+            )
+
+        assert result is None
