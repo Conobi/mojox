@@ -318,8 +318,8 @@ class TestCacheKey:
         """Same optimization flags produce the same cache key."""
         from mojox._ore import compute_cache_key
 
-        key_a = compute_cache_key("2025.6.1", (), opt_flags=("-O0", "--debug-level", "line-tables"))
-        key_b = compute_cache_key("2025.6.1", (), opt_flags=("-O0", "--debug-level", "line-tables"))
+        key_a = compute_cache_key("2025.6.1", (), opt_flags=("-O0", "--num-threads", "4"))
+        key_b = compute_cache_key("2025.6.1", (), opt_flags=("-O0", "--num-threads", "4"))
         assert key_a == key_b
 
     def test_key_changes_with_debug_level(self):

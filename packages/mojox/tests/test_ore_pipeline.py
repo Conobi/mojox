@@ -638,8 +638,8 @@ class TestFlagCompleteness:
 
         assert "-O0" in mock.captured[1]
 
-    def test_debug_level_forwarded(self, tmp_path: Path):
-        """--debug-level line-tables appears in step 1 args."""
+    def test_debug_level_not_forwarded(self, tmp_path: Path):
+        """--debug-level is excluded — Mojo debug metadata is incompatible with system LLVM."""
         ore_context = _make_ore_context(tmp_path)
         probe = _make_probe()
         ore_path = tmp_path / "lib.ore"
@@ -652,9 +652,8 @@ class TestFlagCompleteness:
             run_ore_pipeline(cmd, ore_context, probe, ore_path)
 
         step1 = mock.captured[1]
-        assert "--debug-level" in step1
-        idx = step1.index("--debug-level")
-        assert step1[idx + 1] == "line-tables"
+        assert "--debug-level" not in step1
+        assert "line-tables" not in step1
 
     def test_arbitrary_policy_flags_forwarded(self, tmp_path: Path):
         """Extra flags from policy.flags appear in step 1 args."""
@@ -696,7 +695,7 @@ class TestFlagCompleteness:
 
         step1 = mock.captured[1]
         assert "-O0" in step1
-        assert "--debug-level" in step1
+        assert "--debug-level" not in step1
         assert "-D" in step1
         assert "--num-threads" in step1
 
@@ -769,15 +768,14 @@ class TestBuildAndCacheOre:
         )
         assert "-O0" in seed_args
 
-    def test_seed_build_forwards_debug_level(self, tmp_path: Path):
-        """--debug-level from the command appears in seed build args."""
+    def test_seed_build_excludes_debug_level(self, tmp_path: Path):
+        """--debug-level is excluded from seed build — incompatible with system LLVM."""
         cmd = _make_command(extra_argv=("--debug-level", "line-tables"))
         _, seed_args = self._run_build_and_cache(
             tmp_path, cmd, capture_seed_args=True,
         )
-        assert "--debug-level" in seed_args
-        idx = seed_args.index("--debug-level")
-        assert seed_args[idx + 1] == "line-tables"
+        assert "--debug-level" not in seed_args
+        assert "line-tables" not in seed_args
 
     def test_seed_compile_failure_returns_none(self, tmp_path: Path):
         """Seed compilation failure returns None (fallback)."""
@@ -1094,7 +1092,8 @@ class TestArgvCompleteness:
         step1 = mock.captured[1]
 
         source_flags = set(cmd.argv) - {cmd.argv[0], cmd.argv[1], cmd.argv[-1]}
-        source_flags -= {"-I", "/deps/include"}
+        # -I paths handled via ore_context; --debug-level excluded (LLVM incompatibility)
+        source_flags -= {"-I", "/deps/include", "--debug-level", "line-tables"}
 
         for flag in source_flags:
             assert flag in step1, f"planner flag {flag!r} missing from ore step 1"
@@ -1118,15 +1117,15 @@ class TestArgvCompleteness:
         assert "ASSERT=all" in defines
         assert "-DDEBUG=1" in defines
         assert "-O0" in extra
-        assert "--debug-level" in extra
-        assert "line-tables" in extra
         assert "--num-threads" in extra
         assert "4" in extra
         assert "--some-lint-flag" in extra
-        # -I and source file must NOT appear
+        # -I, source file, and --debug-level must NOT appear
         assert "-I" not in defines and "-I" not in extra
         assert "/deps/include" not in defines and "/deps/include" not in extra
         assert "test.mojo" not in defines and "test.mojo" not in extra
+        assert "--debug-level" not in defines and "--debug-level" not in extra
+        assert "line-tables" not in defines and "line-tables" not in extra
 
 
 # -- Missing coverage: define forwarding to seed build -----------------------

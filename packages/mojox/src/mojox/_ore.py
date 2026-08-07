@@ -259,12 +259,13 @@ def _extract_planner_flags(
 
     - **defines:** ``-D KEY=VALUE`` pairs (both space-separated and joined forms)
     - **extra_flags:** everything else the ore pipeline should forward
-      (``-O{level}``, ``--debug-level``, ``--num-threads``, lint flags,
-      ``policy.flags``)
+      (``-O{level}``, ``--num-threads``, lint flags, ``policy.flags``)
 
     Skips the mojo binary (argv[0]), the verb (argv[1]), ``-I`` paths
-    (handled separately via ``ore_context.include_paths``), and the
-    source file (appended last by callers).
+    (handled separately via ``ore_context.include_paths``),
+    ``--debug-level`` (Mojo's LLVM debug metadata is incompatible with
+    system LLVM tools used by the ore pipeline), and the source file
+    (appended last by callers).
 
     Args:
         argv: The full command argv from the planner.
@@ -294,7 +295,8 @@ def _extract_planner_flags(
             extra_flags.extend(["--num-threads", argv_list[i + 1]])
             skip_next = True
         elif arg == "--debug-level" and i + 1 < len(argv_list):
-            extra_flags.extend(["--debug-level", argv_list[i + 1]])
+            # Mojo's LLVM emits debug metadata that system LLVM tools
+            # (llvm-extract, llc) cannot parse ("Invalid record").
             skip_next = True
         elif arg.startswith("-O") and len(arg) >= 3:
             extra_flags.append(arg)
@@ -512,11 +514,12 @@ def run_ore_pipeline(
         5. ``clang`` to link user.o + .ore + runtime libs into a binary
         6. Execute the binary and capture output
 
-    The source file is taken from ``cmd.argv[-1]``. All planner flags
-    (``-O``, ``--debug-level``, ``--num-threads``, ``-D`` defines,
-    lint flags, ``policy.flags``) are forwarded from ``cmd.argv`` via
-    :func:`_extract_planner_flags`. Include paths come from
-    ``ore_context.include_paths``.
+    The source file is taken from ``cmd.argv[-1]``. Most planner flags
+    (``-O``, ``--num-threads``, ``-D`` defines, lint flags,
+    ``policy.flags``) are forwarded from ``cmd.argv`` via
+    :func:`_extract_planner_flags`.  ``--debug-level`` is intentionally
+    skipped — Mojo's debug metadata is incompatible with system LLVM
+    tools.  Include paths come from ``ore_context.include_paths``.
 
     Args:
         cmd: The original command whose last argv element is the .mojo source.
@@ -855,11 +858,13 @@ def _build_and_cache_ore(
     returned.
 
     The seed is compiled to LLVM bitcode via ``mojo build --emit
-    llvm-bitcode``. All planner flags (``-O``, ``--debug-level``,
-    ``--num-threads``, ``-D`` defines, lint flags, ``policy.flags``)
-    are forwarded to the seed compilation via
-    :func:`_extract_planner_flags`.  Then :func:`_build_ore` produces
-    the .ore object.  The result is stored via :meth:`OreCache.put`.
+    llvm-bitcode``. Most planner flags (``-O``, ``--num-threads``,
+    ``-D`` defines, lint flags, ``policy.flags``) are forwarded to
+    the seed compilation via :func:`_extract_planner_flags`.
+    ``--debug-level`` is intentionally skipped — Mojo's debug metadata
+    is incompatible with system LLVM tools.  Then :func:`_build_ore`
+    produces the .ore object.  The result is stored via
+    :meth:`OreCache.put`.
 
     Args:
         cmd: The command whose source is used as implicit seed when
