@@ -7,15 +7,48 @@ from Command.env, never inherited from the host process.
 
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 from mojox_core import Command
 
 from ._diagnostics import parse_diagnostics
 from ._ore import OreContext
 from ._types import Outcome, OutcomeKind
+
+
+def _inject_native_lib_paths(
+    env: dict[str, str],
+    ore_context: OreContext,
+) -> None:
+    """Add native lib dirs from include paths to the library search path.
+
+    Dependencies may ship native shared libraries (e.g. librustls_mojo.so)
+    in a ``lib/`` subdirectory of their include path. The ore pipeline
+    handles this via clang's ``-rpath``, but the standard ``mojo run``
+    path needs the dynamic linker to find them at runtime.
+
+    Modifies *env* in place, appending to ``LD_LIBRARY_PATH`` (Linux)
+    or ``DYLD_LIBRARY_PATH`` (macOS).
+    """
+    lib_dirs: list[str] = []
+    for inc in ore_context.include_paths:
+        lib_dir = Path(inc) / "lib"
+        if lib_dir.is_dir():
+            lib_dirs.append(str(lib_dir))
+
+    if not lib_dirs:
+        return
+
+    env_key = "DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH"
+    existing = env.get(env_key, "")
+    parts = [existing] if existing else []
+    parts.extend(lib_dirs)
+    env[env_key] = os.pathsep.join(parts)
 
 
 def run_command(
@@ -55,7 +88,6 @@ def run_command(
             if result is not None:
                 return result
     elif ore_context is not None and not ore_context.enabled:
-        import sys
         print("ore: disabled (release profile or --no-ore)", file=sys.stderr)
     # Fall through to standard subprocess path
     env = dict(cmd.env)
@@ -63,6 +95,9 @@ def run_command(
         merged = dict(extra_env)
         merged.update(env)
         env = merged
+
+    if ore_context is not None:
+        _inject_native_lib_paths(env, ore_context)
 
     start = time.monotonic()
     try:

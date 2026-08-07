@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import sys
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 import pytest
 
 from mojox._exec import run_command, run_commands
+from mojox._ore import OreContext
 from mojox._types import OutcomeKind
 from mojox_core import Command, CommandKind
 
@@ -170,3 +171,112 @@ class TestRunCommands:
         )
         results = run_commands((cmd,), extra_env={"MY_VAR": "present"})
         assert "present" in results[0].stdout
+
+
+class TestNativeLibPathInjection:
+    """Standard mojo run path must set LD_LIBRARY_PATH for native libs.
+
+    When ore is disabled (--no-ore or release profile), the standard
+    subprocess path must still find native shared libraries shipped by
+    dependencies in their lib/ subdirectories.
+    """
+
+    def test_ld_library_path_injected_for_native_libs(self, tmp_path: Path):
+        """lib/ subdirs from include_paths appear in LD_LIBRARY_PATH."""
+        inc_dir = tmp_path / "deps" / "navette"
+        lib_dir = inc_dir / "lib"
+        lib_dir.mkdir(parents=True)
+
+        ore_ctx = OreContext(
+            enabled=False,
+            seed=None,
+            include_paths=(str(inc_dir),),
+            compiler_version="2025.6.1",
+            mojo_path="/usr/bin/mojo",
+            runtime_lib_dir=tmp_path / "runtime",
+            dep_versions=(("navette", "0.5.0"),),
+        )
+
+        cmd = _cmd(
+            (sys.executable, "-c", "import os; print(os.environ.get('LD_LIBRARY_PATH', ''))"),
+            env={"PATH": f"{sys.prefix}/bin:/usr/bin:/bin", "HOME": ""},
+        )
+        outcome = run_command(cmd, ore_context=ore_ctx)
+        assert outcome.kind == OutcomeKind.PASS
+        assert str(lib_dir) in outcome.stdout
+
+    def test_no_ld_library_path_when_no_lib_dirs(self, tmp_path: Path):
+        """Without lib/ subdirs, LD_LIBRARY_PATH is not injected."""
+        inc_dir = tmp_path / "deps" / "navette"
+        inc_dir.mkdir(parents=True)
+
+        ore_ctx = OreContext(
+            enabled=False,
+            seed=None,
+            include_paths=(str(inc_dir),),
+            compiler_version="2025.6.1",
+            mojo_path="/usr/bin/mojo",
+            runtime_lib_dir=tmp_path / "runtime",
+            dep_versions=(),
+        )
+
+        cmd = _cmd(
+            (sys.executable, "-c", "import os; print(os.environ.get('LD_LIBRARY_PATH', 'NONE'))"),
+            env={"PATH": f"{sys.prefix}/bin:/usr/bin:/bin", "HOME": ""},
+        )
+        outcome = run_command(cmd, ore_context=ore_ctx)
+        assert outcome.kind == OutcomeKind.PASS
+        assert "NONE" in outcome.stdout
+
+    def test_ld_library_path_appended_to_existing(self, tmp_path: Path):
+        """New lib dirs are appended to any existing LD_LIBRARY_PATH."""
+        inc_dir = tmp_path / "deps" / "navette"
+        lib_dir = inc_dir / "lib"
+        lib_dir.mkdir(parents=True)
+
+        ore_ctx = OreContext(
+            enabled=False,
+            seed=None,
+            include_paths=(str(inc_dir),),
+            compiler_version="2025.6.1",
+            mojo_path="/usr/bin/mojo",
+            runtime_lib_dir=tmp_path / "runtime",
+            dep_versions=(),
+        )
+
+        cmd = _cmd(
+            (sys.executable, "-c", "import os; print(os.environ.get('LD_LIBRARY_PATH', ''))"),
+            env={"PATH": f"{sys.prefix}/bin:/usr/bin:/bin", "HOME": "", "LD_LIBRARY_PATH": "/existing/lib"},
+        )
+        outcome = run_command(cmd, ore_context=ore_ctx)
+        assert outcome.kind == OutcomeKind.PASS
+        assert "/existing/lib" in outcome.stdout
+        assert str(lib_dir) in outcome.stdout
+
+    def test_multiple_lib_dirs_all_included(self, tmp_path: Path):
+        """Multiple include paths with lib/ dirs all appear."""
+        inc1 = tmp_path / "deps" / "navette"
+        lib1 = inc1 / "lib"
+        lib1.mkdir(parents=True)
+        inc2 = tmp_path / "deps" / "boucle"
+        lib2 = inc2 / "lib"
+        lib2.mkdir(parents=True)
+
+        ore_ctx = OreContext(
+            enabled=False,
+            seed=None,
+            include_paths=(str(inc1), str(inc2)),
+            compiler_version="2025.6.1",
+            mojo_path="/usr/bin/mojo",
+            runtime_lib_dir=tmp_path / "runtime",
+            dep_versions=(),
+        )
+
+        cmd = _cmd(
+            (sys.executable, "-c", "import os; print(os.environ.get('LD_LIBRARY_PATH', ''))"),
+            env={"PATH": f"{sys.prefix}/bin:/usr/bin:/bin", "HOME": ""},
+        )
+        outcome = run_command(cmd, ore_context=ore_ctx)
+        assert outcome.kind == OutcomeKind.PASS
+        assert str(lib1) in outcome.stdout
+        assert str(lib2) in outcome.stdout
