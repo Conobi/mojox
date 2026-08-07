@@ -765,25 +765,34 @@ def _try_ore_run(
         )
         return None
 
-    # Extract defines and optimization flags from the command for
-    # cache key computation.
+    # Use the shared flag extractor so the cache key covers every flag
+    # that _build_and_cache_ore and run_ore_pipeline will forward.
+    source_file = cmd.argv[-1]
+    raw_defines, raw_extra = _extract_planner_flags(cmd.argv, source_file)
+
+    # Convert raw define args (["-D", "K=V", "-DK2=V2"]) to a dict for
+    # compute_cache_key, and pass extra_flags as opt_flags.
     cmd_defines: dict[str, str] = {}
-    cmd_opt_flags: list[str] = []
-    argv_list = list(cmd.argv)
-    for i, arg in enumerate(argv_list):
-        if arg == "-D" and i + 1 < len(argv_list):
-            parts = argv_list[i + 1].split("=", 1)
+    i = 0
+    while i < len(raw_defines):
+        arg = raw_defines[i]
+        if arg == "-D" and i + 1 < len(raw_defines):
+            parts = raw_defines[i + 1].split("=", 1)
             if len(parts) == 2:
                 cmd_defines[parts[0]] = parts[1]
-        elif arg.startswith("-O") and len(arg) >= 3:
-            cmd_opt_flags.append(arg)
-        elif arg == "--debug-level" and i + 1 < len(argv_list):
-            cmd_opt_flags.extend(["--debug-level", argv_list[i + 1]])
+            i += 2
+        elif arg.startswith("-D") and len(arg) > 2:
+            parts = arg[2:].split("=", 1)
+            if len(parts) == 2:
+                cmd_defines[parts[0]] = parts[1]
+            i += 1
+        else:
+            i += 1
 
     key = compute_cache_key(
         ctx.compiler_version, ctx.dep_versions,
         seed_path=ctx.seed, defines=cmd_defines,
-        opt_flags=tuple(cmd_opt_flags) if cmd_opt_flags else None,
+        opt_flags=tuple(raw_extra) if raw_extra else None,
     )
     cache = OreCache(cache_dir=Path(str(cmd.cwd)) / ".mojox" / "cache" / "ore")
     cached_path = cache.get(key)
