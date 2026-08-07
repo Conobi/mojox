@@ -836,12 +836,13 @@ class TestBuildAndCacheOre:
         cache = OreCache(cache_dir=tmp_path / "ore-cache")
         cmd = _make_command(extra_argv=("-I", "/path/b"))
 
-        with patch("mojox._ore.subprocess.run"):
+        with patch("mojox._ore.subprocess.run") as mock_run:
             result = _build_and_cache_ore(
                 cmd, ore_context, probe, cache, "test_key_000000000002",
             )
 
         assert result is None
+        mock_run.assert_not_called()
 
 
 # -- Bug 12: pipeline step failure propagation --------------------------------

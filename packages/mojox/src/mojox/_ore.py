@@ -131,8 +131,10 @@ def compute_cache_key(
         dep_versions: Sorted (name, version) pairs for all dependencies.
         seed_path: Optional path to the ore-seed source file.
         defines: Active profile defines (e.g. ``{"ASSERT": "all"}``).
-        opt_flags: Optimization and debug-level flags (e.g. ``("-O0",
-            "--debug-level", "line-tables")``).
+        opt_flags: Optimization, debug-level, and other forwarded flags
+            (e.g. ``("-O0", "--debug-level", "line-tables")``).  Hashed
+            in order — callers must provide a stable ordering (guaranteed
+            when flags come from :func:`_extract_planner_flags`).
 
     Returns:
         A 24-character lowercase hex digest string.
@@ -299,6 +301,38 @@ def _extract_planner_flags(
         elif arg.startswith("-") and i >= 2:
             extra_flags.append(arg)
     return defines, extra_flags
+
+
+def _defines_to_dict(raw_defines: list[str]) -> dict[str, str]:
+    """Convert a raw define arg list to a ``{key: value}`` dict.
+
+    Handles both ``["-D", "KEY=VALUE"]`` (space-separated) and
+    ``["-DKEY=VALUE"]`` (joined) forms as produced by
+    :func:`_extract_planner_flags`.
+
+    Args:
+        raw_defines: The defines list from ``_extract_planner_flags``.
+
+    Returns:
+        A dict mapping define keys to values.
+    """
+    result: dict[str, str] = {}
+    i = 0
+    while i < len(raw_defines):
+        arg = raw_defines[i]
+        if arg == "-D" and i + 1 < len(raw_defines):
+            parts = raw_defines[i + 1].split("=", 1)
+            if len(parts) == 2:
+                result[parts[0]] = parts[1]
+            i += 2
+        elif arg.startswith("-D") and len(arg) > 2:
+            parts = arg[2:].split("=", 1)
+            if len(parts) == 2:
+                result[parts[0]] = parts[1]
+            i += 1
+        else:
+            i += 1
+    return result
 
 
 # -- LLVM pipeline helpers ---------------------------------------------------
@@ -476,8 +510,10 @@ def run_ore_pipeline(
         5. ``clang`` to link user.o + .ore + runtime libs into a binary
         6. Execute the binary and capture output
 
-    The source file is taken from ``cmd.argv[-1]``. ``-D`` defines are
-    forwarded from ``cmd.argv``, and include paths come from
+    The source file is taken from ``cmd.argv[-1]``. All planner flags
+    (``-O``, ``--debug-level``, ``--num-threads``, ``-D`` defines,
+    lint flags, ``policy.flags``) are forwarded from ``cmd.argv`` via
+    :func:`_extract_planner_flags`. Include paths come from
     ``ore_context.include_paths``.
 
     Args:
@@ -770,24 +806,7 @@ def _try_ore_run(
     source_file = cmd.argv[-1]
     raw_defines, raw_extra = _extract_planner_flags(cmd.argv, source_file)
 
-    # Convert raw define args (["-D", "K=V", "-DK2=V2"]) to a dict for
-    # compute_cache_key, and pass extra_flags as opt_flags.
-    cmd_defines: dict[str, str] = {}
-    i = 0
-    while i < len(raw_defines):
-        arg = raw_defines[i]
-        if arg == "-D" and i + 1 < len(raw_defines):
-            parts = raw_defines[i + 1].split("=", 1)
-            if len(parts) == 2:
-                cmd_defines[parts[0]] = parts[1]
-            i += 2
-        elif arg.startswith("-D") and len(arg) > 2:
-            parts = arg[2:].split("=", 1)
-            if len(parts) == 2:
-                cmd_defines[parts[0]] = parts[1]
-            i += 1
-        else:
-            i += 1
+    cmd_defines = _defines_to_dict(raw_defines)
 
     key = compute_cache_key(
         ctx.compiler_version, ctx.dep_versions,
@@ -834,8 +853,11 @@ def _build_and_cache_ore(
     returned.
 
     The seed is compiled to LLVM bitcode via ``mojo build --emit
-    llvm-bitcode``, then :func:`_build_ore` produces the .ore object.
-    The result is stored via :meth:`OreCache.put`.
+    llvm-bitcode``. All planner flags (``-O``, ``--debug-level``,
+    ``--num-threads``, ``-D`` defines, lint flags, ``policy.flags``)
+    are forwarded to the seed compilation via
+    :func:`_extract_planner_flags`.  Then :func:`_build_ore` produces
+    the .ore object.  The result is stored via :meth:`OreCache.put`.
 
     Args:
         cmd: The command whose source is used as implicit seed when
@@ -875,7 +897,7 @@ def _build_and_cache_ore(
         include_args.extend(["-I", inc])
 
     define_args, profile_args = _extract_planner_flags(
-        cmd.argv, str(seed_source),
+        cmd.argv, cmd.argv[-1],
     )
 
     with tempfile.TemporaryDirectory(prefix="ore-seed-") as td:
