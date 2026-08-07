@@ -327,6 +327,54 @@ class TestCommandEnv:
             assert c.env["PATH"] == "/venv/bin"
 
 
+class TestRunArgvOrdering:
+    """mojo run treats post-file args as script args, so flags must precede the source file."""
+
+    def test_source_file_is_last_in_run_test_argv(self):
+        """All compiler flags (-I, -D, -O, --num-threads) must appear before the source file."""
+        graph = TargetGraph(
+            targets=(
+                Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
+            ),
+            edges=(),
+        )
+        pol = _make_policy(
+            optimize=2,
+            defines={"ASSERT": "all"},
+            include_paths=("/extra/inc",),
+        )
+        cmds = plan(graph, _make_env(), pol, _make_toolchain(), _make_host())
+        assert len(cmds) == 1
+        argv = list(cmds[0].argv)
+        assert argv[-1] == "tests/test_a.mojo", (
+            f"source file must be last in argv, got: {argv}"
+        )
+        file_idx = argv.index("tests/test_a.mojo")
+        for flag in ("-I", "-D", "-O2", "--num-threads"):
+            if flag in argv:
+                assert argv.index(flag) < file_idx, (
+                    f"{flag} must appear before source file in mojo run argv"
+                )
+
+    def test_source_file_after_include_paths_with_precompile(self):
+        """When precompilation is active, -I for the pkg dir still precedes the source file."""
+        graph = TargetGraph(
+            targets=(
+                Target(TargetKind.LIB, "src/mylib", "lib::src/mylib"),
+                Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
+                Target(TargetKind.TEST, "tests/test_b.mojo", "test::tests/test_b.mojo"),
+            ),
+            edges=(),
+        )
+        cmds = plan(graph, _make_env(), _make_policy(), _make_toolchain(), _make_host())
+        for c in cmds:
+            if c.kind == CommandKind.RUN_TEST:
+                argv = list(c.argv)
+                assert argv[-1] == c.target_id.split("::")[-1], (
+                    f"source file must be last, got: {argv}"
+                )
+
+
 class TestLintFlagTranslation:
     """Lint flags must appear on non-lib commands and never on lib commands."""
 

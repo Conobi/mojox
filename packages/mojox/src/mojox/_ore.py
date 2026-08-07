@@ -275,11 +275,13 @@ def _build_ore(
     seed_bc: Path,
     probe: OreProbeResult,
     output: Path,
+    *,
+    seed_module: str = "",
 ) -> tuple[bool, str]:
     """Compile a library .ore from seed bitcode.
 
     Steps:
-    1. ``llvm-extract --delete --func=main`` strips user code, leaving
+    1. ``llvm-extract --delete`` strips user entry-point code, leaving
        only library functions in a temporary bitcode file.
     2. ``llc -O3 -filetype=obj -relocation-model=pic`` compiles the
        library bitcode into a relocatable object (``.ore``).
@@ -300,16 +302,19 @@ def _build_ore(
     with tempfile.TemporaryDirectory(prefix="ore-build-") as td:
         lib_bc = Path(td) / "lib.bc"
 
-        # Step 1: strip user code (main) from seed bitcode.
+        # Step 1: strip user entry-point code from seed bitcode.
+        extract_args = [
+            probe.llvm_extract,
+            "--delete",
+            "--func=main",
+            "--rfunc=__wrap_and_execute_raising_main",
+        ]
+        if seed_module:
+            extract_args.append(f"--func={seed_module}::main()")
+        extract_args.extend([str(seed_bc), "-o", str(lib_bc)])
+
         extract_result = subprocess.run(
-            [
-                probe.llvm_extract,
-                "--delete",
-                "--func=main",
-                str(seed_bc),
-                "-o",
-                str(lib_bc),
-            ],
+            extract_args,
             capture_output=True,
             text=True,
         )
@@ -372,10 +377,12 @@ def _extract_user_symbols(
         )
         symbols: set[str] = set()
         for line in result.stdout.splitlines():
-            parts = line.strip().split()
-            # llvm-nm output: [address] type name
-            if len(parts) >= 2:
-                symbols.add(parts[-1])
+            # llvm-nm output: "<address> <type> <name>"
+            # Address is 16 chars, then space, then 1-char type, then space,
+            # then the full symbol name (which may contain spaces).
+            parts = line.strip().split(maxsplit=2)
+            if len(parts) >= 3:
+                symbols.add(parts[2])
         return symbols
 
     user_syms = _collect_defined_symbols(full_bc)
@@ -432,14 +439,17 @@ def run_ore_pipeline(
     source_file = cmd.argv[-1]
     start = time.monotonic()
 
-    # Collect -D defines from the original command.
+    # Forward relevant flags from the original command.
     defines: list[str] = []
+    extra_flags: list[str] = []
     argv_list = list(cmd.argv)
     for i, arg in enumerate(argv_list):
         if arg == "-D" and i + 1 < len(argv_list):
             defines.extend(["-D", argv_list[i + 1]])
         elif arg.startswith("-D") and len(arg) > 2:
             defines.append(arg)
+        elif arg == "--num-threads" and i + 1 < len(argv_list):
+            extra_flags.extend(["--num-threads", argv_list[i + 1]])
 
     # Include paths from ore_context.
     include_args: list[str] = []
@@ -454,6 +464,8 @@ def run_ore_pipeline(
         binary = work / "program"
 
         # Step 1: mojo build --emit llvm-bitcode → full.bc
+        print(f"ore: [1/6] emitting bitcode for {source_file}", file=sys.stderr)
+        step1_start = time.monotonic()
         mojo_args = [
             ore_context.mojo_path,
             "build",
@@ -463,6 +475,7 @@ def run_ore_pipeline(
             str(full_bc),
         ]
         mojo_args.extend(defines)
+        mojo_args.extend(extra_flags)
         mojo_args.extend(include_args)
         mojo_args.append(source_file)
 
@@ -485,15 +498,25 @@ def run_ore_pipeline(
                 elapsed_s=elapsed,
             )
 
+        step1_elapsed = time.monotonic() - step1_start
+        print(f"ore: [1/6] bitcode emitted in {step1_elapsed:.1f}s", file=sys.stderr)
+
         # Step 2: symbol diff
         user_symbols = _extract_user_symbols(full_bc, ore_path, probe)
 
-        # Step 3: llvm-extract user functions + static_string glob → user.bc
+        print(f"ore: [2/6] extracted {len(user_symbols)} user symbols", file=sys.stderr)
+
+        # Step 3: llvm-extract user functions + globals → user.bc
+        # static_string_* and global_constant_* are globals, not functions —
+        # use --rglob (regex global) instead of --func.
         assert probe.llvm_extract is not None
         extract_args = [probe.llvm_extract]
         for sym in sorted(user_symbols):
+            if sym.startswith("static_string") or sym.startswith("global_constant"):
+                continue
             extract_args.append(f"--func={sym}")
         extract_args.append("--rglob=static_string")
+        extract_args.append("--rglob=global_constant")
         extract_args.extend([str(full_bc), "-o", str(user_bc)])
 
         step3 = subprocess.run(
@@ -514,6 +537,7 @@ def run_ore_pipeline(
             )
 
         # Step 4: llc → user.o
+        print("ore: [4/6] compiling user bitcode", file=sys.stderr)
         assert probe.llc is not None
         step4 = subprocess.run(
             [
@@ -541,6 +565,7 @@ def run_ore_pipeline(
             )
 
         # Step 5: clang link → binary
+        print("ore: [5/6] linking binary", file=sys.stderr)
         assert probe.clang is not None
         link_args = [
             probe.clang,
@@ -551,6 +576,12 @@ def run_ore_pipeline(
             f"-L{ore_context.runtime_lib_dir}",
             f"-Wl,-rpath,{ore_context.runtime_lib_dir}",
         ]
+        # Add -L and -rpath for native lib directories in include paths.
+        for inc in ore_context.include_paths:
+            lib_dir = Path(inc) / "lib"
+            if lib_dir.is_dir():
+                link_args.append(f"-L{lib_dir}")
+                link_args.append(f"-Wl,-rpath,{lib_dir}")
         link_args.extend(_RUNTIME_LIBS)
         link_args.extend(_platform_link_flags())
 
@@ -572,6 +603,7 @@ def run_ore_pipeline(
             )
 
         # Step 6: execute binary
+        print("ore: [6/6] running", file=sys.stderr)
         try:
             step6 = subprocess.run(
                 [str(binary)],
@@ -610,6 +642,8 @@ def run_ore_pipeline(
         else:
             kind = OutcomeKind.FAIL
             exit_code = step6.returncode
+
+        print(f"ore: done in {elapsed:.1f}s", file=sys.stderr)
 
         return Outcome(
             command=cmd,
@@ -663,6 +697,7 @@ def _try_ore_run(
 
     # No include paths → no library code to pre-compile.
     if not ctx.include_paths:
+        print("ore: skipped (no include paths)", file=sys.stderr)
         return None
 
     # Probe LLVM tools (cached across calls within the process).
@@ -672,7 +707,7 @@ def _try_ore_run(
 
     if not probe.available:
         print(
-            f"ore-unavailable: LLVM tool '{probe.missing_tool}' not found, "
+            f"ore: unavailable — LLVM tool '{probe.missing_tool}' not found, "
             "falling back to mojo run",
             file=sys.stderr,
         )
@@ -695,16 +730,21 @@ def _try_ore_run(
     cached_path = cache.get(key)
 
     if cached_path is None:
+        print(f"ore: cache miss [{key[:12]}…], building .ore", file=sys.stderr)
         with _ore_build_lock:
-            # Double-check after acquiring the lock — another thread may
-            # have built and cached the .ore while we waited.
             cached_path = cache.get(key)
             if cached_path is None:
+                build_start = time.monotonic()
                 cached_path = _build_and_cache_ore(
                     cmd, ctx, probe, cache, key, extra_env=extra_env,
                 )
                 if cached_path is None:
+                    print("ore: build failed, falling back to mojo run", file=sys.stderr)
                     return None
+                build_elapsed = time.monotonic() - build_start
+                print(f"ore: cached [{key[:12]}…] in {build_elapsed:.1f}s", file=sys.stderr)
+    else:
+        print(f"ore: cache hit [{key[:12]}…]", file=sys.stderr)
 
     # Run through the ore pipeline with the cached .ore.
     return run_ore_pipeline(cmd, ctx, probe, cached_path, extra_env=extra_env)
@@ -810,7 +850,10 @@ def _build_and_cache_ore(
             return None
 
         # Build .ore from seed bitcode.
-        success, stderr = _build_ore(seed_bc, probe, ore_output)
+        seed_module = Path(seed_source).stem
+        success, stderr = _build_ore(
+            seed_bc, probe, ore_output, seed_module=seed_module,
+        )
         if not success:
             print(f"ore-unavailable: .ore build failed: {stderr}, falling back to mojo run", file=sys.stderr)
             return None

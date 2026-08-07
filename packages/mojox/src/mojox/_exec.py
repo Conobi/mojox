@@ -54,6 +54,9 @@ def run_command(
             result = _try_ore_run(cmd, ore_context, extra_env=extra_env)
             if result is not None:
                 return result
+    elif ore_context is not None and not ore_context.enabled:
+        import sys
+        print("ore: disabled (release profile or --no-ore)", file=sys.stderr)
     # Fall through to standard subprocess path
     env = dict(cmd.env)
     if extra_env:

@@ -207,10 +207,17 @@ def _resolve_pipeline(args: argparse.Namespace):
     is_release = profile_name == "release"
     runtime_lib_dir = _resolve_runtime_lib_dir()
 
+    all_include_paths = tuple(
+        dict.fromkeys(
+            list(policy.include_paths)
+            + [d.include_dir for d in env.include_sequence]
+        )
+    )
+
     ore_context = OreContext(
         enabled=not no_ore and not is_release,
         seed=Path(manifest.ore_seed) if manifest.ore_seed else None,
-        include_paths=policy.include_paths,
+        include_paths=all_include_paths,
         compiler_version=toolchain.version,
         mojo_path=toolchain.mojo_path,
         runtime_lib_dir=runtime_lib_dir,
@@ -330,10 +337,17 @@ def _cmd_run(args: argparse.Namespace) -> None:
     is_release = args.profile == "release"
     runtime_lib_dir = _resolve_runtime_lib_dir()
 
+    all_run_include_paths = tuple(
+        dict.fromkeys(
+            list(policy.include_paths)
+            + [d.include_dir for d in env.include_sequence]
+        )
+    )
+
     ore_context = OreContext(
         enabled=not no_ore and not is_release,
         seed=Path(manifest.ore_seed) if manifest is not None and manifest.ore_seed else None,
-        include_paths=policy.include_paths,
+        include_paths=all_run_include_paths,
         compiler_version=toolchain.version,
         mojo_path=toolchain.mojo_path,
         runtime_lib_dir=runtime_lib_dir,

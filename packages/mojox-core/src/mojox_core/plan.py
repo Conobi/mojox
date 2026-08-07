@@ -142,8 +142,13 @@ def _build_run_test_command(
     host: HostFacts,
     precompiled_ids: list[str],
 ) -> Command:
-    """Build a run-test command with optimization, defines, and thread count."""
-    argv: list[str] = [toolchain.mojo_path, "run", target.path]
+    """Build a run-test command with optimization, defines, and thread count.
+
+    The source file must appear last in argv: ``mojo run`` treats anything
+    after the source path as script arguments, so compiler flags like ``-I``
+    are silently ignored when they follow the source file.
+    """
+    argv: list[str] = [toolchain.mojo_path, "run"]
 
     if policy.optimize is not None:
         argv.append(f"-O{policy.optimize}")
@@ -162,6 +167,9 @@ def _build_run_test_command(
 
     _append_lint_flags(argv, policy.lints)
     argv.extend(policy.flags)
+
+    # Source file MUST be last — mojo run treats post-file args as script args.
+    argv.append(target.path)
 
     return Command(
         argv=tuple(argv),
