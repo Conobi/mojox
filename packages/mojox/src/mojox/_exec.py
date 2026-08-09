@@ -17,26 +17,24 @@ from pathlib import Path
 from mojox_core import Command
 
 from ._diagnostics import parse_diagnostics
-from ._ore import OreContext
 from ._types import Outcome, OutcomeKind
 
 
 def _inject_native_lib_paths(
     env: dict[str, str],
-    ore_context: OreContext,
+    include_paths: tuple[str, ...],
 ) -> None:
     """Add native lib dirs from include paths to the library search path.
 
     Dependencies may ship native shared libraries (e.g. librustls_mojo.so)
-    in a ``lib/`` subdirectory of their include path. The ore pipeline
-    handles this via clang's ``-rpath``, but the standard ``mojo run``
-    path needs the dynamic linker to find them at runtime.
+    in a ``lib/`` subdirectory of their include path. The dynamic linker
+    needs to find them at runtime.
 
     Modifies *env* in place, appending to ``LD_LIBRARY_PATH`` (Linux)
     or ``DYLD_LIBRARY_PATH`` (macOS).
     """
     lib_dirs: list[str] = []
-    for inc in ore_context.include_paths:
+    for inc in include_paths:
         lib_dir = Path(inc) / "lib"
         if lib_dir.is_dir():
             lib_dirs.append(str(lib_dir))
@@ -55,7 +53,7 @@ def run_command(
     cmd: Command,
     *,
     extra_env: dict[str, str] | None = None,
-    ore_context: OreContext | None = None,
+    include_paths: tuple[str, ...] = (),
 ) -> Outcome:
     """Run a single Command and return its Outcome.
 
@@ -63,41 +61,25 @@ def run_command(
     ``extra_env`` (LocalSettings.env). The host environment is never
     inherited.
 
-    When *ore_context* is enabled and the command kind is ore-eligible,
-    the ore pipeline is attempted first. If it succeeds, the ore-
-    accelerated Outcome is returned. Otherwise execution falls through
-    to the standard subprocess path.
-
     Args:
         cmd: The command to execute.
         extra_env: Additional environment variables to merge (from
             LocalSettings.env). These are added under cmd.env, with
             cmd.env values taking precedence for conflicts.
-        ore_context: Optional ore acceleration context. When provided
-            and enabled, eligible commands are dispatched through the
-            ore pipeline before falling back to the standard path.
+        include_paths: Dependency include directories whose ``lib/``
+            subdirectories are added to the dynamic linker search path.
 
     Returns:
         An Outcome describing the result.
     """
-    if ore_context is not None and ore_context.enabled:
-        from ._ore import is_ore_eligible, _try_ore_run
-
-        if is_ore_eligible(cmd.kind):
-            result = _try_ore_run(cmd, ore_context, extra_env=extra_env)
-            if result is not None:
-                return result
-    elif ore_context is not None and not ore_context.enabled:
-        print("ore: disabled (release profile or --no-ore)", file=sys.stderr)
-    # Fall through to standard subprocess path
     env = dict(cmd.env)
     if extra_env:
         merged = dict(extra_env)
         merged.update(env)
         env = merged
 
-    if ore_context is not None:
-        _inject_native_lib_paths(env, ore_context)
+    if include_paths:
+        _inject_native_lib_paths(env, include_paths)
 
     start = time.monotonic()
     try:
@@ -177,7 +159,7 @@ def run_commands(
     *,
     max_workers: int = 1,
     extra_env: dict[str, str] | None = None,
-    ore_context: OreContext | None = None,
+    include_paths: tuple[str, ...] = (),
 ) -> tuple[Outcome, ...]:
     """Run a sequence of Commands with concurrency and dependency ordering.
 
@@ -194,8 +176,8 @@ def run_commands(
         max_workers: Maximum concurrent subprocess invocations.
         extra_env: Additional env vars merged into each command
             (from LocalSettings.env).
-        ore_context: Optional ore acceleration context forwarded to
-            each :func:`run_command` invocation.
+        include_paths: Dependency include directories whose ``lib/``
+            subdirectories are added to the dynamic linker search path.
 
     Returns:
         A tuple of Outcomes in the same order as the input commands.
@@ -216,9 +198,9 @@ def run_commands(
             no_deps.append((i, cmd))
 
     if no_deps:
-        _run_phase(no_deps, completed, results, max_workers, extra_env, ore_context)
+        _run_phase(no_deps, completed, results, max_workers, extra_env, include_paths)
     if has_deps:
-        _run_phase(has_deps, completed, results, max_workers, extra_env, ore_context)
+        _run_phase(has_deps, completed, results, max_workers, extra_env, include_paths)
 
     assert all(r is not None for r in results), "unfilled result slots"
     return tuple(results)  # type: ignore[arg-type]
@@ -230,7 +212,7 @@ def _run_phase(
     results: list[Outcome | None],
     max_workers: int,
     extra_env: dict[str, str] | None,
-    ore_context: OreContext | None = None,
+    include_paths: tuple[str, ...] = (),
 ) -> None:
     """Run a batch of commands concurrently, checking deps before submission.
 
@@ -240,12 +222,12 @@ def _run_phase(
         results: Mutable list of results to populate by index.
         max_workers: Maximum concurrent subprocess invocations.
         extra_env: Additional env vars merged into each command.
-        ore_context: Optional ore acceleration context forwarded to
-            each :func:`run_command` invocation.
+        include_paths: Dependency include directories whose ``lib/``
+            subdirectories are added to the dynamic linker search path.
     """
     if len(phase) == 1:
         idx, cmd = phase[0]
-        outcome = _run_or_skip(cmd, completed, extra_env, ore_context)
+        outcome = _run_or_skip(cmd, completed, extra_env, include_paths)
         results[idx] = outcome
         completed[cmd.target_id] = outcome
         return
@@ -260,7 +242,7 @@ def _run_phase(
                 completed[cmd.target_id] = skip_outcome
                 continue
             future = pool.submit(
-                run_command, cmd, extra_env=extra_env, ore_context=ore_context,
+                run_command, cmd, extra_env=extra_env, include_paths=include_paths,
             )
             future_to_idx[future] = (idx, cmd)
 
@@ -275,7 +257,7 @@ def _run_or_skip(
     cmd: Command,
     completed: dict[str, Outcome],
     extra_env: dict[str, str] | None,
-    ore_context: OreContext | None = None,
+    include_paths: tuple[str, ...] = (),
 ) -> Outcome:
     """Run a command or skip it if dependencies failed.
 
@@ -283,13 +265,13 @@ def _run_or_skip(
         cmd: The command to execute.
         completed: Mapping of target_id to Outcome for finished commands.
         extra_env: Additional env vars merged into the command.
-        ore_context: Optional ore acceleration context forwarded to
-            :func:`run_command`.
+        include_paths: Dependency include directories whose ``lib/``
+            subdirectories are added to the dynamic linker search path.
     """
     skip = _check_dependencies(cmd, completed)
     if skip is not None:
         return skip
-    return run_command(cmd, extra_env=extra_env, ore_context=ore_context)
+    return run_command(cmd, extra_env=extra_env, include_paths=include_paths)
 
 
 def _check_dependencies(

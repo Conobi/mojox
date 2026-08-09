@@ -8,7 +8,6 @@ from pathlib import Path, PurePosixPath
 import pytest
 
 from mojox._exec import run_command, run_commands
-from mojox._ore import OreContext
 from mojox._types import OutcomeKind
 from mojox_core import Command, CommandKind
 
@@ -176,8 +175,7 @@ class TestRunCommands:
 class TestNativeLibPathInjection:
     """Standard mojo run path must set LD_LIBRARY_PATH for native libs.
 
-    When ore is disabled (--no-ore or release profile), the standard
-    subprocess path must still find native shared libraries shipped by
+    The subprocess path must find native shared libraries shipped by
     dependencies in their lib/ subdirectories.
     """
 
@@ -187,21 +185,11 @@ class TestNativeLibPathInjection:
         lib_dir = inc_dir / "lib"
         lib_dir.mkdir(parents=True)
 
-        ore_ctx = OreContext(
-            enabled=False,
-            seed=None,
-            include_paths=(str(inc_dir),),
-            compiler_version="2025.6.1",
-            mojo_path="/usr/bin/mojo",
-            runtime_lib_dir=tmp_path / "runtime",
-            dep_versions=(("navette", "0.5.0"),),
-        )
-
         cmd = _cmd(
             (sys.executable, "-c", "import os; print(os.environ.get('LD_LIBRARY_PATH', ''))"),
             env={"PATH": f"{sys.prefix}/bin:/usr/bin:/bin", "HOME": ""},
         )
-        outcome = run_command(cmd, ore_context=ore_ctx)
+        outcome = run_command(cmd, include_paths=(str(inc_dir),))
         assert outcome.kind == OutcomeKind.PASS
         assert str(lib_dir) in outcome.stdout
 
@@ -210,21 +198,11 @@ class TestNativeLibPathInjection:
         inc_dir = tmp_path / "deps" / "navette"
         inc_dir.mkdir(parents=True)
 
-        ore_ctx = OreContext(
-            enabled=False,
-            seed=None,
-            include_paths=(str(inc_dir),),
-            compiler_version="2025.6.1",
-            mojo_path="/usr/bin/mojo",
-            runtime_lib_dir=tmp_path / "runtime",
-            dep_versions=(),
-        )
-
         cmd = _cmd(
             (sys.executable, "-c", "import os; print(os.environ.get('LD_LIBRARY_PATH', 'NONE'))"),
             env={"PATH": f"{sys.prefix}/bin:/usr/bin:/bin", "HOME": ""},
         )
-        outcome = run_command(cmd, ore_context=ore_ctx)
+        outcome = run_command(cmd, include_paths=(str(inc_dir),))
         assert outcome.kind == OutcomeKind.PASS
         assert "NONE" in outcome.stdout
 
@@ -234,21 +212,11 @@ class TestNativeLibPathInjection:
         lib_dir = inc_dir / "lib"
         lib_dir.mkdir(parents=True)
 
-        ore_ctx = OreContext(
-            enabled=False,
-            seed=None,
-            include_paths=(str(inc_dir),),
-            compiler_version="2025.6.1",
-            mojo_path="/usr/bin/mojo",
-            runtime_lib_dir=tmp_path / "runtime",
-            dep_versions=(),
-        )
-
         cmd = _cmd(
             (sys.executable, "-c", "import os; print(os.environ.get('LD_LIBRARY_PATH', ''))"),
             env={"PATH": f"{sys.prefix}/bin:/usr/bin:/bin", "HOME": "", "LD_LIBRARY_PATH": "/existing/lib"},
         )
-        outcome = run_command(cmd, ore_context=ore_ctx)
+        outcome = run_command(cmd, include_paths=(str(inc_dir),))
         assert outcome.kind == OutcomeKind.PASS
         assert "/existing/lib" in outcome.stdout
         assert str(lib_dir) in outcome.stdout
@@ -262,21 +230,11 @@ class TestNativeLibPathInjection:
         lib2 = inc2 / "lib"
         lib2.mkdir(parents=True)
 
-        ore_ctx = OreContext(
-            enabled=False,
-            seed=None,
-            include_paths=(str(inc1), str(inc2)),
-            compiler_version="2025.6.1",
-            mojo_path="/usr/bin/mojo",
-            runtime_lib_dir=tmp_path / "runtime",
-            dep_versions=(),
-        )
-
         cmd = _cmd(
             (sys.executable, "-c", "import os; print(os.environ.get('LD_LIBRARY_PATH', ''))"),
             env={"PATH": f"{sys.prefix}/bin:/usr/bin:/bin", "HOME": ""},
         )
-        outcome = run_command(cmd, ore_context=ore_ctx)
+        outcome = run_command(cmd, include_paths=(str(inc1), str(inc2)))
         assert outcome.kind == OutcomeKind.PASS
         assert str(lib1) in outcome.stdout
         assert str(lib2) in outcome.stdout
