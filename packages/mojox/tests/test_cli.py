@@ -142,7 +142,7 @@ class TestCLIIntegration:
         assert "name" in result.stderr.lower()
 
     def test_check_detects_bare_assert(self, tmp_path):
-        """mojox check catches bare assert in test files."""
+        """mojox check warns on bare assert in test files but exits 0."""
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text(
             '[project]\nname = "testlib"\nversion = "0.1.0"\n'
@@ -160,11 +160,12 @@ class TestCLIIntegration:
             capture_output=True,
             text=True,
         )
-        assert result.returncode == 1
+        assert result.returncode == 0
         assert "assert" in result.stderr.lower()
+        assert "warning" in result.stderr.lower()
 
     def test_check_detects_path_source(self, tmp_path):
-        """mojox check catches path overrides for published deps."""
+        """mojox check warns on path overrides for published deps but exits 0."""
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text(
             '[project]\nname = "testlib"\nversion = "0.1.0"\n'
@@ -179,8 +180,9 @@ class TestCLIIntegration:
             capture_output=True,
             text=True,
         )
-        assert result.returncode == 1
+        assert result.returncode == 0
         assert "path" in result.stderr.lower()
+        assert "warning" in result.stderr.lower()
 
     def test_no_subcommand_exits_with_error(self):
         """Running without a subcommand shows help and exits 2."""

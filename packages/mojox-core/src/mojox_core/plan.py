@@ -302,8 +302,12 @@ def _construct_env(toolchain: Toolchain) -> dict[str, str]:
     The environment is explicitly constructed rather than inherited from the
     host process, ensuring reproducibility and preventing accidental leakage
     of ambient environment variables.
+
+    PATH includes the Mojo binary's directory plus standard system
+    directories so that the C compiler (cc/clang) is available for linking.
     """
+    mojo_dir = str(PurePosixPath(toolchain.mojo_path).parent)
     return {
-        "PATH": str(PurePosixPath(toolchain.mojo_path).parent),
+        "PATH": f"{mojo_dir}:/usr/local/bin:/usr/bin:/bin",
         "HOME": "",
     }

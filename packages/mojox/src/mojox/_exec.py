@@ -72,6 +72,9 @@ def run_command(
     Returns:
         An Outcome describing the result.
     """
+    for output in cmd.outputs:
+        Path(output).parent.mkdir(parents=True, exist_ok=True)
+
     env = dict(cmd.env)
     if extra_env:
         merged = dict(extra_env)

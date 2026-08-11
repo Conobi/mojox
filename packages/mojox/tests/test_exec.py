@@ -172,6 +172,21 @@ class TestRunCommands:
         assert "present" in results[0].stdout
 
 
+class TestOutputDirectoryCreation:
+    """Output parent directories must be created before execution."""
+
+    def test_output_dirs_created(self, tmp_path: Path):
+        """Parent directories for Command.outputs are created automatically."""
+        out_file = tmp_path / "deep" / "nested" / "pkg" / "lib.mojoc"
+        cmd = _cmd(
+            (sys.executable, "-c", "print('ok')"),
+            outputs=(str(out_file),),
+        )
+        outcome = run_command(cmd)
+        assert outcome.kind == OutcomeKind.PASS
+        assert out_file.parent.is_dir()
+
+
 class TestNativeLibPathInjection:
     """Standard mojo run path must set LD_LIBRARY_PATH for native libs.
 

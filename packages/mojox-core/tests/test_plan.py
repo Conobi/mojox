@@ -324,7 +324,7 @@ class TestCommandEnv:
             assert isinstance(c.env, dict)
             assert set(c.env.keys()) == {"PATH", "HOME"}, \
                 f"env should contain only PATH and HOME, got {set(c.env.keys())}"
-            assert c.env["PATH"] == "/venv/bin"
+            assert c.env["PATH"] == "/venv/bin:/usr/local/bin:/usr/bin:/bin"
 
 
 class TestRunArgvOrdering:

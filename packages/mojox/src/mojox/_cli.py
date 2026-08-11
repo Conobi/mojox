@@ -68,7 +68,8 @@ def _add_common_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("-D", "--define", action="append", default=[], dest="defines",
                         help="Define a compile-time variable (KEY=VALUE)")
     parser.add_argument("--flag", action="append", default=[], dest="flags",
-                        help="Extra flag passed through to the compiler")
+                        help="Extra flag passed through to the compiler"
+                             " (use --flag=VALUE for dash-prefixed flags)")
 
 
 def _build_cli_overrides(args: argparse.Namespace) -> dict:
@@ -368,9 +369,9 @@ def _cmd_check(args: argparse.Namespace) -> None:
         for f in findings:
             loc = f"{f.file}:{f.line}: " if f.line else f"{f.file}: "
             print(f"lint: {loc}{f.message}", file=sys.stderr)
-        sys.exit(1)
-
-    print("check: OK", file=sys.stderr)
+        print(f"check: {len(findings)} warning(s)", file=sys.stderr)
+    else:
+        print("check: OK", file=sys.stderr)
 
 
 def _cmd_metadata(args: argparse.Namespace) -> None:
