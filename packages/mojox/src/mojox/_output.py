@@ -40,6 +40,69 @@ def _c(stream: IO[str], code: str, text: str) -> str:
     return text
 
 
+# -- Progress ---------------------------------------------------------------
+
+_OUTCOME_LABELS: dict[OutcomeKind, tuple[str, str]] = {
+    OutcomeKind.PASS: (_GREEN, "PASS"),
+    OutcomeKind.FAIL: (_RED, "FAIL"),
+    OutcomeKind.TIMEOUT: (_RED_BOLD, "TIMEOUT"),
+    OutcomeKind.CRASH: (_RED_BOLD, "CRASH"),
+    OutcomeKind.COMPILE_ERROR: (_RED_BOLD, "COMPILE ERROR"),
+}
+
+
+def render_starting(
+    count: int,
+    *,
+    stream: IO[str] | None = None,
+) -> None:
+    """Render the 'Starting N targets' header line."""
+    out = stream or sys.stderr
+    label = "target" if count == 1 else "targets"
+    out.write(f"{_c(out, _BOLD, 'Starting')} {count} {label}\n")
+
+
+def render_outcome(
+    outcome: Outcome,
+    *,
+    stream: IO[str] | None = None,
+    verbose: bool = False,
+) -> None:
+    """Render a single outcome as it completes (nextest style)."""
+    out = stream or sys.stderr
+    code, text = _OUTCOME_LABELS[outcome.kind]
+    label = _c(out, code, text)
+    timing = _c(out, _DIM, f"[{outcome.elapsed_s:.1f}s]")
+    out.write(f"{label} {timing} {outcome.command.target_id}\n")
+
+    if outcome.kind != OutcomeKind.PASS:
+        if outcome.stderr:
+            for line in outcome.stderr.splitlines()[:10]:
+                out.write(f"  {_c(out, _DIM, line)}\n")
+        if outcome.kind == OutcomeKind.TIMEOUT:
+            out.write(f"  {_c(out, _DIM, f'(timed out after {outcome.elapsed_s:.1f}s)')}\n")
+    elif verbose:
+        if outcome.stdout:
+            for line in outcome.stdout.splitlines():
+                out.write(f"  {_c(out, _DIM, line)}\n")
+        if outcome.stderr:
+            for line in outcome.stderr.splitlines():
+                out.write(f"  {_c(out, _DIM, line)}\n")
+
+
+def make_progress_callback(
+    stream: IO[str] | None = None,
+    verbose: bool = False,
+):
+    """Return a callback suitable for ``run_commands(on_complete=...)``."""
+    out = stream or sys.stderr
+
+    def _on_complete(outcome: Outcome) -> None:
+        render_outcome(outcome, stream=out, verbose=verbose)
+
+    return _on_complete
+
+
 # -- Summary ----------------------------------------------------------------
 
 def render_summary(
@@ -47,7 +110,7 @@ def render_summary(
     *,
     stream: IO[str] | None = None,
 ) -> None:
-    """Render a summary of execution outcomes."""
+    """Render the final summary counts line."""
     out = stream or sys.stderr
 
     if not outcomes:
@@ -60,10 +123,6 @@ def render_summary(
     crashed = sum(1 for o in outcomes if o.kind == OutcomeKind.CRASH)
     compile_errors = sum(1 for o in outcomes if o.kind == OutcomeKind.COMPILE_ERROR)
     total_time = sum(o.elapsed_s for o in outcomes)
-
-    for o in outcomes:
-        if o.kind != OutcomeKind.PASS:
-            _render_failure(o, out)
 
     parts: list[str] = []
     if passed:
@@ -79,32 +138,6 @@ def render_summary(
 
     summary = ", ".join(parts) if parts else "0 targets"
     out.write(f"\n{_c(out, _BOLD, summary)} in {total_time:.2f}s\n")
-
-
-def _render_failure(outcome: Outcome, out: IO[str]) -> None:
-    """Render details for a single failed target."""
-    label = _failure_label(outcome.kind, out)
-    out.write(f"\n{label}: {_c(out, _BOLD, outcome.command.target_id)}\n")
-
-    if outcome.stderr:
-        for line in outcome.stderr.splitlines()[:20]:
-            out.write(f"  {_c(out, _DIM, line)}\n")
-
-    if outcome.kind == OutcomeKind.TIMEOUT:
-        out.write(f"  {_c(out, _DIM, f'(timed out after {outcome.elapsed_s:.1f}s)')}\n")
-
-
-def _failure_label(kind: OutcomeKind, out: IO[str]) -> str:
-    """Colored label for a failure kind."""
-    labels = {
-        OutcomeKind.FAIL: (_RED, "FAIL"),
-        OutcomeKind.TIMEOUT: (_RED_BOLD, "TIMEOUT"),
-        OutcomeKind.CRASH: (_RED_BOLD, "CRASH"),
-        OutcomeKind.COMPILE_ERROR: (_RED_BOLD, "COMPILE ERROR"),
-        OutcomeKind.PASS: (_GREEN, "PASS"),
-    }
-    code, text = labels[kind]
-    return _c(out, code, text)
 
 
 # -- Dry-run ----------------------------------------------------------------

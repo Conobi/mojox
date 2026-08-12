@@ -95,6 +95,11 @@ def _build_cli_overrides(args: argparse.Namespace) -> dict:
     return overrides
 
 
+def _interrupted_summary(commands) -> str:
+    """Build a short message for Ctrl+C interruption."""
+    return f"Interrupted — {len(commands)} targets planned"
+
+
 def _resolve_pipeline(args: argparse.Namespace):
     """Run the shared resolution pipeline.
 
@@ -182,7 +187,10 @@ def _resolve_pipeline(args: argparse.Namespace):
 def _cmd_test(args: argparse.Namespace) -> None:
     """Execute the test subcommand."""
     from ._exec import run_commands
-    from ._output import render_dry_run, render_summary, render_diagnostics
+    from ._output import (
+        render_dry_run, render_summary, render_diagnostics,
+        render_starting, make_progress_callback,
+    )
 
     manifest, graph, env, policy, toolchain, host, settings, commands, include_paths = (
         _resolve_pipeline(args)
@@ -195,12 +203,18 @@ def _cmd_test(args: argparse.Namespace) -> None:
         render_dry_run(commands, compact=not args.verbose)
         return
 
-    outcomes = run_commands(
-        commands,
-        max_workers=policy.jobs_tests,
-        extra_env=settings.env if settings.env else None,
-        include_paths=include_paths,
-    )
+    render_starting(len(commands))
+    try:
+        outcomes = run_commands(
+            commands,
+            max_workers=policy.jobs_tests,
+            extra_env=settings.env if settings.env else None,
+            include_paths=include_paths,
+            on_complete=make_progress_callback(verbose=args.verbose),
+        )
+    except KeyboardInterrupt:
+        print(f"\n{_interrupted_summary(commands)}", file=sys.stderr)
+        sys.exit(130)
     render_summary(outcomes)
 
     from ._types import OutcomeKind
@@ -268,6 +282,28 @@ def _cmd_run(args: argparse.Namespace) -> None:
             timeout_s=timeout,
         )
 
+    # Add project source package parents to include paths so mojo
+    # finds them without precompilation.
+    if manifest is not None and manifest.packages:
+        source_dirs = []
+        for pkg in manifest.packages:
+            pkg_path = root / pkg
+            if pkg_path.is_dir():
+                source_dirs.append(str(pkg_path.parent))
+        extra_includes = tuple(dict.fromkeys(source_dirs + list(policy.include_paths)))
+        policy = Policy(
+            optimize=policy.optimize,
+            debug_level=policy.debug_level,
+            defines=policy.defines,
+            flags=policy.flags,
+            include_paths=extra_includes,
+            lints=policy.lints,
+            jobs=policy.jobs,
+            jobs_compile=policy.jobs_compile,
+            jobs_tests=policy.jobs_tests,
+            timeout_s=policy.timeout_s,
+        )
+
     graph = TargetGraph(
         targets=(Target(TargetKind.TEST, args.file, args.file),),
         edges=(),
@@ -300,7 +336,10 @@ def _cmd_run(args: argparse.Namespace) -> None:
 def _cmd_build(args: argparse.Namespace) -> None:
     """Execute the build subcommand."""
     from ._exec import run_commands
-    from ._output import render_dry_run, render_summary, render_diagnostics
+    from ._output import (
+        render_dry_run, render_summary, render_diagnostics,
+        render_starting, make_progress_callback,
+    )
     from mojox_core import CommandKind
 
     manifest, graph, env, policy, toolchain, host, settings, commands, include_paths = (
@@ -319,12 +358,18 @@ def _cmd_build(args: argparse.Namespace) -> None:
         render_dry_run(build_commands, compact=not args.verbose)
         return
 
-    outcomes = run_commands(
-        build_commands,
-        max_workers=policy.jobs_compile,
-        extra_env=settings.env if settings.env else None,
-        include_paths=include_paths,
-    )
+    render_starting(len(build_commands))
+    try:
+        outcomes = run_commands(
+            build_commands,
+            max_workers=policy.jobs_compile,
+            extra_env=settings.env if settings.env else None,
+            include_paths=include_paths,
+            on_complete=make_progress_callback(verbose=args.verbose),
+        )
+    except KeyboardInterrupt:
+        print(f"\n{_interrupted_summary(build_commands)}", file=sys.stderr)
+        sys.exit(130)
     render_summary(outcomes)
 
     from ._types import OutcomeKind

@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -163,6 +164,7 @@ def run_commands(
     max_workers: int = 1,
     extra_env: dict[str, str] | None = None,
     include_paths: tuple[str, ...] = (),
+    on_complete: Callable[[Outcome], None] | None = None,
 ) -> tuple[Outcome, ...]:
     """Run a sequence of Commands with concurrency and dependency ordering.
 
@@ -181,6 +183,8 @@ def run_commands(
             (from LocalSettings.env).
         include_paths: Dependency include directories whose ``lib/``
             subdirectories are added to the dynamic linker search path.
+        on_complete: Optional callback invoked with each Outcome as it
+            completes. Called from the executor thread; must be thread-safe.
 
     Returns:
         A tuple of Outcomes in the same order as the input commands.
@@ -201,9 +205,9 @@ def run_commands(
             no_deps.append((i, cmd))
 
     if no_deps:
-        _run_phase(no_deps, completed, results, max_workers, extra_env, include_paths)
+        _run_phase(no_deps, completed, results, max_workers, extra_env, include_paths, on_complete)
     if has_deps:
-        _run_phase(has_deps, completed, results, max_workers, extra_env, include_paths)
+        _run_phase(has_deps, completed, results, max_workers, extra_env, include_paths, on_complete)
 
     assert all(r is not None for r in results), "unfilled result slots"
     return tuple(results)  # type: ignore[arg-type]
@@ -216,6 +220,7 @@ def _run_phase(
     max_workers: int,
     extra_env: dict[str, str] | None,
     include_paths: tuple[str, ...] = (),
+    on_complete: Callable[[Outcome], None] | None = None,
 ) -> None:
     """Run a batch of commands concurrently, checking deps before submission.
 
@@ -227,12 +232,18 @@ def _run_phase(
         extra_env: Additional env vars merged into each command.
         include_paths: Dependency include directories whose ``lib/``
             subdirectories are added to the dynamic linker search path.
+        on_complete: Optional callback invoked with each Outcome.
     """
+    def _record(idx: int, outcome: Outcome) -> None:
+        results[idx] = outcome
+        completed[outcome.command.target_id] = outcome
+        if on_complete is not None:
+            on_complete(outcome)
+
     if len(phase) == 1:
         idx, cmd = phase[0]
         outcome = _run_or_skip(cmd, completed, extra_env, include_paths)
-        results[idx] = outcome
-        completed[cmd.target_id] = outcome
+        _record(idx, outcome)
         return
 
     workers = min(max_workers, len(phase))
@@ -241,19 +252,23 @@ def _run_phase(
         for idx, cmd in phase:
             skip_outcome = _check_dependencies(cmd, completed)
             if skip_outcome is not None:
-                results[idx] = skip_outcome
-                completed[cmd.target_id] = skip_outcome
+                _record(idx, skip_outcome)
                 continue
             future = pool.submit(
                 run_command, cmd, extra_env=extra_env, include_paths=include_paths,
             )
             future_to_idx[future] = (idx, cmd)
 
-        for future in as_completed(future_to_idx):
-            idx, cmd = future_to_idx[future]
-            outcome = future.result()
-            results[idx] = outcome
-            completed[cmd.target_id] = outcome
+        try:
+            for future in as_completed(future_to_idx):
+                idx, cmd = future_to_idx[future]
+                outcome = future.result()
+                _record(idx, outcome)
+        except KeyboardInterrupt:
+            for f in future_to_idx:
+                f.cancel()
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
 
 
 def _run_or_skip(
