@@ -39,6 +39,7 @@ class TestHappyPath:
         assert m.debug_level == "full"
         assert m.ore_seed == "examples/seed.mojo"
         assert m.lints.warnings_as_errors is True
+        assert m.lints.check_doc_strings is True
         assert m.lints.missing_doc_strings is True
         assert "dist" in m.profiles
         assert m.profiles["dist"].optimize == 3

@@ -58,6 +58,7 @@ class LintConfig:
     """Lint settings that translate to compiler flags."""
 
     warnings_as_errors: bool = False
+    check_doc_strings: bool = False
     missing_doc_strings: bool = False
     unstable_apis: bool = False
 

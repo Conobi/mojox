@@ -266,6 +266,12 @@ def _parse_lints(raw: object) -> LintConfig:
             "tool.mojox.lints.warnings",
             f"must be 'error', got {raw['warnings']!r}",
         )
+    _VALID_CHECK_LEVELS = frozenset({"check"})
+    if "check-doc-strings" in raw and raw["check-doc-strings"] not in _VALID_CHECK_LEVELS:
+        raise ConfigError(
+            "tool.mojox.lints.check-doc-strings",
+            f"must be 'check', got {raw['check-doc-strings']!r}",
+        )
     if "missing-doc-strings" in raw and raw["missing-doc-strings"] not in _VALID_LINT_LEVELS:
         raise ConfigError(
             "tool.mojox.lints.missing-doc-strings",
@@ -278,6 +284,7 @@ def _parse_lints(raw: object) -> LintConfig:
         )
     return LintConfig(
         warnings_as_errors=raw.get("warnings") == "error",
+        check_doc_strings=raw.get("check-doc-strings") == "check",
         missing_doc_strings=raw.get("missing-doc-strings") == "warn",
         unstable_apis=raw.get("unstable-apis") == "warn",
     )

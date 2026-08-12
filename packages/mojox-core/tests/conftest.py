@@ -62,6 +62,7 @@ def full_pyproject() -> dict:
                 "ore-seed": "examples/seed.mojo",
                 "lints": {
                     "warnings": "error",
+                    "check-doc-strings": "check",
                     "missing-doc-strings": "warn",
                 },
                 "profile": {

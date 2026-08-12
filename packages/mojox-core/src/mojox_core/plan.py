@@ -33,6 +33,8 @@ def _append_lint_flags(argv: list[str], lints: LintConfig) -> None:
     """
     if lints.warnings_as_errors:
         argv.append("--Werror")
+    if lints.check_doc_strings:
+        argv.append("-check-docstrings")
     if lints.missing_doc_strings:
         argv.append("--diagnose-missing-doc-strings")
     if lints.unstable_apis:
@@ -310,4 +312,5 @@ def _construct_env(toolchain: Toolchain) -> dict[str, str]:
     return {
         "PATH": f"{mojo_dir}:/usr/local/bin:/usr/bin:/bin",
         "HOME": "",
+        "MODULAR_DEBUG": "stack-trace-on-error",
     }

@@ -322,9 +322,10 @@ class TestCommandEnv:
         cmds = plan(graph, _make_env(), _make_policy(), _make_toolchain(), _make_host())
         for c in cmds:
             assert isinstance(c.env, dict)
-            assert set(c.env.keys()) == {"PATH", "HOME"}, \
-                f"env should contain only PATH and HOME, got {set(c.env.keys())}"
+            assert set(c.env.keys()) == {"PATH", "HOME", "MODULAR_DEBUG"}, \
+                f"env should contain PATH, HOME, and MODULAR_DEBUG, got {set(c.env.keys())}"
             assert c.env["PATH"] == "/venv/bin:/usr/local/bin:/usr/bin:/bin"
+            assert c.env["MODULAR_DEBUG"] == "stack-trace-on-error"
 
 
 class TestRunArgvOrdering:
@@ -391,6 +392,19 @@ class TestLintFlagTranslation:
         assert len(cmds) == 1
         assert "--Werror" in cmds[0].argv
 
+    def test_check_doc_strings_emits_flag(self):
+        """Policy with check_doc_strings=True emits -check-docstrings."""
+        graph = TargetGraph(
+            targets=(
+                Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
+            ),
+            edges=(),
+        )
+        pol = _make_policy(lints=LintConfig(check_doc_strings=True))
+        cmds = plan(graph, _make_env(), pol, _make_toolchain(), _make_host())
+        assert len(cmds) == 1
+        assert "-check-docstrings" in cmds[0].argv
+
     def test_missing_doc_strings_emits_flag(self):
         """Policy with missing_doc_strings=True emits --diagnose-missing-doc-strings."""
         graph = TargetGraph(
@@ -430,12 +444,13 @@ class TestLintFlagTranslation:
         pol = _make_policy(
             lints=LintConfig(
                 warnings_as_errors=True,
+                check_doc_strings=True,
                 missing_doc_strings=True,
                 unstable_apis=True,
             ),
         )
         cmds = plan(graph, _make_env(), pol, _make_toolchain(), _make_host())
-        lint_flags = {"--Werror", "--diagnose-missing-doc-strings", "--warn-on-unstable-apis"}
+        lint_flags = {"--Werror", "-check-docstrings", "--diagnose-missing-doc-strings", "--warn-on-unstable-apis"}
         for c in cmds:
             if c.kind == CommandKind.COMPILE_PACKAGE:
                 for flag in lint_flags:
@@ -453,7 +468,7 @@ class TestLintFlagTranslation:
         )
         pol = _make_policy()  # default LintConfig: all False
         cmds = plan(graph, _make_env(), pol, _make_toolchain(), _make_host())
-        lint_flags = {"--Werror", "--diagnose-missing-doc-strings", "--warn-on-unstable-apis"}
+        lint_flags = {"--Werror", "-check-docstrings", "--diagnose-missing-doc-strings", "--warn-on-unstable-apis"}
         for c in cmds:
             for flag in lint_flags:
                 assert flag not in c.argv, (
