@@ -73,10 +73,9 @@ def _find_console_script(dist: importlib.metadata.Distribution) -> str:
         for f in dist.files:
             parts = str(f).split("/")
             if len(parts) >= 1 and parts[-1] == "mojo":
-                # Resolve relative to the distribution location
                 located = dist.locate_file(f)
                 if located and Path(str(located)).exists():
-                    return str(located)
+                    return str(Path(str(located)).resolve())
 
     # Fallback: try the entry_points
     eps = dist.entry_points
@@ -91,7 +90,7 @@ def _find_console_script(dist: importlib.metadata.Distribution) -> str:
         if str(f).endswith("/bin/mojo") or str(f) == "bin/mojo":
             located = dist.locate_file(f)
             if located:
-                return str(located)
+                return str(Path(str(located)).resolve())
 
     raise ConfigError(
         "toolchain",

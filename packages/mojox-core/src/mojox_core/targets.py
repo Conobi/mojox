@@ -42,7 +42,7 @@ def discover(manifest: Manifest, root: Path) -> TargetGraph:
                 targets.append(Target(
                     kind=TargetKind.LIB,
                     path=pkg,
-                    target_id=f"lib::{pkg}",
+                    target_id=pkg,
                 ))
     else:
         pkg_root = root / manifest.package_root
@@ -53,7 +53,7 @@ def discover(manifest: Manifest, root: Path) -> TargetGraph:
                     targets.append(Target(
                         kind=TargetKind.LIB,
                         path=rel,
-                        target_id=f"lib::{rel}",
+                        target_id=rel,
                     ))
 
     # Binary targets
@@ -61,7 +61,7 @@ def discover(manifest: Manifest, root: Path) -> TargetGraph:
         targets.append(Target(
             kind=TargetKind.BIN,
             path=b.source,
-            target_id=f"bin::{b.name}",
+            target_id=b.name,
         ))
 
     # Test targets
@@ -90,7 +90,7 @@ def discover(manifest: Manifest, root: Path) -> TargetGraph:
             targets.append(Target(
                 kind=TargetKind.TEST,
                 path=tf,
-                target_id=f"test::{tf}",
+                target_id=tf,
             ))
 
         # Check for unsearched directories containing test files
@@ -107,7 +107,7 @@ def discover(manifest: Manifest, root: Path) -> TargetGraph:
                     targets.append(Target(
                         kind=TargetKind.EXAMPLE,
                         path=rel,
-                        target_id=f"example::{rel}",
+                        target_id=rel,
                     ))
             elif child.is_dir() and not _is_excluded(child.name):
                 main = child / "main.mojo"
@@ -117,7 +117,7 @@ def discover(manifest: Manifest, root: Path) -> TargetGraph:
                         targets.append(Target(
                             kind=TargetKind.EXAMPLE,
                             path=rel,
-                            target_id=f"example::{rel}",
+                            target_id=rel,
                         ))
 
     return TargetGraph(

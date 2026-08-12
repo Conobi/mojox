@@ -26,8 +26,8 @@ from mojox_core.metadata import serialize
 def _make_fixture():
     graph = TargetGraph(
         targets=(
-            Target(TargetKind.LIB, "src/mylib", "lib::src/mylib"),
-            Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
+            Target(TargetKind.LIB, "src/mylib", "src/mylib"),
+            Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),
         ),
         edges=(),
     )
@@ -51,7 +51,7 @@ def _make_fixture():
             cwd=PurePosixPath("/project"),
             env={"PATH": "/venv/bin"},
             kind=CommandKind.RUN_TEST,
-            target_id="test::tests/test_a.mojo",
+            target_id="tests/test_a.mojo",
             timeout_s=300,
             outputs=(),
             depends_on=(),

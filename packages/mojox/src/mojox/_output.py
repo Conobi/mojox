@@ -5,6 +5,7 @@ Human output goes to stderr. JSON metadata goes to stdout.
 
 from __future__ import annotations
 
+import os
 import sys
 from typing import IO
 
@@ -13,16 +14,40 @@ from mojox_core import Command, Diagnostic
 from ._types import Outcome, OutcomeKind
 
 
+# -- ANSI helpers -----------------------------------------------------------
+
+_BOLD = "\033[1m"
+_DIM = "\033[2m"
+_RED = "\033[31m"
+_GREEN = "\033[32m"
+_YELLOW = "\033[33m"
+_CYAN = "\033[36m"
+_RED_BOLD = "\033[1;31m"
+_RESET = "\033[0m"
+
+
+def _use_color(stream: IO[str]) -> bool:
+    """Return True when *stream* is a TTY and color is not suppressed."""
+    if os.environ.get("NO_COLOR"):
+        return False
+    return hasattr(stream, "isatty") and stream.isatty()
+
+
+def _c(stream: IO[str], code: str, text: str) -> str:
+    """Wrap *text* in an ANSI escape if *stream* supports color."""
+    if _use_color(stream):
+        return f"{code}{text}{_RESET}"
+    return text
+
+
+# -- Summary ----------------------------------------------------------------
+
 def render_summary(
     outcomes: tuple[Outcome, ...],
     *,
     stream: IO[str] | None = None,
 ) -> None:
-    """Render a summary of execution outcomes.
-
-    Shows pass/fail counts, timing, and any diagnostics from
-    failed targets.
-    """
+    """Render a summary of execution outcomes."""
     out = stream or sys.stderr
 
     if not outcomes:
@@ -42,64 +67,180 @@ def render_summary(
 
     parts: list[str] = []
     if passed:
-        parts.append(f"{passed} passed")
+        parts.append(_c(out, _GREEN, f"{passed} passed"))
     if failed:
-        parts.append(f"{failed} failed")
+        parts.append(_c(out, _RED, f"{failed} failed"))
     if timed_out:
-        parts.append(f"{timed_out} timed out")
+        parts.append(_c(out, _RED_BOLD, f"{timed_out} timed out"))
     if crashed:
-        parts.append(f"{crashed} crashed")
+        parts.append(_c(out, _RED_BOLD, f"{crashed} crashed"))
     if compile_errors:
-        parts.append(f"{compile_errors} compile error(s)")
+        parts.append(_c(out, _RED_BOLD, f"{compile_errors} compile error(s)"))
 
     summary = ", ".join(parts) if parts else "0 targets"
-    out.write(f"\n{summary} in {total_time:.2f}s\n")
+    out.write(f"\n{_c(out, _BOLD, summary)} in {total_time:.2f}s\n")
 
 
 def _render_failure(outcome: Outcome, out: IO[str]) -> None:
     """Render details for a single failed target."""
-    label = _kind_label(outcome.kind)
-    out.write(f"\n{label}: {outcome.command.target_id}\n")
+    label = _failure_label(outcome.kind, out)
+    out.write(f"\n{label}: {_c(out, _BOLD, outcome.command.target_id)}\n")
 
     if outcome.stderr:
         for line in outcome.stderr.splitlines()[:20]:
-            out.write(f"  {line}\n")
+            out.write(f"  {_c(out, _DIM, line)}\n")
 
     if outcome.kind == OutcomeKind.TIMEOUT:
-        out.write(f"  (timed out after {outcome.elapsed_s:.1f}s)\n")
+        out.write(f"  {_c(out, _DIM, f'(timed out after {outcome.elapsed_s:.1f}s)')}\n")
 
 
-def _kind_label(kind: OutcomeKind) -> str:
-    """Human-readable label for an outcome kind."""
-    return {
-        OutcomeKind.FAIL: "FAIL",
-        OutcomeKind.TIMEOUT: "TIMEOUT",
-        OutcomeKind.CRASH: "CRASH",
-        OutcomeKind.COMPILE_ERROR: "COMPILE ERROR",
-        OutcomeKind.PASS: "PASS",
-    }[kind]
+def _failure_label(kind: OutcomeKind, out: IO[str]) -> str:
+    """Colored label for a failure kind."""
+    labels = {
+        OutcomeKind.FAIL: (_RED, "FAIL"),
+        OutcomeKind.TIMEOUT: (_RED_BOLD, "TIMEOUT"),
+        OutcomeKind.CRASH: (_RED_BOLD, "CRASH"),
+        OutcomeKind.COMPILE_ERROR: (_RED_BOLD, "COMPILE ERROR"),
+        OutcomeKind.PASS: (_GREEN, "PASS"),
+    }
+    code, text = labels[kind]
+    return _c(out, code, text)
 
+
+# -- Dry-run ----------------------------------------------------------------
 
 def render_dry_run(
     commands: tuple[Command, ...],
     *,
     stream: IO[str] | None = None,
+    compact: bool = True,
 ) -> None:
-    """Render the planned commands without executing them.
+    """Render planned commands.
 
-    Shows each command's argv, cwd, and key flags.
+    When *compact* is True (default), consecutive commands with identical
+    flags are grouped. When False, every command is rendered individually.
     """
     out = stream or sys.stderr
 
-    for cmd in commands:
-        argv_str = " ".join(cmd.argv)
-        out.write(f"[{cmd.kind.value}] {cmd.target_id}\n")
-        out.write(f"  cwd: {cmd.cwd}\n")
-        out.write(f"  {argv_str}\n")
-        if cmd.depends_on:
-            out.write(f"  depends_on: {', '.join(cmd.depends_on)}\n")
-        out.write("\n")
+    if not compact:
+        for cmd in commands:
+            _render_single_command(cmd, out)
+        return
 
+    groups = _group_commands(commands)
+    for group in groups:
+        if len(group) == 1:
+            _render_single_command(group[0], out)
+        else:
+            _render_grouped_commands(group, out)
+
+
+def _command_group_key(cmd: Command) -> tuple:
+    """Key for grouping commands with identical flags."""
+    argv_without_source = tuple(
+        a for a in cmd.argv
+        if not a.endswith(".mojo") and not a.endswith(".mojoc")
+    )
+    return (cmd.kind, argv_without_source, cmd.depends_on, str(cmd.cwd))
+
+
+def _group_commands(commands: tuple[Command, ...]) -> list[list[Command]]:
+    """Group consecutive commands that share the same flags."""
+    if not commands:
+        return []
+    groups: list[list[Command]] = []
+    current: list[Command] = [commands[0]]
+    current_key = _command_group_key(commands[0])
+
+    for cmd in commands[1:]:
+        key = _command_group_key(cmd)
+        if key == current_key:
+            current.append(cmd)
+        else:
+            groups.append(current)
+            current = [cmd]
+            current_key = key
+    groups.append(current)
+    return groups
+
+
+def _shorten_argv(cmd: Command) -> str:
+    """Shorten argv for display: relativize paths against cwd."""
+    cwd = str(cmd.cwd)
+    parts: list[str] = []
+    for a in cmd.argv:
+        if a.startswith(cwd + "/"):
+            parts.append(os.path.relpath(a, cwd))
+        elif "/" in a and not a.startswith("-"):
+            try:
+                rel = os.path.relpath(a, cwd)
+                if not rel.startswith("../../"):
+                    parts.append(rel)
+                else:
+                    parts.append(a)
+            except ValueError:
+                parts.append(a)
+        else:
+            parts.append(a)
+    return " ".join(parts)
+
+
+def _render_single_command(cmd: Command, out: IO[str]) -> None:
+    """Render a single command (non-grouped)."""
+    kind_tag = _c(out, _CYAN, f"[{cmd.kind.value}]")
+    target = _c(out, _BOLD, cmd.target_id)
+    out.write(f"{kind_tag} {target}\n")
+    out.write(f"  {_c(out, _DIM, f'cwd: {cmd.cwd}')}\n")
+    out.write(f"  {_shorten_argv(cmd)}\n")
+    if cmd.depends_on:
+        deps = ", ".join(cmd.depends_on)
+        out.write(f"  {_c(out, _DIM, f'depends_on: {deps}')}\n")
+    out.write("\n")
+
+
+def _render_grouped_commands(group: list[Command], out: IO[str]) -> None:
+    """Render a group of commands that share the same flags."""
+    first = group[0]
+    kind_tag = _c(out, _CYAN, f"[{first.kind.value}]")
+    count = _c(out, _BOLD, f"{len(group)} targets")
+
+    deps_str = ""
+    if first.depends_on:
+        deps = ", ".join(first.depends_on)
+        deps_str = f" {_c(out, _DIM, f'(depends_on: {deps})')}"
+
+    out.write(f"{kind_tag} {count}{deps_str}\n")
+
+    template_parts: list[str] = []
+    for a in first.argv:
+        if a.endswith(".mojo") or a.endswith(".mojoc"):
+            template_parts.append("<source>")
+        else:
+            cwd = str(first.cwd)
+            if a.startswith(cwd + "/"):
+                template_parts.append(os.path.relpath(a, cwd))
+            else:
+                try:
+                    rel = os.path.relpath(a, cwd)
+                    if not rel.startswith("../../"):
+                        template_parts.append(rel)
+                    else:
+                        template_parts.append(a)
+                except ValueError:
+                    template_parts.append(a)
+    out.write(f"  {' '.join(template_parts)}\n")
+
+    max_shown = 5
+    out.write(f"  {_c(out, _DIM, 'targets:')}\n")
+    for cmd in group[:max_shown]:
+        out.write(f"    {_c(out, _DIM, cmd.target_id)}\n")
+    remaining = len(group) - max_shown
+    if remaining > 0:
+        out.write(f"    {_c(out, _DIM, f'... ({remaining} more)')}\n")
+    out.write("\n")
+
+
+# -- Diagnostics ------------------------------------------------------------
 
 def render_diagnostics(
     diagnostics: tuple[Diagnostic, ...],

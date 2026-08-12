@@ -19,7 +19,7 @@ def _cmd(argv: tuple[str, ...], **overrides) -> Command:
         cwd=PurePosixPath("."),
         env={"PATH": "/usr/bin", "HOME": ""},
         kind=CommandKind.RUN_TEST,
-        target_id="test::t.mojo",
+        target_id="t.mojo",
         timeout_s=30,
         outputs=(),
         depends_on=(),
@@ -106,8 +106,8 @@ class TestRunCommands:
 
     def test_sequential_execution(self):
         """Multiple independent commands all execute."""
-        cmd1 = _cmd((sys.executable, "-c", "print('one')"), target_id="test::one")
-        cmd2 = _cmd((sys.executable, "-c", "print('two')"), target_id="test::two")
+        cmd1 = _cmd((sys.executable, "-c", "print('one')"), target_id="one")
+        cmd2 = _cmd((sys.executable, "-c", "print('two')"), target_id="two")
         results = run_commands((cmd1, cmd2), max_workers=1)
         assert len(results) == 2
         assert results[0].kind == OutcomeKind.PASS
@@ -118,17 +118,17 @@ class TestRunCommands:
         precompile = _cmd(
             (sys.executable, "-c", "import time; time.sleep(0.1); print('precompiled')"),
             kind=CommandKind.COMPILE_PACKAGE,
-            target_id="lib::mylib",
+            target_id="mylib",
         )
         test = _cmd(
             (sys.executable, "-c", "print('tested')"),
-            target_id="test::t.mojo",
-            depends_on=("lib::mylib",),
+            target_id="t.mojo",
+            depends_on=("mylib",),
         )
         results = run_commands((precompile, test), max_workers=2)
         assert len(results) == 2
-        assert results[0].command.target_id == "lib::mylib"
-        assert results[1].command.target_id == "test::t.mojo"
+        assert results[0].command.target_id == "mylib"
+        assert results[1].command.target_id == "t.mojo"
         assert results[0].kind == OutcomeKind.PASS
         assert results[1].kind == OutcomeKind.PASS
 
@@ -137,12 +137,12 @@ class TestRunCommands:
         precompile = _cmd(
             (sys.executable, "-c", "import sys; sys.exit(1)"),
             kind=CommandKind.COMPILE_PACKAGE,
-            target_id="lib::mylib",
+            target_id="mylib",
         )
         test = _cmd(
             (sys.executable, "-c", "print('should not run')"),
-            target_id="test::t.mojo",
-            depends_on=("lib::mylib",),
+            target_id="t.mojo",
+            depends_on=("mylib",),
         )
         results = run_commands((precompile, test), max_workers=2)
         assert results[0].kind == OutcomeKind.FAIL
@@ -154,7 +154,7 @@ class TestRunCommands:
         cmds = tuple(
             _cmd(
                 (sys.executable, "-c", f"print({i})"),
-                target_id=f"test::t{i}.mojo",
+                target_id=f"t{i}.mojo",
             )
             for i in range(4)
         )

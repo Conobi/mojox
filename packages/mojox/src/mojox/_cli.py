@@ -61,6 +61,8 @@ def _add_common_flags(parser: argparse.ArgumentParser) -> None:
                         help="Per-target timeout in seconds")
     parser.add_argument("--dry-run", action="store_true", default=False,
                         help="Show planned commands without executing")
+    parser.add_argument("--verbose", "-v", action="store_true", default=False,
+                        help="Expand grouped output (e.g. in --dry-run)")
     parser.add_argument("--no-config", action="store_true", default=False,
                         help="Disable settings file discovery")
     parser.add_argument("--config-file", default=None,
@@ -190,7 +192,7 @@ def _cmd_test(args: argparse.Namespace) -> None:
         render_diagnostics(env.diagnostics)
 
     if args.dry_run:
-        render_dry_run(commands)
+        render_dry_run(commands, compact=not args.verbose)
         return
 
     outcomes = run_commands(
@@ -267,14 +269,14 @@ def _cmd_run(args: argparse.Namespace) -> None:
         )
 
     graph = TargetGraph(
-        targets=(Target(TargetKind.TEST, args.file, f"run::{args.file}"),),
+        targets=(Target(TargetKind.TEST, args.file, args.file),),
         edges=(),
     )
     commands = plan(graph, env, policy, toolchain, host)
 
     if args.dry_run:
         from ._output import render_dry_run
-        render_dry_run(commands)
+        render_dry_run(commands, compact=not args.verbose)
         return
 
     include_paths = tuple(
@@ -314,7 +316,7 @@ def _cmd_build(args: argparse.Namespace) -> None:
         render_diagnostics(env.diagnostics)
 
     if args.dry_run:
-        render_dry_run(build_commands)
+        render_dry_run(build_commands, compact=not args.verbose)
         return
 
     outcomes = run_commands(
@@ -341,10 +343,13 @@ def _cmd_check(args: argparse.Namespace) -> None:
     root = Path.cwd()
     pyproject_path = root / "pyproject.toml"
 
+    from ._output import _c, _DIM, _YELLOW, _GREEN, _BOLD
+
     try:
         raw = read_manifest(pyproject_path)
         manifest = parse_manifest(raw)
-        print(f"manifest: {manifest.name} {manifest.version}", file=sys.stderr)
+        print(_c(sys.stderr, _DIM, f"manifest: {manifest.name} {manifest.version}"),
+              file=sys.stderr)
     except ConfigError as e:
         print(str(e), file=sys.stderr)
         sys.exit(2)
@@ -354,7 +359,7 @@ def _cmd_check(args: argparse.Namespace) -> None:
     settings = read_settings(root, env=dict(os.environ), no_config=no_config, config_file=config_file)
     if settings.config_paths:
         for p in settings.config_paths:
-            print(f"config: {p}", file=sys.stderr)
+            print(_c(sys.stderr, _DIM, f"config: {p}"), file=sys.stderr)
 
     findings = []
     findings.extend(lint_path_source(pyproject_path))
@@ -366,12 +371,44 @@ def _cmd_check(args: argparse.Namespace) -> None:
                 findings.extend(lint_bare_assert(mojo_file))
 
     if findings:
-        for f in findings:
-            loc = f"{f.file}:{f.line}: " if f.line else f"{f.file}: "
-            print(f"lint: {loc}{f.message}", file=sys.stderr)
-        print(f"check: {len(findings)} warning(s)", file=sys.stderr)
+        _render_lint_findings(findings, root, sys.stderr)
+        count = len(findings)
+        print(_c(sys.stderr, _BOLD, f"check: {count} warning(s)"), file=sys.stderr)
     else:
-        print("check: OK", file=sys.stderr)
+        print(_c(sys.stderr, _GREEN, "check: OK"), file=sys.stderr)
+
+
+def _render_lint_findings(
+    findings: list,
+    root: Path,
+    out,
+) -> None:
+    """Render lint findings, deduplicating repeated messages per file."""
+    from ._output import _c, _YELLOW
+
+    groups: dict[tuple[str, str], list[int]] = {}
+    for f in findings:
+        try:
+            rel = os.path.relpath(f.file, root)
+        except ValueError:
+            rel = f.file
+        key = (rel, f.message)
+        groups.setdefault(key, []).append(f.line)
+
+    for (rel_file, message), lines in groups.items():
+        prefix = _c(out, _YELLOW, "lint:")
+        if len(lines) == 1 and lines[0]:
+            out.write(f"{prefix} {rel_file}:{lines[0]}: {message}\n")
+        elif len(lines) > 1:
+            valid = [ln for ln in lines if ln]
+            shown = ", ".join(str(ln) for ln in valid[:5])
+            suffix = f", ... +{len(valid) - 5}" if len(valid) > 5 else ""
+            out.write(
+                f"{prefix} {rel_file}: {message}"
+                f" ({len(valid)} occurrences: lines {shown}{suffix})\n"
+            )
+        else:
+            out.write(f"{prefix} {rel_file}: {message}\n")
 
 
 def _cmd_metadata(args: argparse.Namespace) -> None:

@@ -82,8 +82,8 @@ class TestPlanPurity:
     def test_plan_is_deterministic(self):
         graph = TargetGraph(
             targets=(
-                Target(TargetKind.LIB, "src/mylib", "lib::src/mylib"),
-                Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
+                Target(TargetKind.LIB, "src/mylib", "src/mylib"),
+                Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),
             ),
             edges=(),
         )
@@ -111,7 +111,7 @@ class TestCommandGeneration:
     def test_cwd_is_manifest_directory(self):
         graph = TargetGraph(
             targets=(
-                Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
+                Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),
             ),
             edges=(),
         )
@@ -123,7 +123,7 @@ class TestCommandGeneration:
     def test_argv_starts_with_mojo(self):
         graph = TargetGraph(
             targets=(
-                Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
+                Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),
             ),
             edges=(),
         )
@@ -136,7 +136,7 @@ class TestCommandGeneration:
         pol = _make_policy(include_paths=("/extra/path",))
         graph = TargetGraph(
             targets=(
-                Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
+                Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),
             ),
             edges=(),
         )
@@ -160,9 +160,9 @@ class TestPrecompilation:
     def test_precompile_precedes_dependent_targets(self):
         graph = TargetGraph(
             targets=(
-                Target(TargetKind.LIB, "src/mylib", "lib::src/mylib"),
-                Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
-                Target(TargetKind.TEST, "tests/test_b.mojo", "test::tests/test_b.mojo"),
+                Target(TargetKind.LIB, "src/mylib", "src/mylib"),
+                Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),
+                Target(TargetKind.TEST, "tests/test_b.mojo", "tests/test_b.mojo"),
             ),
             edges=(),
         )
@@ -177,9 +177,9 @@ class TestPrecompilation:
     def test_test_targets_point_at_mojoc_not_source(self):
         graph = TargetGraph(
             targets=(
-                Target(TargetKind.LIB, "src/mylib", "lib::src/mylib"),
-                Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
-                Target(TargetKind.TEST, "tests/test_b.mojo", "test::tests/test_b.mojo"),
+                Target(TargetKind.LIB, "src/mylib", "src/mylib"),
+                Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),
+                Target(TargetKind.TEST, "tests/test_b.mojo", "tests/test_b.mojo"),
             ),
             edges=(),
         )
@@ -195,8 +195,8 @@ class TestPrecompilation:
     def test_plan_below_threshold_skips_precompile(self):
         graph = TargetGraph(
             targets=(
-                Target(TargetKind.LIB, "src/mylib", "lib::src/mylib"),
-                Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
+                Target(TargetKind.LIB, "src/mylib", "src/mylib"),
+                Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),
             ),
             edges=(),
         )
@@ -209,7 +209,7 @@ class TestThreadDivision:
     def test_num_threads_divided_by_applied_concurrency(self):
         graph = TargetGraph(
             targets=(
-                Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
+                Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),
             ),
             edges=(),
         )
@@ -230,7 +230,7 @@ class TestBinaryOutputName:
     def test_binary_output_uses_configured_name(self):
         graph = TargetGraph(
             targets=(
-                Target(TargetKind.BIN, "src/app.mojo", "bin::myapp"),
+                Target(TargetKind.BIN, "src/app.mojo", "myapp"),
             ),
             edges=(),
         )
@@ -246,7 +246,7 @@ class TestCheckExampleThreads:
     def test_check_example_gets_num_threads(self):
         graph = TargetGraph(
             targets=(
-                Target(TargetKind.EXAMPLE, "examples/demo.mojo", "example::examples/demo.mojo"),
+                Target(TargetKind.EXAMPLE, "examples/demo.mojo", "examples/demo.mojo"),
             ),
             edges=(),
         )
@@ -267,9 +267,9 @@ class TestFlagStripping:
     def test_optimize_never_reaches_lib_target(self):
         graph = TargetGraph(
             targets=(
-                Target(TargetKind.LIB, "src/mylib", "lib::src/mylib"),
-                Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
-                Target(TargetKind.TEST, "tests/test_b.mojo", "test::tests/test_b.mojo"),
+                Target(TargetKind.LIB, "src/mylib", "src/mylib"),
+                Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),
+                Target(TargetKind.TEST, "tests/test_b.mojo", "tests/test_b.mojo"),
             ),
             edges=(),
         )
@@ -284,9 +284,9 @@ class TestFlagStripping:
     def test_defines_never_reach_lib_target(self):
         graph = TargetGraph(
             targets=(
-                Target(TargetKind.LIB, "src/mylib", "lib::src/mylib"),
-                Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
-                Target(TargetKind.TEST, "tests/test_b.mojo", "test::tests/test_b.mojo"),
+                Target(TargetKind.LIB, "src/mylib", "src/mylib"),
+                Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),
+                Target(TargetKind.TEST, "tests/test_b.mojo", "tests/test_b.mojo"),
             ),
             edges=(),
         )
@@ -299,9 +299,9 @@ class TestFlagStripping:
     def test_num_threads_never_reaches_lib_target(self):
         graph = TargetGraph(
             targets=(
-                Target(TargetKind.LIB, "src/mylib", "lib::src/mylib"),
-                Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
-                Target(TargetKind.TEST, "tests/test_b.mojo", "test::tests/test_b.mojo"),
+                Target(TargetKind.LIB, "src/mylib", "src/mylib"),
+                Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),
+                Target(TargetKind.TEST, "tests/test_b.mojo", "tests/test_b.mojo"),
             ),
             edges=(),
         )
@@ -315,7 +315,7 @@ class TestCommandEnv:
     def test_command_env_is_constructed_not_inherited(self):
         graph = TargetGraph(
             targets=(
-                Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
+                Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),
             ),
             edges=(),
         )
@@ -335,7 +335,7 @@ class TestRunArgvOrdering:
         """All compiler flags (-I, -D, -O, --num-threads) must appear before the source file."""
         graph = TargetGraph(
             targets=(
-                Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
+                Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),
             ),
             edges=(),
         )
@@ -361,9 +361,9 @@ class TestRunArgvOrdering:
         """When precompilation is active, -I for the pkg dir still precedes the source file."""
         graph = TargetGraph(
             targets=(
-                Target(TargetKind.LIB, "src/mylib", "lib::src/mylib"),
-                Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
-                Target(TargetKind.TEST, "tests/test_b.mojo", "test::tests/test_b.mojo"),
+                Target(TargetKind.LIB, "src/mylib", "src/mylib"),
+                Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),
+                Target(TargetKind.TEST, "tests/test_b.mojo", "tests/test_b.mojo"),
             ),
             edges=(),
         )
@@ -383,7 +383,7 @@ class TestLintFlagTranslation:
         """Policy with warnings_as_errors=True emits --Werror on test commands."""
         graph = TargetGraph(
             targets=(
-                Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
+                Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),
             ),
             edges=(),
         )
@@ -396,7 +396,7 @@ class TestLintFlagTranslation:
         """Policy with check_doc_strings=True emits -check-docstrings."""
         graph = TargetGraph(
             targets=(
-                Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
+                Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),
             ),
             edges=(),
         )
@@ -409,7 +409,7 @@ class TestLintFlagTranslation:
         """Policy with missing_doc_strings=True emits --diagnose-missing-doc-strings."""
         graph = TargetGraph(
             targets=(
-                Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
+                Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),
             ),
             edges=(),
         )
@@ -422,7 +422,7 @@ class TestLintFlagTranslation:
         """Policy with unstable_apis=True emits --warn-on-unstable-apis."""
         graph = TargetGraph(
             targets=(
-                Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
+                Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),
             ),
             edges=(),
         )
@@ -435,9 +435,9 @@ class TestLintFlagTranslation:
         """Lint flags must never appear in COMPILE_PACKAGE commands."""
         graph = TargetGraph(
             targets=(
-                Target(TargetKind.LIB, "src/mylib", "lib::src/mylib"),
-                Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
-                Target(TargetKind.TEST, "tests/test_b.mojo", "test::tests/test_b.mojo"),
+                Target(TargetKind.LIB, "src/mylib", "src/mylib"),
+                Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),
+                Target(TargetKind.TEST, "tests/test_b.mojo", "tests/test_b.mojo"),
             ),
             edges=(),
         )
@@ -462,7 +462,7 @@ class TestLintFlagTranslation:
         """Default LintConfig (all False) emits no lint flags."""
         graph = TargetGraph(
             targets=(
-                Target(TargetKind.TEST, "tests/test_a.mojo", "test::tests/test_a.mojo"),
+                Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),
             ),
             edges=(),
         )
@@ -479,8 +479,8 @@ class TestLintFlagTranslation:
         """Lint flags appear on EXAMPLE and BIN target commands."""
         graph = TargetGraph(
             targets=(
-                Target(TargetKind.EXAMPLE, "examples/demo.mojo", "example::examples/demo.mojo"),
-                Target(TargetKind.BIN, "src/app.mojo", "bin::myapp"),
+                Target(TargetKind.EXAMPLE, "examples/demo.mojo", "examples/demo.mojo"),
+                Target(TargetKind.BIN, "src/app.mojo", "myapp"),
             ),
             edges=(),
         )

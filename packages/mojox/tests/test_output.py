@@ -36,8 +36,8 @@ def _outcome(target_id: str, kind: OutcomeKind, elapsed: float = 1.0, **kw) -> O
 class TestRenderSummary:
     def test_all_pass(self):
         outcomes = (
-            _outcome("test::a", OutcomeKind.PASS, 1.2),
-            _outcome("test::b", OutcomeKind.PASS, 0.8),
+            _outcome("a", OutcomeKind.PASS, 1.2),
+            _outcome("b", OutcomeKind.PASS, 0.8),
         )
         buf = io.StringIO()
         render_summary(outcomes, stream=buf)
@@ -47,9 +47,9 @@ class TestRenderSummary:
 
     def test_mixed_results(self):
         outcomes = (
-            _outcome("test::a", OutcomeKind.PASS, 1.0),
-            _outcome("test::b", OutcomeKind.FAIL, 2.0),
-            _outcome("test::c", OutcomeKind.TIMEOUT, 300.0),
+            _outcome("a", OutcomeKind.PASS, 1.0),
+            _outcome("b", OutcomeKind.FAIL, 2.0),
+            _outcome("c", OutcomeKind.TIMEOUT, 300.0),
         )
         buf = io.StringIO()
         render_summary(outcomes, stream=buf)
@@ -66,8 +66,8 @@ class TestRenderSummary:
 
     def test_total_time_reported(self):
         outcomes = (
-            _outcome("test::a", OutcomeKind.PASS, 1.5),
-            _outcome("test::b", OutcomeKind.PASS, 2.5),
+            _outcome("a", OutcomeKind.PASS, 1.5),
+            _outcome("b", OutcomeKind.PASS, 2.5),
         )
         buf = io.StringIO()
         render_summary(outcomes, stream=buf)
@@ -82,7 +82,7 @@ class TestRenderDryRun:
             cwd=PurePosixPath("/workspace/project"),
             env={"PATH": "/usr/bin"},
             kind=CommandKind.RUN_TEST,
-            target_id="test::test.mojo",
+            target_id="test.mojo",
             timeout_s=300,
             outputs=(),
             depends_on=(),
@@ -98,7 +98,7 @@ class TestRenderDryRun:
             cwd=PurePosixPath("/workspace/project"),
             env={"PATH": "/usr/bin"},
             kind=CommandKind.RUN_TEST,
-            target_id="test::test.mojo",
+            target_id="test.mojo",
             timeout_s=300,
             outputs=(),
             depends_on=(),

@@ -97,7 +97,7 @@ class TestFrozenDataclasses:
             cwd=PurePosixPath("/project"),
             env={"PATH": "/usr/bin"},
             kind=CommandKind.RUN_TEST,
-            target_id="test::test_parser",
+            target_id="test_parser",
             timeout_s=300,
             outputs=(),
             depends_on=(),
@@ -142,7 +142,7 @@ class TestFrozenDataclasses:
         t = Target(
             kind=TargetKind.TEST,
             path="tests/test_parser.mojo",
-            target_id="test::tests/test_parser.mojo",
+            target_id="tests/test_parser.mojo",
         )
         assert t.kind == TargetKind.TEST
 

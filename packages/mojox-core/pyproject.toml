@@ -2,7 +2,7 @@
 name = "mojox-core"
 version = "0.5.0"
 description = "Pure model layer for mojox: manifest parsing, target discovery, policy resolution, and build planning."
-readme = "../../README.md"
+readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [{ name = "Conobi" }]
