@@ -38,11 +38,9 @@ def build_parser() -> argparse.ArgumentParser:
     build_p.set_defaults(profile="release")
     _add_common_flags(build_p)
 
-    check_p = sub.add_parser("check", help="Validate manifest and run lints")
-    check_p.add_argument("--no-config", action="store_true", default=False,
-                         help="Disable settings file discovery")
-    check_p.add_argument("--config-file", default=None,
-                         help="Explicit config file path")
+    check_p = sub.add_parser("check", help="Check project: compile packages and run lints")
+    check_p.set_defaults(profile="dev")
+    _add_common_flags(check_p)
 
     meta_p = sub.add_parser("metadata", help="Output build plan as JSON")
     meta_p.set_defaults(profile="dev")
@@ -378,18 +376,17 @@ def _cmd_build(args: argparse.Namespace) -> None:
 
 
 def _cmd_check(args: argparse.Namespace) -> None:
-    """Execute the check subcommand: manifest validation + lints."""
+    """Execute the check subcommand: compile packages + run lints."""
     from mojox_core import ConfigError, parse_manifest
     from mojox_core.io.manifest import read as read_manifest
 
     from ._lints import lint_bare_assert, lint_path_source
-    from ._settings_reader import read_settings
+    from ._output import _c, _DIM, _GREEN, _BOLD, _RED
 
     root = Path.cwd()
     pyproject_path = root / "pyproject.toml"
 
-    from ._output import _c, _DIM, _YELLOW, _GREEN, _BOLD
-
+    # --- Manifest validation ---
     try:
         raw = read_manifest(pyproject_path)
         manifest = parse_manifest(raw)
@@ -399,28 +396,92 @@ def _cmd_check(args: argparse.Namespace) -> None:
         print(str(e), file=sys.stderr)
         sys.exit(2)
 
-    config_file = Path(args.config_file) if args.config_file else None
-    no_config = args.no_config
-    settings = read_settings(root, env=dict(os.environ), no_config=no_config, config_file=config_file)
-    if settings.config_paths:
-        for p in settings.config_paths:
-            print(_c(sys.stderr, _DIM, f"config: {p}"), file=sys.stderr)
-
+    # --- Pre-flight text lints ---
     findings = []
     findings.extend(lint_path_source(pyproject_path))
 
+    files_checked = 0
     for test_root in manifest.test_roots:
         tr_path = root / test_root
         if tr_path.is_dir():
             for mojo_file in tr_path.rglob("test_*.mojo"):
+                files_checked += 1
                 findings.extend(lint_bare_assert(mojo_file))
 
     if findings:
         _render_lint_findings(findings, root, sys.stderr)
-        count = len(findings)
-        print(_c(sys.stderr, _BOLD, f"check: {count} warning(s)"), file=sys.stderr)
+
+    # --- Compiler check: resolve pipeline and precompile ---
+    try:
+        _manifest, _graph, env, policy, _toolchain, _host, settings, commands, include_paths = (
+            _resolve_pipeline(args)
+        )
+    except SystemExit:
+        print(_c(sys.stderr, _DIM, "compiler not available, skipping compilation check"),
+              file=sys.stderr)
+        if findings:
+            print(_c(sys.stderr, _BOLD, f"check: {len(findings)} warning(s)"),
+                  file=sys.stderr)
+        else:
+            print(_c(sys.stderr, _GREEN, "check: OK (manifest only)"), file=sys.stderr)
+        return
+
+    from ._output import render_diagnostics, render_dry_run
+    from mojox_core import CommandKind
+
+    if env.diagnostics:
+        render_diagnostics(env.diagnostics)
+
+    compile_commands = tuple(
+        c for c in commands
+        if c.kind == CommandKind.COMPILE_PACKAGE
+    )
+
+    if not compile_commands:
+        print(_c(sys.stderr, _DIM, "no packages to compile"), file=sys.stderr)
+        if findings:
+            print(_c(sys.stderr, _BOLD, f"check: {len(findings)} warning(s)"),
+                  file=sys.stderr)
+        else:
+            print(_c(sys.stderr, _GREEN, "check: OK"), file=sys.stderr)
+        return
+
+    if args.dry_run:
+        render_dry_run(compile_commands, compact=not args.verbose)
+        return
+
+    from ._exec import run_commands
+
+    try:
+        outcomes = run_commands(
+            compile_commands,
+            max_workers=policy.jobs_compile,
+            extra_env=settings.env if settings.env else None,
+            include_paths=include_paths,
+        )
+    except KeyboardInterrupt:
+        print(f"\n{_interrupted_summary(compile_commands)}", file=sys.stderr)
+        sys.exit(130)
+
+    from ._types import OutcomeKind
+
+    for o in outcomes:
+        if o.kind != OutcomeKind.PASS and o.stderr:
+            for line in o.stderr.splitlines():
+                print(f"  {_c(sys.stderr, _DIM, line)}", file=sys.stderr)
+
+    compile_ok = all(o.kind == OutcomeKind.PASS for o in outcomes)
+    parts: list[str] = []
+    if compile_ok:
+        parts.append(_c(sys.stderr, _GREEN, "compiled"))
     else:
-        print(_c(sys.stderr, _GREEN, "check: OK"), file=sys.stderr)
+        parts.append(_c(sys.stderr, _RED, "compile failed"))
+    if findings:
+        parts.append(f"{len(findings)} warning(s)")
+    print(_c(sys.stderr, _BOLD, f"check: {', '.join(parts)}"), file=sys.stderr)
+
+    if not compile_ok:
+        sys.exit(1)
 
 
 def _render_lint_findings(

@@ -121,8 +121,11 @@ def _build_precompile_command(
         str(output),
     ]
 
+    seen_dirs: set[str] = set()
     for entry in env.include_sequence:
-        argv.extend(["-I", entry.include_dir])
+        if entry.include_dir not in seen_dirs:
+            seen_dirs.add(entry.include_dir)
+            argv.extend(["-I", entry.include_dir])
 
     return Command(
         argv=tuple(argv),
