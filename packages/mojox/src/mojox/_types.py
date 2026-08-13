@@ -21,6 +21,22 @@ class OutcomeKind(Enum):
     COMPILE_ERROR = "compile-error"
     TIMEOUT = "timeout"
     CRASH = "crash"
+    SKIPPED = "skipped"
+
+
+class OutputMode(Enum):
+    """Controls when test stdout/stderr is displayed."""
+
+    IMMEDIATE = "immediate"
+    FINAL = "final"
+    NEVER = "never"
+
+
+class OutputFormat(Enum):
+    """Output format for test results."""
+
+    HUMAN = "human"
+    JSON = "json"
 
 
 @dataclass(frozen=True)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 
-from mojox._types import Outcome, OutcomeKind
+from mojox._types import Outcome, OutcomeKind, OutputFormat, OutputMode
 from mojox_core import Command, CommandKind, Diagnostic
 
 
@@ -68,3 +68,31 @@ class TestOutcome:
         )
         assert outcome.exit_code is None
         assert outcome.kind == OutcomeKind.CRASH
+
+
+class TestOutcomeKindSkipped:
+    def test_skipped_value(self):
+        assert OutcomeKind.SKIPPED.value == "skipped"
+
+    def test_skipped_is_distinct(self):
+        kinds = [k.value for k in OutcomeKind]
+        assert len(kinds) == len(set(kinds))
+
+
+class TestOutputMode:
+    def test_values(self):
+        assert OutputMode.IMMEDIATE.value == "immediate"
+        assert OutputMode.FINAL.value == "final"
+        assert OutputMode.NEVER.value == "never"
+
+    def test_all_members(self):
+        assert len(OutputMode) == 3
+
+
+class TestOutputFormat:
+    def test_values(self):
+        assert OutputFormat.HUMAN.value == "human"
+        assert OutputFormat.JSON.value == "json"
+
+    def test_all_members(self):
+        assert len(OutputFormat) == 2
