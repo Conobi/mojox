@@ -14,7 +14,7 @@ import argparse
 import json
 import os
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -124,6 +124,51 @@ def determine_exit_code(outcomes: tuple[Outcome, ...]) -> int:
         return 2
 
     return 0
+
+
+def apply_filters(
+    commands: tuple[Command, ...],
+    *,
+    paths: tuple[str, ...],
+    pattern: str | None,
+    project_root: PurePosixPath,
+) -> tuple[Command, ...]:
+    """Filter commands by path prefixes and/or name pattern.
+
+    Only RUN_TEST commands are filtered; compile commands pass through.
+    Returns a new tuple with matching commands preserved in order.
+    """
+    from mojox_core import CommandKind
+
+    if not paths and pattern is None:
+        return commands
+
+    normalized_paths = tuple(
+        os.path.normpath(p).rstrip(os.sep)
+        for p in paths
+    )
+
+    def _matches_test(cmd: Command) -> bool:
+        if cmd.kind != CommandKind.RUN_TEST:
+            return True
+
+        tid = cmd.target_id
+
+        if normalized_paths:
+            path_match = any(
+                tid == np if np.endswith(".mojo") else (tid.startswith(np + "/") or tid == np or np == ".")
+                for np in normalized_paths
+            )
+            if not path_match:
+                return False
+
+        if pattern is not None:
+            if pattern.lower() not in tid.lower():
+                return False
+
+        return True
+
+    return tuple(cmd for cmd in commands if _matches_test(cmd))
 
 
 def _interrupted_summary(commands) -> str:
