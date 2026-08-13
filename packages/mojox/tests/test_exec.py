@@ -187,6 +187,102 @@ class TestOutputDirectoryCreation:
         assert out_file.parent.is_dir()
 
 
+class TestFailFast:
+    def test_fail_fast_cancels_remaining(self):
+        """After first failure, remaining queued commands are SKIPPED."""
+        fast_fail = _cmd(
+            (sys.executable, "-c", "import sys; sys.exit(1)"),
+            target_id="fail.mojo",
+        )
+        cmds = (fast_fail,) + tuple(
+            _cmd(
+                (sys.executable, "-c", "import time; time.sleep(2)"),
+                target_id=f"t{i}.mojo",
+            )
+            for i in range(5)
+        )
+        results = run_commands(cmds, max_workers=1, fail_fast=True)
+        skipped = [r for r in results if r.kind == OutcomeKind.SKIPPED]
+        assert len(skipped) >= 1
+        assert results[0].kind == OutcomeKind.FAIL
+
+    def test_no_fail_fast_runs_all(self):
+        """Without fail-fast, all commands run even after failure."""
+        cmds = (
+            _cmd((sys.executable, "-c", "import sys; sys.exit(1)"), target_id="f1.mojo"),
+            _cmd((sys.executable, "-c", "print('ok')"), target_id="t1.mojo"),
+        )
+        results = run_commands(cmds, max_workers=1, fail_fast=False)
+        assert results[0].kind == OutcomeKind.FAIL
+        assert results[1].kind == OutcomeKind.PASS
+
+    def test_fail_fast_default_is_false(self):
+        """Default fail_fast parameter is False (backward compatible)."""
+        cmds = (
+            _cmd((sys.executable, "-c", "import sys; sys.exit(1)"), target_id="f.mojo"),
+            _cmd((sys.executable, "-c", "print('ok')"), target_id="t.mojo"),
+        )
+        results = run_commands(cmds, max_workers=1)
+        assert results[1].kind == OutcomeKind.PASS
+
+    def test_fail_fast_skips_phase2_after_phase1_failure(self):
+        """If fail-fast triggers in phase 1, phase 2 commands are SKIPPED."""
+        compile_fail = _cmd(
+            (sys.executable, "-c", "import sys; sys.exit(1)"),
+            kind=CommandKind.COMPILE_PACKAGE,
+            target_id="mylib",
+        )
+        compile_ok = _cmd(
+            (sys.executable, "-c", "print('ok')"),
+            kind=CommandKind.COMPILE_PACKAGE,
+            target_id="otherlib",
+        )
+        test = _cmd(
+            (sys.executable, "-c", "print('test')"),
+            target_id="t.mojo",
+            depends_on=("mylib",),
+        )
+        results = run_commands(
+            (compile_fail, compile_ok, test), max_workers=1, fail_fast=True,
+        )
+        assert results[2].kind == OutcomeKind.SKIPPED
+
+
+class TestOnStartCallback:
+    def test_on_start_called_for_each_command(self):
+        """on_start fires once per executed command."""
+        started: list[str] = []
+        cmds = (
+            _cmd((sys.executable, "-c", "print('a')"), target_id="a.mojo"),
+            _cmd((sys.executable, "-c", "print('b')"), target_id="b.mojo"),
+        )
+        run_commands(
+            cmds, max_workers=1,
+            on_start=lambda cmd: started.append(cmd.target_id),
+        )
+        assert set(started) == {"a.mojo", "b.mojo"}
+
+    def test_on_start_not_called_for_skipped(self):
+        """SKIPPED commands do not fire on_start."""
+        started: list[str] = []
+        compile_fail = _cmd(
+            (sys.executable, "-c", "import sys; sys.exit(1)"),
+            kind=CommandKind.COMPILE_PACKAGE,
+            target_id="mylib",
+        )
+        test = _cmd(
+            (sys.executable, "-c", "print('test')"),
+            target_id="t.mojo",
+            depends_on=("mylib",),
+        )
+        run_commands(
+            (compile_fail, test), max_workers=1,
+            on_start=lambda cmd: started.append(cmd.target_id),
+        )
+        assert "mylib" in started
+        assert "t.mojo" not in started
+
+
 class TestNativeLibPathInjection:
     """Standard mojo run path must set LD_LIBRARY_PATH for native libs.
 

@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from mojox_core import Command
@@ -158,19 +158,46 @@ def run_command(
     )
 
 
+def _run_with_start(
+    cmd: Command,
+    extra_env: dict[str, str] | None,
+    include_paths: tuple[str, ...],
+    on_start: Callable[[Command], None] | None,
+) -> Outcome:
+    """Run a command, calling on_start from the worker thread first.
+
+    Args:
+        cmd: The command to execute.
+        extra_env: Additional environment variables to merge.
+        include_paths: Dependency include directories.
+        on_start: Optional callback invoked before execution.
+
+    Returns:
+        An Outcome describing the result.
+    """
+    if on_start is not None:
+        on_start(cmd)
+    return run_command(cmd, extra_env=extra_env, include_paths=include_paths)
+
+
 def run_commands(
     commands: tuple[Command, ...],
     *,
     max_workers: int = 1,
     extra_env: dict[str, str] | None = None,
     include_paths: tuple[str, ...] = (),
+    on_start: Callable[[Command], None] | None = None,
     on_complete: Callable[[Outcome], None] | None = None,
+    fail_fast: bool = False,
 ) -> tuple[Outcome, ...]:
     """Run a sequence of Commands with concurrency and dependency ordering.
 
     Commands whose ``depends_on`` references have not all completed
     successfully are skipped with a SKIPPED outcome. Independent commands
     run concurrently up to ``max_workers``.
+
+    When ``fail_fast`` is True, the first non-PASS outcome cancels
+    queued commands and skips remaining phases.
 
     The current two-phase implementation supports commands with at most
     one level of dependencies (e.g., precompile -> test). Deeper
@@ -183,8 +210,13 @@ def run_commands(
             (from LocalSettings.env).
         include_paths: Dependency include directories whose ``lib/``
             subdirectories are added to the dynamic linker search path.
+        on_start: Optional callback invoked with each Command just before
+            it begins execution. Called from the worker thread; must be
+            thread-safe.
         on_complete: Optional callback invoked with each Outcome as it
             completes. Called from the executor thread; must be thread-safe.
+        fail_fast: If True, cancel remaining commands after the first
+            non-PASS outcome.
 
     Returns:
         A tuple of Outcomes in the same order as the input commands.
@@ -204,10 +236,34 @@ def run_commands(
         else:
             no_deps.append((i, cmd))
 
+    triggered = False
     if no_deps:
-        _run_phase(no_deps, completed, results, max_workers, extra_env, include_paths, on_complete)
+        triggered = _run_phase(
+            no_deps, completed, results, max_workers,
+            extra_env, include_paths, on_start, on_complete, fail_fast,
+        )
+
     if has_deps:
-        _run_phase(has_deps, completed, results, max_workers, extra_env, include_paths, on_complete)
+        if triggered:
+            for idx, cmd in has_deps:
+                outcome = Outcome(
+                    command=cmd,
+                    kind=OutcomeKind.SKIPPED,
+                    exit_code=None,
+                    stdout="",
+                    stderr="Cancelled by --fail-fast",
+                    diagnostics=(),
+                    elapsed_s=0.0,
+                )
+                results[idx] = outcome
+                completed[cmd.target_id] = outcome
+                if on_complete is not None:
+                    on_complete(outcome)
+        else:
+            _run_phase(
+                has_deps, completed, results, max_workers,
+                extra_env, include_paths, on_start, on_complete, fail_fast,
+            )
 
     assert all(r is not None for r in results), "unfilled result slots"
     return tuple(results)  # type: ignore[arg-type]
@@ -220,9 +276,13 @@ def _run_phase(
     max_workers: int,
     extra_env: dict[str, str] | None,
     include_paths: tuple[str, ...] = (),
+    on_start: Callable[[Command], None] | None = None,
     on_complete: Callable[[Outcome], None] | None = None,
-) -> None:
+    fail_fast: bool = False,
+) -> bool:
     """Run a batch of commands concurrently, checking deps before submission.
+
+    Returns True if fail-fast was triggered during this phase.
 
     Args:
         phase: List of (index, Command) pairs to execute.
@@ -232,7 +292,10 @@ def _run_phase(
         extra_env: Additional env vars merged into each command.
         include_paths: Dependency include directories whose ``lib/``
             subdirectories are added to the dynamic linker search path.
+        on_start: Optional callback invoked with each Command before
+            execution begins.
         on_complete: Optional callback invoked with each Outcome.
+        fail_fast: If True, cancel remaining futures after first non-PASS.
     """
     def _record(idx: int, outcome: Outcome) -> None:
         results[idx] = outcome
@@ -242,11 +305,13 @@ def _run_phase(
 
     if len(phase) == 1:
         idx, cmd = phase[0]
-        outcome = _run_or_skip(cmd, completed, extra_env, include_paths)
+        outcome = _run_or_skip(cmd, completed, extra_env, include_paths, on_start)
         _record(idx, outcome)
-        return
+        return fail_fast and outcome.kind != OutcomeKind.PASS
 
     workers = min(max_workers, len(phase))
+    triggered = False
+
     with ThreadPoolExecutor(max_workers=workers) as pool:
         future_to_idx: dict = {}
         for idx, cmd in phase:
@@ -255,20 +320,37 @@ def _run_phase(
                 _record(idx, skip_outcome)
                 continue
             future = pool.submit(
-                run_command, cmd, extra_env=extra_env, include_paths=include_paths,
+                _run_with_start, cmd, extra_env, include_paths, on_start,
             )
             future_to_idx[future] = (idx, cmd)
 
         try:
             for future in as_completed(future_to_idx):
                 idx, cmd = future_to_idx[future]
-                outcome = future.result()
+                try:
+                    outcome = future.result()
+                except CancelledError:
+                    outcome = Outcome(
+                        command=cmd,
+                        kind=OutcomeKind.SKIPPED,
+                        exit_code=None,
+                        stdout="",
+                        stderr="Cancelled by --fail-fast",
+                        diagnostics=(),
+                        elapsed_s=0.0,
+                    )
                 _record(idx, outcome)
+                if fail_fast and not triggered and outcome.kind != OutcomeKind.PASS:
+                    triggered = True
+                    for f in future_to_idx:
+                        f.cancel()
         except KeyboardInterrupt:
             for f in future_to_idx:
                 f.cancel()
             pool.shutdown(wait=False, cancel_futures=True)
             raise
+
+    return triggered
 
 
 def _run_or_skip(
@@ -276,6 +358,7 @@ def _run_or_skip(
     completed: dict[str, Outcome],
     extra_env: dict[str, str] | None,
     include_paths: tuple[str, ...] = (),
+    on_start: Callable[[Command], None] | None = None,
 ) -> Outcome:
     """Run a command or skip it if dependencies failed.
 
@@ -285,10 +368,13 @@ def _run_or_skip(
         extra_env: Additional env vars merged into the command.
         include_paths: Dependency include directories whose ``lib/``
             subdirectories are added to the dynamic linker search path.
+        on_start: Optional callback invoked before execution begins.
     """
     skip = _check_dependencies(cmd, completed)
     if skip is not None:
         return skip
+    if on_start is not None:
+        on_start(cmd)
     return run_command(cmd, extra_env=extra_env, include_paths=include_paths)
 
 
