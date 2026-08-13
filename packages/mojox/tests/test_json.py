@@ -171,7 +171,22 @@ class TestSerializeSuiteFinished:
             _outcome(kind=OutcomeKind.TIMEOUT, target_id="t3"),
             _outcome(kind=OutcomeKind.CRASH, target_id="t4"),
             _outcome(kind=OutcomeKind.SKIPPED, target_id="t5"),
+            _outcome(kind=OutcomeKind.COMPILE_ERROR, target_id="t6"),
         )
         event = serialize_suite_finished(outcomes, elapsed_s=1.0)
         total = event["passed"] + event["failed"] + event["timed_out"] + event["crashed"] + event["skipped"]
-        assert total == 5
+        assert total == 6
+
+    def test_compile_error_test_counted_as_failed(self):
+        outcomes = (_outcome(kind=OutcomeKind.COMPILE_ERROR, target_id="t1"),)
+        event = serialize_suite_finished(outcomes, elapsed_s=1.0)
+        assert event["failed"] == 1
+
+    def test_skipped_compile_not_counted_as_failed(self):
+        outcomes = (
+            _outcome(kind=OutcomeKind.PASS, cmd_kind=CommandKind.COMPILE_PACKAGE, target_id="lib1"),
+            _outcome(kind=OutcomeKind.SKIPPED, cmd_kind=CommandKind.COMPILE_PACKAGE, target_id="lib2"),
+        )
+        event = serialize_suite_finished(outcomes, elapsed_s=1.0)
+        assert event["compile_passed"] == 1
+        assert event["compile_failed"] == 0

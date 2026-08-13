@@ -87,16 +87,16 @@ def serialize_suite_finished(
     elapsed_s: float,
 ) -> dict:
     """Build the suite:finished event dict with split test/compile counts."""
-    test_outcomes = [o for o in outcomes if o.command.kind not in _COMPILE_KINDS]
+    test_outcomes = [o for o in outcomes if o.command.kind == CommandKind.RUN_TEST]
     compile_outcomes = [o for o in outcomes if o.command.kind in _COMPILE_KINDS]
 
     passed = sum(1 for o in test_outcomes if o.kind == OutcomeKind.PASS)
-    failed = sum(1 for o in test_outcomes if o.kind == OutcomeKind.FAIL)
+    failed = sum(1 for o in test_outcomes if o.kind in (OutcomeKind.FAIL, OutcomeKind.COMPILE_ERROR))
     timed_out = sum(1 for o in test_outcomes if o.kind == OutcomeKind.TIMEOUT)
     crashed = sum(1 for o in test_outcomes if o.kind == OutcomeKind.CRASH)
     skipped = sum(1 for o in test_outcomes if o.kind == OutcomeKind.SKIPPED)
     compile_passed = sum(1 for o in compile_outcomes if o.kind == OutcomeKind.PASS)
-    compile_failed = sum(1 for o in compile_outcomes if o.kind != OutcomeKind.PASS)
+    compile_failed = sum(1 for o in compile_outcomes if o.kind not in (OutcomeKind.PASS, OutcomeKind.SKIPPED))
 
     all_ok = all(
         o.kind in (OutcomeKind.PASS, OutcomeKind.SKIPPED) for o in outcomes
@@ -132,10 +132,9 @@ class JsonEventWriter:
 
 
 def make_json_callbacks(
-    stream: IO[str],
+    writer: JsonEventWriter,
 ) -> tuple[Callable[[Command], None], Callable[[Outcome], None]]:
-    """Build thread-safe on_start and on_complete callbacks for JSON output."""
-    writer = JsonEventWriter(stream)
+    """Build thread-safe on_start and on_complete callbacks sharing *writer*."""
 
     def on_start(cmd: Command) -> None:
         """Write a command:started event."""

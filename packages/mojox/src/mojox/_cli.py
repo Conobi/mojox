@@ -389,7 +389,7 @@ def _cmd_test(args: argparse.Namespace) -> None:
         writer = JsonEventWriter(sys.stdout)
         writer.write_event(serialize_suite_started(test_count))
 
-        json_on_start, json_on_complete = make_json_callbacks(sys.stdout)
+        json_on_start, json_on_complete = make_json_callbacks(writer)
         on_start = json_on_start
         on_complete = json_on_complete
     else:
