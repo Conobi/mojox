@@ -319,3 +319,24 @@ class TestTestSubcommandIntegration:
             text=True,
         )
         assert result.returncode == 0
+
+    def test_filter_no_match_json_emits_suite_events(self, tmp_path):
+        """--output-format json -k nonexistent emits suite events with test_count=0."""
+        self._make_project(tmp_path)
+        result = subprocess.run(
+            [sys.executable, "-m", "mojox", "test", "--output-format", "json", "-k", "nonexistent_xyz"],
+            cwd=str(tmp_path),
+            capture_output=True,
+            text=True,
+        )
+        import json
+        assert result.returncode == 0
+        lines = [line for line in result.stdout.strip().splitlines() if line]
+        assert len(lines) == 2
+        started = json.loads(lines[0])
+        finished = json.loads(lines[1])
+        assert started["type"] == "suite"
+        assert started["event"] == "started"
+        assert started["test_count"] == 0
+        assert finished["type"] == "suite"
+        assert finished["event"] == "ok"

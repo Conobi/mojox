@@ -15,6 +15,12 @@ import json
 import os
 import sys
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from mojox_core import Command
+
+    from ._types import Outcome
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -164,22 +170,28 @@ def apply_filters(
     *,
     paths: tuple[str, ...],
     pattern: str | None,
-    project_root: PurePosixPath,
+    project_root: Path,
 ) -> tuple[Command, ...]:
     """Filter commands by path prefixes and/or name pattern.
 
     Only RUN_TEST commands are filtered; compile commands pass through.
-    Returns a new tuple with matching commands preserved in order.
+    Path arguments are resolved against cwd, relativized against
+    project_root, and normalized.
     """
     from mojox_core import CommandKind
 
     if not paths and pattern is None:
         return commands
 
-    normalized_paths = tuple(
-        os.path.normpath(p).rstrip(os.sep)
-        for p in paths
-    )
+    normalized_paths: list[str] = []
+    root = project_root.resolve()
+    for p in paths:
+        resolved = Path(p).resolve()
+        try:
+            rel = str(resolved.relative_to(root))
+        except ValueError:
+            continue
+        normalized_paths.append(os.path.normpath(rel).rstrip(os.sep))
 
     def _matches_test(cmd: Command) -> bool:
         if cmd.kind != CommandKind.RUN_TEST:
@@ -187,13 +199,15 @@ def apply_filters(
 
         tid = cmd.target_id
 
-        if normalized_paths:
+        if paths and normalized_paths:
             path_match = any(
                 tid == np if np.endswith(".mojo") else (tid.startswith(np + "/") or tid == np or np == ".")
                 for np in normalized_paths
             )
             if not path_match:
                 return False
+        elif paths and not normalized_paths:
+            return False
 
         if pattern is not None:
             if pattern.lower() not in tid.lower():
@@ -313,6 +327,9 @@ def _cmd_test(args: argparse.Namespace) -> None:
     if env.diagnostics:
         render_diagnostics(env.diagnostics)
 
+    # --- Output format (resolved early for zero-match JSON events) ---
+    output_format = OutputFormat(args.output_format) if args.output_format else OutputFormat.HUMAN
+
     # --- Filtering ---
     filter_paths = tuple(getattr(args, "paths", []))
     filter_pattern = getattr(args, "filter", None)
@@ -324,10 +341,12 @@ def _cmd_test(args: argparse.Namespace) -> None:
         test_count = sum(1 for c in commands if c.kind == CommandKind.RUN_TEST)
         if test_count == 0:
             print("No tests match the filter", file=sys.stderr)
+            if output_format == OutputFormat.JSON:
+                from ._json import JsonEventWriter, serialize_suite_started, serialize_suite_finished
+                writer = JsonEventWriter(sys.stdout)
+                writer.write_event(serialize_suite_started(0))
+                writer.write_event(serialize_suite_finished((), elapsed_s=0.0))
             return
-
-    # --- Output format ---
-    output_format = OutputFormat(args.output_format) if args.output_format else OutputFormat.HUMAN
     fail_fast = getattr(args, "fail_fast", True)
 
     # --- Resolve verbosity ---
