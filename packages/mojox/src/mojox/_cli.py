@@ -93,6 +93,39 @@ def _build_cli_overrides(args: argparse.Namespace) -> dict:
     return overrides
 
 
+def determine_exit_code(outcomes: tuple[Outcome, ...]) -> int:
+    """Determine process exit code from command outcomes.
+
+    Returns 0 (success), 1 (test failure), or 2 (compilation failure).
+    SKIPPED outcomes are ignored. Test failures take precedence over
+    compilation failures.
+    """
+    from mojox_core import CommandKind
+    from ._types import OutcomeKind
+
+    has_test_failure = any(
+        o.kind not in (OutcomeKind.PASS, OutcomeKind.SKIPPED)
+        and o.command.kind == CommandKind.RUN_TEST
+        for o in outcomes
+    )
+    if has_test_failure:
+        return 1
+
+    has_compile_failure = any(
+        o.kind not in (OutcomeKind.PASS, OutcomeKind.SKIPPED)
+        and o.command.kind in (
+            CommandKind.COMPILE_PACKAGE,
+            CommandKind.COMPILE_BINARY,
+            CommandKind.CHECK_EXAMPLE,
+        )
+        for o in outcomes
+    )
+    if has_compile_failure:
+        return 2
+
+    return 0
+
+
 def _interrupted_summary(commands) -> str:
     """Build a short message for Ctrl+C interruption."""
     return f"Interrupted — {len(commands)} targets planned"
