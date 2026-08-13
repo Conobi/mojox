@@ -103,6 +103,65 @@ class TestBuildParser:
             parser.parse_args([])
 
 
+class TestTestSubcommandFlags:
+    """Tests for test-only CLI flags (output, fail-fast, verbosity, filtering)."""
+
+    def test_output_format_default(self):
+        parser = build_parser()
+        args = parser.parse_args(["test"])
+        assert args.output_format is None
+
+    def test_output_format_json(self):
+        parser = build_parser()
+        args = parser.parse_args(["test", "--output-format", "json"])
+        assert args.output_format == "json"
+
+    def test_fail_fast_default_true(self):
+        parser = build_parser()
+        args = parser.parse_args(["test"])
+        assert args.fail_fast is True
+
+    def test_no_fail_fast(self):
+        parser = build_parser()
+        args = parser.parse_args(["test", "--no-fail-fast"])
+        assert args.fail_fast is False
+
+    def test_success_output_flag(self):
+        parser = build_parser()
+        args = parser.parse_args(["test", "--success-output", "immediate"])
+        assert args.success_output == "immediate"
+
+    def test_failure_output_flag(self):
+        parser = build_parser()
+        args = parser.parse_args(["test", "--failure-output", "final"])
+        assert args.failure_output == "final"
+
+    def test_filter_flag(self):
+        parser = build_parser()
+        args = parser.parse_args(["test", "-k", "parse"])
+        assert args.filter == "parse"
+
+    def test_positional_paths(self):
+        parser = build_parser()
+        args = parser.parse_args(["test", "tests/unit/", "tests/integration/"])
+        assert args.paths == ["tests/unit/", "tests/integration/"]
+
+    def test_positional_paths_empty_by_default(self):
+        parser = build_parser()
+        args = parser.parse_args(["test"])
+        assert args.paths == []
+
+    def test_build_does_not_have_filter(self):
+        parser = build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["build", "-k", "something"])
+
+    def test_run_does_not_have_filter(self):
+        parser = build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["run", "main.mojo", "-k", "something"])
+
+
 class TestCLIIntegration:
     def test_check_with_valid_manifest(self, tmp_path):
         """mojox check succeeds with a valid manifest."""

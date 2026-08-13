@@ -28,6 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     test_p = sub.add_parser("test", help="Run test targets")
     test_p.set_defaults(profile="dev")
     _add_common_flags(test_p)
+    _add_test_flags(test_p)
 
     run_p = sub.add_parser("run", help="Run a Mojo file")
     run_p.add_argument("file", help="The .mojo file to run")
@@ -70,6 +71,38 @@ def _add_common_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--flag", action="append", default=[], dest="flags",
                         help="Extra flag passed through to the compiler"
                              " (use --flag=VALUE for dash-prefixed flags)")
+
+
+def _add_test_flags(parser: argparse.ArgumentParser) -> None:
+    """Add flags specific to the test subcommand."""
+    parser.add_argument(
+        "--output-format", default=None,
+        choices=["human", "json"],
+        help="Output format: human (default) or json (NDJSON to stdout)",
+    )
+    parser.add_argument(
+        "--fail-fast", action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Stop after first failure (default: --fail-fast)",
+    )
+    parser.add_argument(
+        "--success-output", default=None,
+        choices=["immediate", "final", "never"],
+        help="When to show passing test output (default: never)",
+    )
+    parser.add_argument(
+        "--failure-output", default=None,
+        choices=["immediate", "final", "never"],
+        help="When to show failing test output (default: immediate)",
+    )
+    parser.add_argument(
+        "-k", "--filter", default=None, dest="filter",
+        help="Filter tests by name pattern (case-insensitive substring)",
+    )
+    parser.add_argument(
+        "paths", nargs="*", default=[],
+        help="Filter tests by path (file or directory prefix)",
+    )
 
 
 def _build_cli_overrides(args: argparse.Namespace) -> dict:
