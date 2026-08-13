@@ -11,7 +11,7 @@ from typing import IO
 
 from mojox_core import Command, Diagnostic
 
-from ._types import Outcome, OutcomeKind
+from ._types import Outcome, OutcomeKind, OutputMode
 
 
 # -- ANSI helpers -----------------------------------------------------------
@@ -48,6 +48,7 @@ _OUTCOME_LABELS: dict[OutcomeKind, tuple[str, str]] = {
     OutcomeKind.TIMEOUT: (_RED_BOLD, "TIMEOUT"),
     OutcomeKind.CRASH: (_RED_BOLD, "CRASH"),
     OutcomeKind.COMPILE_ERROR: (_RED_BOLD, "COMPILE ERROR"),
+    OutcomeKind.SKIPPED: (_DIM, "SKIP"),
 }
 
 
@@ -62,45 +63,102 @@ def render_starting(
     out.write(f"{_c(out, _BOLD, 'Starting')} {count} {label}\n")
 
 
+def _write_output_block(out: IO[str], outcome: Outcome) -> None:
+    """Write full stdout + stderr block for an outcome."""
+    if outcome.stdout:
+        for line in outcome.stdout.splitlines():
+            out.write(f"  {_c(out, _DIM, line)}\n")
+    if outcome.stderr:
+        for line in outcome.stderr.splitlines():
+            out.write(f"  {_c(out, _DIM, line)}\n")
+
+
 def render_outcome(
     outcome: Outcome,
     *,
     stream: IO[str] | None = None,
-    verbose: bool = False,
+    success_output: OutputMode = OutputMode.NEVER,
+    failure_output: OutputMode = OutputMode.IMMEDIATE,
 ) -> None:
-    """Render a single outcome as it completes (nextest style)."""
+    """Render a single outcome as it completes (nextest style).
+
+    Output visibility is controlled per outcome category:
+
+    - *success_output* governs PASS outcomes.
+    - *failure_output* governs FAIL / TIMEOUT / CRASH / COMPILE_ERROR.
+    - SKIPPED outcomes never display output.
+    """
     out = stream or sys.stderr
     code, text = _OUTCOME_LABELS[outcome.kind]
     label = _c(out, code, text)
     timing = _c(out, _DIM, f"[{outcome.elapsed_s:.1f}s]")
     out.write(f"{label} {timing} {outcome.command.target_id}\n")
 
-    if outcome.kind != OutcomeKind.PASS:
-        if outcome.stderr:
-            for line in outcome.stderr.splitlines()[:10]:
-                out.write(f"  {_c(out, _DIM, line)}\n")
-        if outcome.kind == OutcomeKind.TIMEOUT:
-            out.write(f"  {_c(out, _DIM, f'(timed out after {outcome.elapsed_s:.1f}s)')}\n")
-    elif verbose:
-        if outcome.stdout:
-            for line in outcome.stdout.splitlines():
-                out.write(f"  {_c(out, _DIM, line)}\n")
-        if outcome.stderr:
-            for line in outcome.stderr.splitlines():
-                out.write(f"  {_c(out, _DIM, line)}\n")
+    if outcome.kind == OutcomeKind.SKIPPED:
+        return
+
+    if outcome.kind == OutcomeKind.PASS:
+        if success_output == OutputMode.IMMEDIATE:
+            _write_output_block(out, outcome)
+    else:
+        if failure_output == OutputMode.IMMEDIATE:
+            _write_output_block(out, outcome)
+            if outcome.kind == OutcomeKind.TIMEOUT:
+                out.write(f"  {_c(out, _DIM, f'(timed out after {outcome.elapsed_s:.1f}s)')}\n")
 
 
 def make_progress_callback(
     stream: IO[str] | None = None,
-    verbose: bool = False,
+    success_output: OutputMode = OutputMode.NEVER,
+    failure_output: OutputMode = OutputMode.IMMEDIATE,
 ):
     """Return a callback suitable for ``run_commands(on_complete=...)``."""
     out = stream or sys.stderr
 
     def _on_complete(outcome: Outcome) -> None:
-        render_outcome(outcome, stream=out, verbose=verbose)
+        render_outcome(
+            outcome, stream=out,
+            success_output=success_output,
+            failure_output=failure_output,
+        )
 
     return _on_complete
+
+
+def render_final_output(
+    outcomes: tuple[Outcome, ...],
+    *,
+    stream: IO[str] | None = None,
+    success_output: OutputMode = OutputMode.NEVER,
+    failure_output: OutputMode = OutputMode.IMMEDIATE,
+) -> None:
+    """Render deferred output for outcomes whose mode is FINAL.
+
+    Only outcomes matching ``OutputMode.FINAL`` for their category
+    are rendered here. SKIPPED outcomes are always excluded.
+    """
+    out = stream or sys.stderr
+
+    failures = [
+        o for o in outcomes
+        if o.kind not in (OutcomeKind.PASS, OutcomeKind.SKIPPED)
+        and failure_output == OutputMode.FINAL
+    ]
+    successes = [
+        o for o in outcomes
+        if o.kind == OutcomeKind.PASS
+        and success_output == OutputMode.FINAL
+    ]
+
+    for o in failures:
+        code, text = _OUTCOME_LABELS[o.kind]
+        out.write(f"\n{_c(out, code, text)} {o.command.target_id}\n")
+        _write_output_block(out, o)
+
+    for o in successes:
+        code, text = _OUTCOME_LABELS[o.kind]
+        out.write(f"\n{_c(out, code, text)} {o.command.target_id}\n")
+        _write_output_block(out, o)
 
 
 # -- Summary ----------------------------------------------------------------
@@ -122,6 +180,7 @@ def render_summary(
     timed_out = sum(1 for o in outcomes if o.kind == OutcomeKind.TIMEOUT)
     crashed = sum(1 for o in outcomes if o.kind == OutcomeKind.CRASH)
     compile_errors = sum(1 for o in outcomes if o.kind == OutcomeKind.COMPILE_ERROR)
+    skipped = sum(1 for o in outcomes if o.kind == OutcomeKind.SKIPPED)
     total_time = sum(o.elapsed_s for o in outcomes)
 
     parts: list[str] = []
@@ -135,6 +194,8 @@ def render_summary(
         parts.append(_c(out, _RED_BOLD, f"{crashed} crashed"))
     if compile_errors:
         parts.append(_c(out, _RED_BOLD, f"{compile_errors} compile error(s)"))
+    if skipped:
+        parts.append(_c(out, _DIM, f"{skipped} skipped"))
 
     summary = ", ".join(parts) if parts else "0 targets"
     out.write(f"\n{_c(out, _BOLD, summary)} in {total_time:.2f}s\n")

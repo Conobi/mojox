@@ -5,8 +5,11 @@ from __future__ import annotations
 import io
 from pathlib import PurePosixPath
 
-from mojox._output import render_summary, render_dry_run, render_diagnostics
-from mojox._types import Outcome, OutcomeKind
+from mojox._output import (
+    render_summary, render_dry_run, render_diagnostics,
+    render_outcome, make_progress_callback, render_final_output,
+)
+from mojox._types import Outcome, OutcomeKind, OutputMode
 from mojox_core import Command, CommandKind, Diagnostic
 
 
@@ -191,3 +194,102 @@ class TestRenderDiagnostics:
         buf = io.StringIO()
         render_diagnostics((), stream=buf)
         assert buf.getvalue() == ""
+
+
+class TestRenderOutcomeVerbosity:
+    """Tests for nextest-style output verbosity modes."""
+
+    def test_pass_never_hides_output(self):
+        outcome = _outcome("t", OutcomeKind.PASS, stdout="hello")
+        buf = io.StringIO()
+        render_outcome(outcome, stream=buf, success_output=OutputMode.NEVER, failure_output=OutputMode.IMMEDIATE)
+        assert "hello" not in buf.getvalue()
+        assert "PASS" in buf.getvalue()
+
+    def test_pass_immediate_shows_output(self):
+        outcome = _outcome("t", OutcomeKind.PASS, stdout="hello")
+        buf = io.StringIO()
+        render_outcome(outcome, stream=buf, success_output=OutputMode.IMMEDIATE, failure_output=OutputMode.IMMEDIATE)
+        assert "hello" in buf.getvalue()
+
+    def test_fail_immediate_shows_full_stderr(self):
+        stderr = "\n".join(f"line{i}" for i in range(20))
+        outcome = _outcome("t", OutcomeKind.FAIL, stderr=stderr)
+        buf = io.StringIO()
+        render_outcome(outcome, stream=buf, success_output=OutputMode.NEVER, failure_output=OutputMode.IMMEDIATE)
+        assert "line19" in buf.getvalue()
+
+    def test_fail_never_hides_output(self):
+        outcome = _outcome("t", OutcomeKind.FAIL, stderr="error details")
+        buf = io.StringIO()
+        render_outcome(outcome, stream=buf, success_output=OutputMode.NEVER, failure_output=OutputMode.NEVER)
+        assert "error details" not in buf.getvalue()
+        assert "FAIL" in buf.getvalue()
+
+    def test_fail_final_hides_inline_output(self):
+        outcome = _outcome("t", OutcomeKind.FAIL, stderr="error details")
+        buf = io.StringIO()
+        render_outcome(outcome, stream=buf, success_output=OutputMode.NEVER, failure_output=OutputMode.FINAL)
+        assert "error details" not in buf.getvalue()
+
+    def test_skipped_renders_skip_label(self):
+        outcome = _outcome("t", OutcomeKind.SKIPPED)
+        buf = io.StringIO()
+        render_outcome(outcome, stream=buf, success_output=OutputMode.NEVER, failure_output=OutputMode.IMMEDIATE)
+        assert "SKIP" in buf.getvalue()
+
+    def test_skipped_never_shows_output(self):
+        outcome = _outcome("t", OutcomeKind.SKIPPED, stderr="cancelled")
+        buf = io.StringIO()
+        render_outcome(outcome, stream=buf, success_output=OutputMode.IMMEDIATE, failure_output=OutputMode.IMMEDIATE)
+        assert "cancelled" not in buf.getvalue()
+
+
+class TestRenderFinalOutput:
+    """Tests for deferred output display."""
+
+    def test_final_output_shows_deferred_failures(self):
+        outcomes = (
+            _outcome("t1", OutcomeKind.PASS),
+            _outcome("t2", OutcomeKind.FAIL, stderr="the error"),
+        )
+        buf = io.StringIO()
+        render_final_output(
+            outcomes, stream=buf,
+            success_output=OutputMode.NEVER,
+            failure_output=OutputMode.FINAL,
+        )
+        assert "the error" in buf.getvalue()
+        assert "t2" in buf.getvalue()
+
+    def test_final_output_empty_when_mode_is_never(self):
+        outcomes = (_outcome("t", OutcomeKind.FAIL, stderr="err"),)
+        buf = io.StringIO()
+        render_final_output(outcomes, stream=buf, success_output=OutputMode.NEVER, failure_output=OutputMode.NEVER)
+        assert buf.getvalue() == ""
+
+    def test_final_output_shows_success_when_mode_is_final(self):
+        outcomes = (_outcome("t", OutcomeKind.PASS, stdout="output"),)
+        buf = io.StringIO()
+        render_final_output(outcomes, stream=buf, success_output=OutputMode.FINAL, failure_output=OutputMode.IMMEDIATE)
+        assert "output" in buf.getvalue()
+
+    def test_final_output_skips_skipped(self):
+        outcomes = (_outcome("t", OutcomeKind.SKIPPED, stderr="skipped"),)
+        buf = io.StringIO()
+        render_final_output(outcomes, stream=buf, success_output=OutputMode.FINAL, failure_output=OutputMode.FINAL)
+        assert buf.getvalue() == ""
+
+
+class TestRenderSummaryWithSkipped:
+    """Tests for skipped count in summary."""
+
+    def test_skipped_count_in_summary(self):
+        outcomes = (
+            _outcome("t1", OutcomeKind.PASS),
+            _outcome("t2", OutcomeKind.SKIPPED),
+        )
+        buf = io.StringIO()
+        render_summary(outcomes, stream=buf)
+        assert "1 passed" in buf.getvalue()
+        assert "1 skipped" in buf.getvalue()

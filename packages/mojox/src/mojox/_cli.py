@@ -222,6 +222,7 @@ def _cmd_test(args: argparse.Namespace) -> None:
         render_dry_run, render_summary, render_diagnostics,
         render_starting, make_progress_callback,
     )
+    from ._types import OutputMode
 
     manifest, graph, env, policy, toolchain, host, settings, commands, include_paths = (
         _resolve_pipeline(args)
@@ -241,7 +242,10 @@ def _cmd_test(args: argparse.Namespace) -> None:
             max_workers=policy.jobs_tests,
             extra_env=settings.env if settings.env else None,
             include_paths=include_paths,
-            on_complete=make_progress_callback(verbose=args.verbose),
+            on_complete=make_progress_callback(
+                success_output=OutputMode.IMMEDIATE if args.verbose else OutputMode.NEVER,
+                failure_output=OutputMode.IMMEDIATE,
+            ),
         )
     except KeyboardInterrupt:
         print(f"\n{_interrupted_summary(commands)}", file=sys.stderr)
@@ -371,6 +375,7 @@ def _cmd_build(args: argparse.Namespace) -> None:
         render_dry_run, render_summary, render_diagnostics,
         render_starting, make_progress_callback,
     )
+    from ._types import OutputMode
     from mojox_core import CommandKind
 
     manifest, graph, env, policy, toolchain, host, settings, commands, include_paths = (
@@ -396,7 +401,10 @@ def _cmd_build(args: argparse.Namespace) -> None:
             max_workers=policy.jobs_compile,
             extra_env=settings.env if settings.env else None,
             include_paths=include_paths,
-            on_complete=make_progress_callback(verbose=args.verbose),
+            on_complete=make_progress_callback(
+                success_output=OutputMode.IMMEDIATE if args.verbose else OutputMode.NEVER,
+                failure_output=OutputMode.IMMEDIATE,
+            ),
         )
     except KeyboardInterrupt:
         print(f"\n{_interrupted_summary(build_commands)}", file=sys.stderr)
