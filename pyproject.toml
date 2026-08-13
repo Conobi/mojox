@@ -1,7 +1,7 @@
 [project]
 name = "mojox-workspace"
 version = "0"
-description = "Workspace root for the mojox ecosystem (mojox + mojox-build)."
+description = "Workspace root for the mojox ecosystem (mojox-core + mojox + mojox-build)."
 requires-python = ">=3.10"
 
 [tool.uv]
