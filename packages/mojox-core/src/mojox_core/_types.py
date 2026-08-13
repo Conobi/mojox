@@ -146,7 +146,6 @@ class Manifest:
     source_exclude: tuple[str, ...]
     wheel_exclude: tuple[str, ...]
     profiles: dict[str, Profile]
-    ore_seed: str | None
     build_profile: str
 
 

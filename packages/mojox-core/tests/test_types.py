@@ -82,7 +82,6 @@ class TestFrozenDataclasses:
             urls={},
             classifiers=(),
             profiles={},
-            ore_seed=None,
             build_profile="release",
         )
         assert m.name == "mylib"

@@ -63,7 +63,6 @@ def parse_manifest(data: dict) -> Manifest:
         source_exclude=_parse_path_list(mojox, "source-exclude", ()),
         wheel_exclude=_parse_str_list(mojox, "wheel-exclude"),
         profiles=_parse_profiles(mojox.get("profile", {})),
-        ore_seed=_parse_optional_path(mojox, "ore-seed"),
         build_profile=_parse_build_profile(mojox),
     )
 

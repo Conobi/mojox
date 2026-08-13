@@ -59,7 +59,6 @@ def full_pyproject() -> dict:
                 "source-include": ["src/**/*.mojo", "pyproject.toml"],
                 "source-exclude": ["src/**/*_test.mojo"],
                 "wheel-exclude": ["*.pyc"],
-                "ore-seed": "examples/seed.mojo",
                 "lints": {
                     "warnings": "error",
                     "check-doc-strings": "check",
