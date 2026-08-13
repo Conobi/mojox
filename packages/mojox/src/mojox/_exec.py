@@ -169,7 +169,7 @@ def run_commands(
     """Run a sequence of Commands with concurrency and dependency ordering.
 
     Commands whose ``depends_on`` references have not all completed
-    successfully are skipped with a FAIL outcome. Independent commands
+    successfully are skipped with a SKIPPED outcome. Independent commands
     run concurrently up to ``max_workers``.
 
     The current two-phase implementation supports commands with at most
@@ -298,14 +298,15 @@ def _check_dependencies(
 ) -> Outcome | None:
     """Check if all dependencies completed successfully.
 
-    Returns a skip Outcome if any dependency failed, None otherwise.
+    Returns a SKIPPED Outcome if any dependency failed or is missing,
+    None otherwise.
     """
     for dep_id in cmd.depends_on:
         dep_outcome = completed.get(dep_id)
         if dep_outcome is None or dep_outcome.kind != OutcomeKind.PASS:
             return Outcome(
                 command=cmd,
-                kind=OutcomeKind.FAIL,
+                kind=OutcomeKind.SKIPPED,
                 exit_code=None,
                 stdout="",
                 stderr=f"Dependency {dep_id!r} failed; skipping {cmd.target_id!r}.",

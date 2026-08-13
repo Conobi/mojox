@@ -146,7 +146,7 @@ class TestRunCommands:
         )
         results = run_commands((precompile, test), max_workers=2)
         assert results[0].kind == OutcomeKind.FAIL
-        assert results[1].kind == OutcomeKind.FAIL
+        assert results[1].kind == OutcomeKind.SKIPPED
         assert "dependency" in results[1].stderr.lower()
 
     def test_concurrent_independent_commands(self):
