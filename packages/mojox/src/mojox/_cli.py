@@ -295,12 +295,16 @@ def _resolve_pipeline(args: argparse.Namespace):
 
 def _cmd_test(args: argparse.Namespace) -> None:
     """Execute the test subcommand."""
+    import time
+
+    from mojox_core import CommandKind
+
     from ._exec import run_commands
     from ._output import (
         render_dry_run, render_summary, render_diagnostics,
-        render_starting, make_progress_callback,
+        render_starting, make_progress_callback, render_final_output,
     )
-    from ._types import OutputMode
+    from ._types import OutputFormat, OutputMode
 
     manifest, graph, env, policy, toolchain, host, settings, commands, include_paths = (
         _resolve_pipeline(args)
@@ -309,30 +313,100 @@ def _cmd_test(args: argparse.Namespace) -> None:
     if env.diagnostics:
         render_diagnostics(env.diagnostics)
 
+    # --- Filtering ---
+    filter_paths = tuple(getattr(args, "paths", []))
+    filter_pattern = getattr(args, "filter", None)
+    if filter_paths or filter_pattern is not None:
+        commands = apply_filters(
+            commands, paths=filter_paths, pattern=filter_pattern,
+            project_root=Path.cwd(),
+        )
+        test_count = sum(1 for c in commands if c.kind == CommandKind.RUN_TEST)
+        if test_count == 0:
+            print("No tests match the filter", file=sys.stderr)
+            return
+
+    # --- Output format ---
+    output_format = OutputFormat(args.output_format) if args.output_format else OutputFormat.HUMAN
+    fail_fast = getattr(args, "fail_fast", True)
+
+    # --- Resolve verbosity ---
+    if args.success_output is not None:
+        success_output = OutputMode(args.success_output)
+    elif args.verbose:
+        success_output = OutputMode.IMMEDIATE
+    else:
+        success_output = OutputMode.NEVER
+
+    if args.failure_output is not None:
+        failure_output = OutputMode(args.failure_output)
+    elif args.verbose:
+        failure_output = OutputMode.IMMEDIATE
+    else:
+        failure_output = OutputMode.IMMEDIATE
+
+    # --- Dry-run ---
     if args.dry_run:
-        render_dry_run(commands, compact=not args.verbose)
+        if output_format == OutputFormat.JSON:
+            import json as json_mod
+            dry_commands = [
+                {"target_id": c.target_id, "kind": c.kind.value, "argv": list(c.argv)}
+                for c in commands
+            ]
+            json_mod.dump({"type": "dry-run", "commands": dry_commands}, sys.stdout, indent=2)
+            sys.stdout.write("\n")
+        else:
+            render_dry_run(commands, compact=not args.verbose)
         return
 
-    render_starting(len(commands))
+    # --- Build callbacks ---
+    on_start = None
+    on_complete = None
+
+    if output_format == OutputFormat.JSON:
+        from ._json import make_json_callbacks, JsonEventWriter, serialize_suite_started, serialize_suite_finished
+
+        test_count = sum(1 for c in commands if c.kind == CommandKind.RUN_TEST)
+        writer = JsonEventWriter(sys.stdout)
+        writer.write_event(serialize_suite_started(test_count))
+
+        json_on_start, json_on_complete = make_json_callbacks(sys.stdout)
+        on_start = json_on_start
+        on_complete = json_on_complete
+    else:
+        render_starting(len(commands))
+        on_complete = make_progress_callback(
+            success_output=success_output,
+            failure_output=failure_output,
+        )
+
+    # --- Execute ---
+    wall_start = time.monotonic()
     try:
         outcomes = run_commands(
             commands,
             max_workers=policy.jobs_tests,
             extra_env=settings.env if settings.env else None,
             include_paths=include_paths,
-            on_complete=make_progress_callback(
-                success_output=OutputMode.IMMEDIATE if args.verbose else OutputMode.NEVER,
-                failure_output=OutputMode.IMMEDIATE,
-            ),
+            on_start=on_start,
+            on_complete=on_complete,
+            fail_fast=fail_fast,
         )
     except KeyboardInterrupt:
         print(f"\n{_interrupted_summary(commands)}", file=sys.stderr)
         sys.exit(130)
-    render_summary(outcomes)
+    wall_elapsed = time.monotonic() - wall_start
 
-    from ._types import OutcomeKind
-    if any(o.kind != OutcomeKind.PASS for o in outcomes):
-        sys.exit(1)
+    # --- Render results ---
+    if output_format == OutputFormat.JSON:
+        writer.write_event(serialize_suite_finished(outcomes, elapsed_s=wall_elapsed))
+    else:
+        render_final_output(
+            outcomes, success_output=success_output, failure_output=failure_output,
+        )
+        render_summary(outcomes)
+
+    sys.exit(determine_exit_code(outcomes))
 
 
 def _cmd_run(args: argparse.Namespace) -> None:
