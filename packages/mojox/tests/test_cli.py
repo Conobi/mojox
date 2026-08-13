@@ -251,3 +251,71 @@ class TestCLIIntegration:
             text=True,
         )
         assert result.returncode == 2
+
+
+class TestTestSubcommandIntegration:
+    """Integration tests that run mojox test via subprocess."""
+
+    def _make_project(self, tmp_path):
+        """Create a minimal project with a pyproject.toml and a test file."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            '[project]\nname = "testlib"\nversion = "0.1.0"\n'
+            '[build-system]\nrequires = ["hatchling"]\nbuild-backend = "hatchling.build"\n'
+        )
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        test_file = tests_dir / "test_hello.mojo"
+        test_file.write_text(
+            "from testing import assert_true\n"
+            "def test_hello():\n"
+            "    assert_true(True)\n"
+        )
+        return tests_dir
+
+    def test_output_format_json_produces_ndjson(self, tmp_path):
+        """--output-format json with --dry-run emits JSON to stdout."""
+        self._make_project(tmp_path)
+        result = subprocess.run(
+            [sys.executable, "-m", "mojox", "test", "--output-format", "json", "--dry-run"],
+            cwd=str(tmp_path),
+            capture_output=True,
+            text=True,
+        )
+        import json
+        data = json.loads(result.stdout)
+        assert data["type"] == "dry-run"
+
+    def test_fail_fast_flag_accepted(self, tmp_path):
+        """--no-fail-fast is accepted without error."""
+        self._make_project(tmp_path)
+        result = subprocess.run(
+            [sys.executable, "-m", "mojox", "test", "--no-fail-fast", "--dry-run"],
+            cwd=str(tmp_path),
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+
+    def test_filter_no_match_exits_0(self, tmp_path):
+        """-k nonexistent prints warning and exits 0."""
+        self._make_project(tmp_path)
+        result = subprocess.run(
+            [sys.executable, "-m", "mojox", "test", "-k", "nonexistent_xyz"],
+            cwd=str(tmp_path),
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "no tests match" in result.stderr.lower()
+
+    def test_success_output_flag_accepted(self, tmp_path):
+        """--success-output=immediate is accepted."""
+        self._make_project(tmp_path)
+        result = subprocess.run(
+            [sys.executable, "-m", "mojox", "test", "--success-output", "immediate", "--dry-run"],
+            cwd=str(tmp_path),
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
