@@ -87,11 +87,7 @@ def render_metadata(
             body = readme_path.read_text(encoding="utf-8")
             lower = manifest.readme.lower()
             content_type = (
-                "text/markdown"
-                if lower.endswith(".md")
-                else "text/x-rst"
-                if lower.endswith(".rst")
-                else "text/plain"
+                "text/markdown" if lower.endswith(".md") else "text/x-rst" if lower.endswith(".rst") else "text/plain"
             )
             lines.append(f"Description-Content-Type: {content_type}")
 

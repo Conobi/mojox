@@ -7,12 +7,26 @@ in `_hooks` so this file can stay a flat re-export surface.
 from ._build import GENERATOR_VERSION as __version__
 from ._hooks import (
     hook_build_editable as build_editable,
+)
+from ._hooks import (
     hook_build_sdist as build_sdist,
+)
+from ._hooks import (
     hook_build_wheel as build_wheel,
+)
+from ._hooks import (
     hook_get_requires_for_build_editable as get_requires_for_build_editable,
+)
+from ._hooks import (
     hook_get_requires_for_build_sdist as get_requires_for_build_sdist,
+)
+from ._hooks import (
     hook_get_requires_for_build_wheel as get_requires_for_build_wheel,
+)
+from ._hooks import (
     hook_prepare_metadata_for_build_editable as prepare_metadata_for_build_editable,
+)
+from ._hooks import (
     hook_prepare_metadata_for_build_wheel as prepare_metadata_for_build_wheel,
 )
 

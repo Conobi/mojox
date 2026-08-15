@@ -6,8 +6,11 @@ import io
 from pathlib import PurePosixPath
 
 from mojox._output import (
-    render_summary, render_dry_run, render_diagnostics,
-    render_outcome, make_progress_callback, render_final_output,
+    render_diagnostics,
+    render_dry_run,
+    render_final_output,
+    render_outcome,
+    render_summary,
 )
 from mojox._types import Outcome, OutcomeKind, OutputMode
 from mojox_core import Command, CommandKind, Diagnostic
@@ -255,7 +258,8 @@ class TestRenderFinalOutput:
         )
         buf = io.StringIO()
         render_final_output(
-            outcomes, stream=buf,
+            outcomes,
+            stream=buf,
             success_output=OutputMode.NEVER,
             failure_output=OutputMode.FINAL,
         )

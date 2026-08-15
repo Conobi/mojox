@@ -86,22 +86,20 @@ def read_settings(
     loaded_paths: list[str] = []
 
     user_path, user_boundary = _user_config_path(env)
-    if user_path is not None and user_path.is_file():
-        if _is_path_secure(user_path, stop_at=user_boundary):
-            user_data = _safe_read_toml(user_path)
-            if user_data is not None:
-                loaded_paths.append(str(user_path))
+    if user_path is not None and user_path.is_file() and _is_path_secure(user_path, stop_at=user_boundary):
+        user_data = _safe_read_toml(user_path)
+        if user_data is not None:
+            loaded_paths.append(str(user_path))
 
     # Resolve $HOME for the walk boundary
     home_str = env.get("HOME")
     home = Path(home_str).resolve() if home_str else None
 
     project_path, repo_root = _find_project_config(manifest_dir, home=home)
-    if project_path is not None:
-        if _is_path_secure(project_path, stop_at=repo_root):
-            project_data = _safe_read_toml(project_path)
-            if project_data is not None:
-                loaded_paths.append(str(project_path))
+    if project_path is not None and _is_path_secure(project_path, stop_at=repo_root):
+        project_data = _safe_read_toml(project_path)
+        if project_data is not None:
+            loaded_paths.append(str(project_path))
 
     result = parse_settings(user_data, project_data, env)
     return replace(result, config_paths=tuple(loaded_paths))
@@ -262,9 +260,7 @@ def _is_path_secure(path: Path, *, stop_at: Path | None = None) -> bool:
         return _is_path_secure_nofollow(p, uid=uid, stop_at=stop_abs)
     # Fallback: resolve is needed to compare paths, but loses symlink info.
     stop_resolved = stop_at.resolve() if stop_at is not None else None
-    return _is_path_secure_fallback(
-        path.resolve().parent, uid=uid, stop_at=stop_resolved
-    )
+    return _is_path_secure_fallback(path.resolve().parent, uid=uid, stop_at=stop_resolved)
 
 
 def _is_path_secure_nofollow(

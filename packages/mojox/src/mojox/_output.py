@@ -13,7 +13,6 @@ from mojox_core import Command, Diagnostic
 
 from ._types import Outcome, OutcomeKind, OutputMode
 
-
 # -- ANSI helpers -----------------------------------------------------------
 
 _BOLD = "\033[1m"
@@ -117,7 +116,8 @@ def make_progress_callback(
 
     def _on_complete(outcome: Outcome) -> None:
         render_outcome(
-            outcome, stream=out,
+            outcome,
+            stream=out,
             success_output=success_output,
             failure_output=failure_output,
         )
@@ -140,15 +140,11 @@ def render_final_output(
     out = stream or sys.stderr
 
     failures = [
-        o for o in outcomes
-        if o.kind not in (OutcomeKind.PASS, OutcomeKind.SKIPPED)
-        and failure_output == OutputMode.FINAL
+        o
+        for o in outcomes
+        if o.kind not in (OutcomeKind.PASS, OutcomeKind.SKIPPED) and failure_output == OutputMode.FINAL
     ]
-    successes = [
-        o for o in outcomes
-        if o.kind == OutcomeKind.PASS
-        and success_output == OutputMode.FINAL
-    ]
+    successes = [o for o in outcomes if o.kind == OutcomeKind.PASS and success_output == OutputMode.FINAL]
 
     for o in failures:
         code, text = _OUTCOME_LABELS[o.kind]
@@ -162,6 +158,7 @@ def render_final_output(
 
 
 # -- Summary ----------------------------------------------------------------
+
 
 def render_summary(
     outcomes: tuple[Outcome, ...],
@@ -203,6 +200,7 @@ def render_summary(
 
 # -- Dry-run ----------------------------------------------------------------
 
+
 def render_dry_run(
     commands: tuple[Command, ...],
     *,
@@ -231,10 +229,7 @@ def render_dry_run(
 
 def _command_group_key(cmd: Command) -> tuple:
     """Key for grouping commands with identical flags."""
-    argv_without_source = tuple(
-        a for a in cmd.argv
-        if not a.endswith(".mojo") and not a.endswith(".mojoc")
-    )
+    argv_without_source = tuple(a for a in cmd.argv if not a.endswith(".mojo") and not a.endswith(".mojoc"))
     return (cmd.kind, argv_without_source, cmd.depends_on, str(cmd.cwd))
 
 
@@ -307,7 +302,7 @@ def _render_grouped_commands(group: list[Command], out: IO[str]) -> None:
 
     template_parts: list[str] = []
     for a in first.argv:
-        if a.endswith(".mojo") or a.endswith(".mojoc"):
+        if a.endswith((".mojo", ".mojoc")):
             template_parts.append("<source>")
         else:
             cwd = str(first.cwd)
@@ -335,6 +330,7 @@ def _render_grouped_commands(group: list[Command], out: IO[str]) -> None:
 
 
 # -- Diagnostics ------------------------------------------------------------
+
 
 def render_diagnostics(
     diagnostics: tuple[Diagnostic, ...],

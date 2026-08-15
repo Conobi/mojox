@@ -10,11 +10,23 @@ from __future__ import annotations
 from ._errors import ConfigError
 from ._types import LocalSettings
 
-_FORBIDDEN_KEYS = frozenset({
-    "packages", "package-root", "binaries", "native-libs",
-    "source-include", "source-exclude", "wheel-include", "wheel-exclude",
-    "test-roots", "test-parallel", "defines", "lints", "pre-build",
-})
+_FORBIDDEN_KEYS = frozenset(
+    {
+        "packages",
+        "package-root",
+        "binaries",
+        "native-libs",
+        "source-include",
+        "source-exclude",
+        "wheel-include",
+        "wheel-exclude",
+        "test-roots",
+        "test-parallel",
+        "defines",
+        "lints",
+        "pre-build",
+    }
+)
 
 
 def parse_settings(

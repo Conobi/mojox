@@ -14,7 +14,7 @@ Merge semantics per key:
 from __future__ import annotations
 
 from ._errors import ConfigError
-from ._types import LintConfig, LocalSettings, Manifest, Policy, Profile
+from ._types import LocalSettings, Manifest, Policy, Profile
 
 BUILTIN_DEV = Profile(
     optimize=0,
@@ -63,9 +63,7 @@ def resolve(
     manifest_profile = manifest.profiles.get(profile_name)
 
     if builtin is None and manifest_profile is None:
-        available = sorted(
-            set(list(_BUILTINS.keys()) + list(manifest.profiles.keys()))
-        )
+        available = sorted(set(list(_BUILTINS.keys()) + list(manifest.profiles.keys())))
         raise ConfigError(
             f"profile.{profile_name}",
             f"unknown profile {profile_name!r}. Available: {', '.join(available)}",

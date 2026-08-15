@@ -239,8 +239,15 @@ def run_commands(
     triggered = False
     if no_deps:
         triggered = _run_phase(
-            no_deps, completed, results, max_workers,
-            extra_env, include_paths, on_start, on_complete, fail_fast,
+            no_deps,
+            completed,
+            results,
+            max_workers,
+            extra_env,
+            include_paths,
+            on_start,
+            on_complete,
+            fail_fast,
         )
 
     if has_deps:
@@ -261,8 +268,15 @@ def run_commands(
                     on_complete(outcome)
         else:
             _run_phase(
-                has_deps, completed, results, max_workers,
-                extra_env, include_paths, on_start, on_complete, fail_fast,
+                has_deps,
+                completed,
+                results,
+                max_workers,
+                extra_env,
+                include_paths,
+                on_start,
+                on_complete,
+                fail_fast,
             )
 
     assert all(r is not None for r in results), "unfilled result slots"
@@ -297,6 +311,7 @@ def _run_phase(
         on_complete: Optional callback invoked with each Outcome.
         fail_fast: If True, cancel remaining futures after first non-PASS.
     """
+
     def _record(idx: int, outcome: Outcome) -> None:
         results[idx] = outcome
         completed[outcome.command.target_id] = outcome
@@ -320,7 +335,11 @@ def _run_phase(
                 _record(idx, skip_outcome)
                 continue
             future = pool.submit(
-                _run_with_start, cmd, extra_env, include_paths, on_start,
+                _run_with_start,
+                cmd,
+                extra_env,
+                include_paths,
+                on_start,
             )
             future_to_idx[future] = (idx, cmd)
 

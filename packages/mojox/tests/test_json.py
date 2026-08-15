@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import PurePosixPath
 
-import pytest
-
 from mojox._json import (
     serialize_command_completed,
     serialize_command_started,

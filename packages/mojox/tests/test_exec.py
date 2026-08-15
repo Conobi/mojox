@@ -6,7 +6,6 @@ import sys
 from pathlib import Path, PurePosixPath
 
 import pytest
-
 from mojox._exec import run_command, run_commands
 from mojox._types import OutcomeKind
 from mojox_core import Command, CommandKind
@@ -14,16 +13,16 @@ from mojox_core import Command, CommandKind
 
 def _cmd(argv: tuple[str, ...], **overrides) -> Command:
     """Build a test command with sensible defaults."""
-    defaults = dict(
-        argv=argv,
-        cwd=PurePosixPath("."),
-        env={"PATH": "/usr/bin", "HOME": ""},
-        kind=CommandKind.RUN_TEST,
-        target_id="t.mojo",
-        timeout_s=30,
-        outputs=(),
-        depends_on=(),
-    )
+    defaults = {
+        "argv": argv,
+        "cwd": PurePosixPath("."),
+        "env": {"PATH": "/usr/bin", "HOME": ""},
+        "kind": CommandKind.RUN_TEST,
+        "target_id": "t.mojo",
+        "timeout_s": 30,
+        "outputs": (),
+        "depends_on": (),
+    }
     defaults.update(overrides)
     return Command(**defaults)
 
@@ -243,7 +242,9 @@ class TestFailFast:
             depends_on=("mylib",),
         )
         results = run_commands(
-            (compile_fail, compile_ok, test), max_workers=1, fail_fast=True,
+            (compile_fail, compile_ok, test),
+            max_workers=1,
+            fail_fast=True,
         )
         assert results[2].kind == OutcomeKind.SKIPPED
 
@@ -257,7 +258,8 @@ class TestOnStartCallback:
             _cmd((sys.executable, "-c", "print('b')"), target_id="b.mojo"),
         )
         run_commands(
-            cmds, max_workers=1,
+            cmds,
+            max_workers=1,
             on_start=lambda cmd: started.append(cmd.target_id),
         )
         assert set(started) == {"a.mojo", "b.mojo"}
@@ -276,7 +278,8 @@ class TestOnStartCallback:
             depends_on=("mylib",),
         )
         run_commands(
-            (compile_fail, test), max_workers=1,
+            (compile_fail, test),
+            max_workers=1,
             on_start=lambda cmd: started.append(cmd.target_id),
         )
         assert "mylib" in started

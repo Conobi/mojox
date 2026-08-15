@@ -25,11 +25,13 @@ _EVENT_MAP: dict[OutcomeKind, str] = {
     OutcomeKind.SKIPPED: "skipped",
 }
 
-_COMPILE_KINDS = frozenset({
-    CommandKind.COMPILE_PACKAGE,
-    CommandKind.COMPILE_BINARY,
-    CommandKind.CHECK_EXAMPLE,
-})
+_COMPILE_KINDS = frozenset(
+    {
+        CommandKind.COMPILE_PACKAGE,
+        CommandKind.COMPILE_BINARY,
+        CommandKind.CHECK_EXAMPLE,
+    }
+)
 
 
 def serialize_suite_started(test_count: int) -> dict:
@@ -98,9 +100,7 @@ def serialize_suite_finished(
     compile_passed = sum(1 for o in compile_outcomes if o.kind == OutcomeKind.PASS)
     compile_failed = sum(1 for o in compile_outcomes if o.kind not in (OutcomeKind.PASS, OutcomeKind.SKIPPED))
 
-    all_ok = all(
-        o.kind in (OutcomeKind.PASS, OutcomeKind.SKIPPED) for o in outcomes
-    )
+    all_ok = all(o.kind in (OutcomeKind.PASS, OutcomeKind.SKIPPED) for o in outcomes)
 
     return {
         "type": "suite",

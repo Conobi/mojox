@@ -11,10 +11,20 @@ from pathlib import Path
 from ._errors import ConfigError
 from ._types import Manifest, Target, TargetGraph, TargetKind
 
-_EXCLUDED_DIRS = frozenset({
-    ".git", ".claude", ".worktrees", ".venv", "venv", "build", "dist",
-    "site-packages", "mojo_packages", "target",
-})
+_EXCLUDED_DIRS = frozenset(
+    {
+        ".git",
+        ".claude",
+        ".worktrees",
+        ".venv",
+        "venv",
+        "build",
+        "dist",
+        "site-packages",
+        "mojo_packages",
+        "target",
+    }
+)
 
 _EGG_INFO_SUFFIX = ".egg-info"
 
@@ -39,30 +49,36 @@ def discover(manifest: Manifest, root: Path) -> TargetGraph:
         for pkg in manifest.packages:
             pkg_path = root / pkg
             if pkg_path.is_dir():
-                targets.append(Target(
-                    kind=TargetKind.LIB,
-                    path=pkg,
-                    target_id=pkg,
-                ))
+                targets.append(
+                    Target(
+                        kind=TargetKind.LIB,
+                        path=pkg,
+                        target_id=pkg,
+                    )
+                )
     else:
         pkg_root = root / manifest.package_root
         if pkg_root.is_dir():
             for child in sorted(pkg_root.iterdir()):
                 if child.is_dir() and not child.name.startswith(".") and not _is_excluded(child.name):
                     rel = str(child.relative_to(root))
-                    targets.append(Target(
-                        kind=TargetKind.LIB,
-                        path=rel,
-                        target_id=rel,
-                    ))
+                    targets.append(
+                        Target(
+                            kind=TargetKind.LIB,
+                            path=rel,
+                            target_id=rel,
+                        )
+                    )
 
     # Binary targets
     for b in manifest.binaries:
-        targets.append(Target(
-            kind=TargetKind.BIN,
-            path=b.source,
-            target_id=b.name,
-        ))
+        targets.append(
+            Target(
+                kind=TargetKind.BIN,
+                path=b.source,
+                target_id=b.name,
+            )
+        )
 
     # Test targets
     unsearched: list[tuple[str, int]] = []
@@ -82,16 +98,17 @@ def discover(manifest: Manifest, root: Path) -> TargetGraph:
             roots_str = ", ".join(repr(r) for r in manifest.test_roots)
             raise ConfigError(
                 "tool.mojox.test-roots",
-                f"no test targets found in configured roots: {roots_str}. "
-                "Test files must be named test_*.mojo.",
+                f"no test targets found in configured roots: {roots_str}. Test files must be named test_*.mojo.",
             )
 
         for tf in test_files:
-            targets.append(Target(
-                kind=TargetKind.TEST,
-                path=tf,
-                target_id=tf,
-            ))
+            targets.append(
+                Target(
+                    kind=TargetKind.TEST,
+                    path=tf,
+                    target_id=tf,
+                )
+            )
 
         # Check for unsearched directories containing test files
         searched = set(manifest.test_roots)
@@ -104,21 +121,25 @@ def discover(manifest: Manifest, root: Path) -> TargetGraph:
             if child.suffix == ".mojo" and child.is_file():
                 rel = str(child.relative_to(root))
                 if rel not in binary_sources:
-                    targets.append(Target(
-                        kind=TargetKind.EXAMPLE,
-                        path=rel,
-                        target_id=rel,
-                    ))
+                    targets.append(
+                        Target(
+                            kind=TargetKind.EXAMPLE,
+                            path=rel,
+                            target_id=rel,
+                        )
+                    )
             elif child.is_dir() and not _is_excluded(child.name):
                 main = child / "main.mojo"
                 if main.is_file():
                     rel = str(main.relative_to(root))
                     if rel not in binary_sources:
-                        targets.append(Target(
-                            kind=TargetKind.EXAMPLE,
-                            path=rel,
-                            target_id=rel,
-                        ))
+                        targets.append(
+                            Target(
+                                kind=TargetKind.EXAMPLE,
+                                path=rel,
+                                target_id=rel,
+                            )
+                        )
 
     return TargetGraph(
         targets=tuple(targets),
@@ -131,9 +152,7 @@ def _is_excluded(name: str) -> bool:
     """Check if a directory name should be excluded from discovery."""
     if name in _EXCLUDED_DIRS:
         return True
-    if name.endswith(_EGG_INFO_SUFFIX):
-        return True
-    return False
+    return bool(name.endswith(_EGG_INFO_SUFFIX))
 
 
 def _walk_test_dir(root: Path, directory: Path, out: list[str]) -> None:

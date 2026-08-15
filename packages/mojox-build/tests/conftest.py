@@ -16,19 +16,19 @@ def sample_pyproject(tmp_path: Path) -> Path:
 
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(
-        '[project]\n'
+        "[project]\n"
         'name = "my-lib"\n'
         'version = "1.0.0"\n'
         'description = "A test library"\n'
         'readme = "README.md"\n'
         'license = "MIT"\n'
         'requires-python = ">=3.10"\n'
-        'dependencies = []\n'
-        '\n'
-        '[tool.mojox]\n'
+        "dependencies = []\n"
+        "\n"
+        "[tool.mojox]\n"
         'package-root = "src"\n'
-        '\n'
-        '[build-system]\n'
+        "\n"
+        "[build-system]\n"
         'requires = ["mojox-build"]\n'
         'build-backend = "mojox_build"\n'
     )

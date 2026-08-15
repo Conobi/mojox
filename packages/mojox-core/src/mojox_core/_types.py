@@ -7,11 +7,11 @@ paths (manifest-relative) and str for resolved absolute paths (from readers).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import PurePosixPath
-from typing import ClassVar, Literal, Mapping
-
+from typing import ClassVar, Literal
 
 # -- Enums -----------------------------------------------------------------
 

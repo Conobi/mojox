@@ -59,10 +59,7 @@ def plan(
     precompile_output_dir = PurePosixPath(str(host.manifest_dir)) / ".mojox" / "build" / "pkg"
 
     lib_targets = [t for t in graph.targets if t.kind == TargetKind.LIB]
-    dependent_targets = [
-        t for t in graph.targets
-        if t.kind in (TargetKind.TEST, TargetKind.EXAMPLE, TargetKind.BIN)
-    ]
+    dependent_targets = [t for t in graph.targets if t.kind in (TargetKind.TEST, TargetKind.EXAMPLE, TargetKind.BIN)]
 
     should_precompile = len(lib_targets) > 0 and len(dependent_targets) >= _PRECOMPILE_THRESHOLD
 
@@ -76,24 +73,41 @@ def plan(
 
     # Build include paths for dependent targets
     include_sequence = _build_include_sequence(
-        env, policy, precompile_output_dir if should_precompile else None,
+        env,
+        policy,
+        precompile_output_dir if should_precompile else None,
     )
 
     # Test targets
     for target in graph.targets:
         if target.kind == TargetKind.TEST:
             cmd = _build_run_test_command(
-                target, toolchain, policy, include_sequence, host, precompiled_ids,
+                target,
+                toolchain,
+                policy,
+                include_sequence,
+                host,
+                precompiled_ids,
             )
             commands.append(cmd)
         elif target.kind == TargetKind.EXAMPLE:
             cmd = _build_check_example_command(
-                target, toolchain, policy, include_sequence, host, precompiled_ids,
+                target,
+                toolchain,
+                policy,
+                include_sequence,
+                host,
+                precompiled_ids,
             )
             commands.append(cmd)
         elif target.kind == TargetKind.BIN:
             cmd = _build_compile_binary_command(
-                target, toolchain, policy, include_sequence, host, precompiled_ids,
+                target,
+                toolchain,
+                policy,
+                include_sequence,
+                host,
+                precompiled_ids,
             )
             commands.append(cmd)
 

@@ -5,11 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
+from mojox_build._preflight import check
 from mojox_core import ConfigError, Manifest, Toolchain, parse_manifest
 from mojox_core.io.manifest import read as read_manifest
-
-from mojox_build._preflight import check
 
 
 @pytest.fixture
@@ -38,6 +36,7 @@ class TestPreflightPackageDirs:
     def test_fails_on_missing_package_root(self, sample_pyproject, toolchain):
         """Raises ConfigError when package-root directory doesn't exist."""
         import shutil
+
         shutil.rmtree(sample_pyproject / "src")
 
         raw = read_manifest(sample_pyproject / "pyproject.toml")

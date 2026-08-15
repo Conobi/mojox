@@ -5,8 +5,6 @@ from __future__ import annotations
 import os
 from pathlib import Path, PurePosixPath
 
-import pytest
-
 from mojox._cli import apply_filters
 from mojox_core import Command, CommandKind
 
@@ -41,8 +39,10 @@ class TestApplyFilters:
             _cmd("tests/integration/test_b.mojo"),
         )
         result = apply_filters(
-            cmds, paths=(str(tmp_path / "tests" / "unit"),),
-            pattern=None, project_root=tmp_path,
+            cmds,
+            paths=(str(tmp_path / "tests" / "unit"),),
+            pattern=None,
+            project_root=tmp_path,
         )
         target_ids = [c.target_id for c in result]
         assert "lib/mylib" in target_ids
@@ -80,8 +80,10 @@ class TestApplyFilters:
             _cmd("tests/integration/test_parse.mojo"),
         )
         result = apply_filters(
-            cmds, paths=(str(tmp_path / "tests" / "unit"),),
-            pattern="parse", project_root=tmp_path,
+            cmds,
+            paths=(str(tmp_path / "tests" / "unit"),),
+            pattern="parse",
+            project_root=tmp_path,
         )
         assert len(result) == 1
         assert result[0].target_id == "tests/unit/test_parse.mojo"
@@ -93,8 +95,10 @@ class TestApplyFilters:
             _cmd("tests/test_ab.mojo"),
         )
         result = apply_filters(
-            cmds, paths=(str(tmp_path / "tests" / "test_a.mojo"),),
-            pattern=None, project_root=tmp_path,
+            cmds,
+            paths=(str(tmp_path / "tests" / "test_a.mojo"),),
+            pattern=None,
+            project_root=tmp_path,
         )
         assert len(result) == 1
         assert result[0].target_id == "tests/test_a.mojo"
@@ -103,8 +107,10 @@ class TestApplyFilters:
         (tmp_path / "tests" / "unit").mkdir(parents=True)
         cmds = (_cmd("tests/unit/test_a.mojo"),)
         result = apply_filters(
-            cmds, paths=(str(tmp_path / "tests" / "unit") + "/",),
-            pattern=None, project_root=tmp_path,
+            cmds,
+            paths=(str(tmp_path / "tests" / "unit") + "/",),
+            pattern=None,
+            project_root=tmp_path,
         )
         assert len(result) == 1
 
@@ -114,8 +120,10 @@ class TestApplyFilters:
             _cmd("tests/test_b.mojo"),
         )
         result = apply_filters(
-            cmds, paths=(str(tmp_path),),
-            pattern=None, project_root=tmp_path,
+            cmds,
+            paths=(str(tmp_path),),
+            pattern=None,
+            project_root=tmp_path,
         )
         assert len(result) == 2
 
@@ -138,7 +146,8 @@ class TestApplyFilters:
         result = apply_filters(
             cmds,
             paths=(str(tmp_path / "tests" / "unit"), str(tmp_path / "tests" / "e2e")),
-            pattern=None, project_root=tmp_path,
+            pattern=None,
+            project_root=tmp_path,
         )
         target_ids = [c.target_id for c in result]
         assert "tests/unit/test_a.mojo" in target_ids
@@ -148,8 +157,10 @@ class TestApplyFilters:
     def test_outside_project_root_matches_nothing(self, tmp_path: Path):
         cmds = (_cmd("tests/test_a.mojo"),)
         result = apply_filters(
-            cmds, paths=("/some/other/path",),
-            pattern=None, project_root=tmp_path,
+            cmds,
+            paths=("/some/other/path",),
+            pattern=None,
+            project_root=tmp_path,
         )
         assert len(result) == 0
 
@@ -160,8 +171,10 @@ class TestApplyFilters:
         try:
             os.chdir(tmp_path)
             result = apply_filters(
-                cmds, paths=("tests/unit",),
-                pattern=None, project_root=tmp_path,
+                cmds,
+                paths=("tests/unit",),
+                pattern=None,
+                project_root=tmp_path,
             )
         finally:
             os.chdir(old_cwd)

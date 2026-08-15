@@ -37,9 +37,7 @@ def parse_manifest(data: dict) -> Manifest:
         license_files=tuple(project.get("license-files", ())),
         requires_python=project.get("requires-python"),
         dependencies=tuple(project.get("dependencies", ())),
-        optional_dependencies={
-            k: tuple(v) for k, v in project.get("optional-dependencies", {}).items()
-        },
+        optional_dependencies={k: tuple(v) for k, v in project.get("optional-dependencies", {}).items()},
         keywords=tuple(project.get("keywords", ())),
         authors=tuple(project.get("authors", ())),
         maintainers=tuple(project.get("maintainers", ())),
@@ -47,7 +45,8 @@ def parse_manifest(data: dict) -> Manifest:
         classifiers=tuple(project.get("classifiers", ())),
         packages=_parse_packages(mojox),
         package_root=_normalise_path(
-            str(mojox.get("package-root", "src")), "tool.mojox.package-root",
+            str(mojox.get("package-root", "src")),
+            "tool.mojox.package-root",
         ),
         binaries=_parse_binaries(mojox.get("binaries", [])),
         test_roots=_parse_path_list(mojox, "test-roots", ("tests",)),
@@ -125,8 +124,7 @@ def _normalise_path(raw: str, key_path: str) -> str:
     if PurePosixPath(normalised).is_absolute():
         raise ConfigError(
             key_path,
-            f"absolute paths are not allowed in manifests, got {raw!r}. "
-            "Use a path relative to the project root.",
+            f"absolute paths are not allowed in manifests, got {raw!r}. Use a path relative to the project root.",
         )
     return normalised
 
@@ -140,15 +138,11 @@ def _parse_str_list(mojox: dict, key: str, default: tuple[str, ...] = ()) -> tup
         raise ConfigError(f"tool.mojox.{key}", f"expected a list, got {type(raw).__name__}")
     for i, item in enumerate(raw):
         if not isinstance(item, str):
-            raise ConfigError(
-                f"tool.mojox.{key}[{i}]", f"expected a string, got {type(item).__name__}"
-            )
+            raise ConfigError(f"tool.mojox.{key}[{i}]", f"expected a string, got {type(item).__name__}")
     return tuple(raw)
 
 
-def _parse_path_list(
-    mojox: dict, key: str, default: tuple[str, ...] = ()
-) -> tuple[str, ...]:
+def _parse_path_list(mojox: dict, key: str, default: tuple[str, ...] = ()) -> tuple[str, ...]:
     """Parse a key that must be a list of relative path strings."""
     if key not in mojox:
         return default
@@ -182,9 +176,7 @@ def _parse_defines(mojox: dict) -> dict[str, str]:
     """Parse defines, validating the value is a table."""
     raw = mojox.get("defines", {})
     if not isinstance(raw, dict):
-        raise ConfigError(
-            "tool.mojox.defines", f"expected a table, got {type(raw).__name__}"
-        )
+        raise ConfigError("tool.mojox.defines", f"expected a table, got {type(raw).__name__}")
     return {str(k): str(v) for k, v in raw.items()}
 
 
@@ -349,9 +341,7 @@ def _parse_profiles(raw: dict) -> dict[str, Profile]:
             )
         profiles[name] = Profile(
             optimize=_parse_optimize(table.get("optimize"), f"tool.mojox.profile.{name}.optimize"),
-            debug_level=_parse_debug_level(
-                table.get("debug-level"), f"tool.mojox.profile.{name}.debug-level"
-            ),
+            debug_level=_parse_debug_level(table.get("debug-level"), f"tool.mojox.profile.{name}.debug-level"),
             defines=_parse_defines_for_key(table, f"tool.mojox.profile.{name}.defines"),
             flags=_parse_str_list_for_key(table, "flags", f"tool.mojox.profile.{name}.flags"),
         )

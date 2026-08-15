@@ -115,9 +115,7 @@ def hook_prepare_metadata_for_build_wheel(
         dist_info_name = f"{name}-{manifest.version}.dist-info"
         dist_info = Path(metadata_directory) / dist_info_name
         dist_info.mkdir()
-        (dist_info / "METADATA").write_text(
-            render_metadata(manifest, root, [], compiler_version=compiler_version)
-        )
+        (dist_info / "METADATA").write_text(render_metadata(manifest, root, [], compiler_version=compiler_version))
         (dist_info / "WHEEL").write_text(
             render_wheel_file(
                 tag=tag,
@@ -145,9 +143,7 @@ def hook_build_sdist(
     def _do() -> str:
         root = Path.cwd()
         manifest = _load(root)
-        return build_sdist(
-            root, manifest, sdist_directory=Path(sdist_directory)
-        )
+        return build_sdist(root, manifest, sdist_directory=Path(sdist_directory))
 
     return _run(_do)
 

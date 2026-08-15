@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 
 import pytest
-
 from mojox._cli import determine_exit_code
 from mojox._types import Outcome, OutcomeKind
 from mojox_core import Command, CommandKind
@@ -44,21 +43,27 @@ class TestDetermineExitCode:
     def test_empty_outcomes_exits_0(self):
         assert determine_exit_code(()) == 0
 
-    @pytest.mark.parametrize("kind", [
-        OutcomeKind.FAIL,
-        OutcomeKind.TIMEOUT,
-        OutcomeKind.CRASH,
-        OutcomeKind.COMPILE_ERROR,
-    ])
+    @pytest.mark.parametrize(
+        "kind",
+        [
+            OutcomeKind.FAIL,
+            OutcomeKind.TIMEOUT,
+            OutcomeKind.CRASH,
+            OutcomeKind.COMPILE_ERROR,
+        ],
+    )
     def test_test_failure_exits_1(self, kind):
         outcomes = (_outcome(kind, CommandKind.RUN_TEST),)
         assert determine_exit_code(outcomes) == 1
 
-    @pytest.mark.parametrize("cmd_kind", [
-        CommandKind.COMPILE_PACKAGE,
-        CommandKind.COMPILE_BINARY,
-        CommandKind.CHECK_EXAMPLE,
-    ])
+    @pytest.mark.parametrize(
+        "cmd_kind",
+        [
+            CommandKind.COMPILE_PACKAGE,
+            CommandKind.COMPILE_BINARY,
+            CommandKind.CHECK_EXAMPLE,
+        ],
+    )
     def test_compile_failure_exits_2(self, cmd_kind):
         outcomes = (_outcome(OutcomeKind.FAIL, cmd_kind),)
         assert determine_exit_code(outcomes) == 2

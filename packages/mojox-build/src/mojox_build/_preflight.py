@@ -72,8 +72,7 @@ def _check_native_libs(root: Path, manifest: Manifest) -> None:
     if missing:
         raise ConfigError(
             "tool.mojox.native-libs",
-            f"references files that do not exist: {missing}. "
-            "Build them before invoking `uv build`.",
+            f"references files that do not exist: {missing}. Build them before invoking `uv build`.",
         )
 
 

@@ -12,7 +12,6 @@ from ._types import (
     Policy,
     ResolvedEnv,
     TargetGraph,
-    TargetKind,
     Toolchain,
 )
 

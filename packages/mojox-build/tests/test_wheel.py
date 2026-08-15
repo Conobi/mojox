@@ -3,13 +3,9 @@
 from __future__ import annotations
 
 import json
-import zipfile
 from pathlib import Path
+
 import pytest
-
-from mojox_core import Manifest, Policy, Toolchain, parse_manifest
-from mojox_core.io.manifest import read as read_manifest
-
 from mojox_build._build import (
     GENERATOR_VERSION,
     _normalize_name,
@@ -17,6 +13,8 @@ from mojox_build._build import (
     host_platform_tag,
 )
 from mojox_build._metadata import render_metadata
+from mojox_core import Manifest, Toolchain, parse_manifest
+from mojox_core.io.manifest import read as read_manifest
 
 
 @pytest.fixture
@@ -41,7 +39,9 @@ class TestCompilerPin:
     def test_metadata_includes_compiler_pin(self, sample_manifest, tmp_path):
         """When compiler_version is set, Requires-Dist for mojo-compiler is emitted."""
         meta = render_metadata(
-            sample_manifest, tmp_path, [],
+            sample_manifest,
+            tmp_path,
+            [],
             compiler_version="1.0.0b2",
         )
         assert "Requires-Dist: mojo-compiler==1.0.0b2" in meta

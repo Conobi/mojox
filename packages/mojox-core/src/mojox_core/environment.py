@@ -44,23 +44,27 @@ def build_env(
     _check_source_shadows_precompiled(dists)
 
     for d in dists:
-        entries.append(DistEntry(
-            name=d["name"],
-            include_dir=d["include_dir"],
-            kind=d["kind"],
-            packages=tuple(d["packages"]),
-            provenance=d.get("provenance", "unknown"),
-            native_lib_dirs=tuple(d.get("native_lib_dirs", ())),
-        ))
+        entries.append(
+            DistEntry(
+                name=d["name"],
+                include_dir=d["include_dir"],
+                kind=d["kind"],
+                packages=tuple(d["packages"]),
+                provenance=d.get("provenance", "unknown"),
+                native_lib_dirs=tuple(d.get("native_lib_dirs", ())),
+            )
+        )
 
     lock_version = _extract_lock_version(lock_data, diagnostics)
 
     if path_mojo is not None and path_mojo != mojo_path:
-        diagnostics.append(Diagnostic(
-            kind="warning",
-            message=f"PATH mojo ({path_mojo}) differs from environment mojo "
-            f"({mojo_path}). The environment mojo will be used.",
-        ))
+        diagnostics.append(
+            Diagnostic(
+                kind="warning",
+                message=f"PATH mojo ({path_mojo}) differs from environment mojo "
+                f"({mojo_path}). The environment mojo will be used.",
+            )
+        )
 
     return ResolvedEnv(
         include_sequence=tuple(entries),
@@ -117,10 +121,12 @@ def _extract_lock_version(
         return None
     lock_version = lock_data.get("version")
     if lock_version is not None and lock_version > _MAX_KNOWN_LOCK_VERSION:
-        diagnostics.append(Diagnostic(
-            kind="warning",
-            message=f"uv.lock schema version {lock_version} is above the "
-            f"known maximum ({_MAX_KNOWN_LOCK_VERSION}). Provenance data "
-            "may be incomplete.",
-        ))
+        diagnostics.append(
+            Diagnostic(
+                kind="warning",
+                message=f"uv.lock schema version {lock_version} is above the "
+                f"known maximum ({_MAX_KNOWN_LOCK_VERSION}). Provenance data "
+                "may be incomplete.",
+            )
+        )
     return lock_version

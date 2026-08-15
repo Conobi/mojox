@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import pytest
-
 from mojox_core._errors import ConfigError
-from mojox_core._types import DistEntry, DistKind, ResolvedEnv
+from mojox_core._types import DistKind
 from mojox_core.environment import build_env
 
 
@@ -55,7 +54,10 @@ class TestBuildEnv:
     def test_path_mojo_divergence_reported(self):
         dists = []
         env = build_env(
-            dists, None, "/venv/bin/mojo", "1.0.0b2",
+            dists,
+            None,
+            "/venv/bin/mojo",
+            "1.0.0b2",
             path_mojo="/usr/bin/mojo",
         )
         assert env.path_mojo == "/usr/bin/mojo"

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from mojox._diagnostics import parse_diagnostics
-from mojox_core import Diagnostic
 
 
 class TestParseDiagnostics:
@@ -30,10 +29,7 @@ class TestParseDiagnostics:
         assert result[0].line is None
 
     def test_multiple_lines(self):
-        text = (
-            '{"kind":"warning","message":"unused variable"}\n'
-            '{"kind":"error","message":"type mismatch"}\n'
-        )
+        text = '{"kind":"warning","message":"unused variable"}\n{"kind":"error","message":"type mismatch"}\n'
         result = parse_diagnostics(text)
         assert len(result) == 2
         assert result[0].kind == "warning"
@@ -47,11 +43,7 @@ class TestParseDiagnostics:
         assert result[0].message == "error: something went wrong"
 
     def test_mixed_json_and_text(self):
-        text = (
-            'Compiling test.mojo...\n'
-            '{"kind":"error","message":"type mismatch"}\n'
-            'Build failed.\n'
-        )
+        text = 'Compiling test.mojo...\n{"kind":"error","message":"type mismatch"}\nBuild failed.\n'
         result = parse_diagnostics(text)
         assert len(result) == 3
         assert result[0].message == "Compiling test.mojo..."

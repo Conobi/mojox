@@ -3,15 +3,24 @@
 from __future__ import annotations
 
 import pytest
-
 from mojox_core._errors import ConfigError
 from mojox_core._types import LocalSettings
 from mojox_core.settings import parse_settings
 
 _FORBIDDEN_KEYS = [
-    "packages", "package-root", "binaries", "native-libs",
-    "source-include", "source-exclude", "wheel-include", "wheel-exclude",
-    "test-roots", "test-parallel", "defines", "lints", "pre-build",
+    "packages",
+    "package-root",
+    "binaries",
+    "native-libs",
+    "source-include",
+    "source-exclude",
+    "wheel-include",
+    "wheel-exclude",
+    "test-roots",
+    "test-parallel",
+    "defines",
+    "lints",
+    "pre-build",
 ]
 
 

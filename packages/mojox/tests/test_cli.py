@@ -6,7 +6,6 @@ import subprocess
 import sys
 
 import pytest
-
 from mojox._cli import build_parser
 
 
@@ -173,11 +172,7 @@ class TestCLIIntegration:
         tests_dir = tmp_path / "tests"
         tests_dir.mkdir()
         test_file = tests_dir / "test_hello.mojo"
-        test_file.write_text(
-            "from testing import assert_true\n"
-            "def test_hello():\n"
-            "    assert_true(True)\n"
-        )
+        test_file.write_text("from testing import assert_true\ndef test_hello():\n    assert_true(True)\n")
         result = subprocess.run(
             [sys.executable, "-m", "mojox", "check"],
             cwd=str(tmp_path),
@@ -203,16 +198,11 @@ class TestCLIIntegration:
     def test_check_detects_bare_assert(self, tmp_path):
         """mojox check warns on bare assert in test files but exits 0."""
         pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text(
-            '[project]\nname = "testlib"\nversion = "0.1.0"\n'
-        )
+        pyproject.write_text('[project]\nname = "testlib"\nversion = "0.1.0"\n')
         tests_dir = tmp_path / "tests"
         tests_dir.mkdir()
         test_file = tests_dir / "test_bad.mojo"
-        test_file.write_text(
-            "def test_bad():\n"
-            "    assert x == 1\n"
-        )
+        test_file.write_text("def test_bad():\n    assert x == 1\n")
         result = subprocess.run(
             [sys.executable, "-m", "mojox", "check"],
             cwd=str(tmp_path),
@@ -266,11 +256,7 @@ class TestTestSubcommandIntegration:
         tests_dir = tmp_path / "tests"
         tests_dir.mkdir()
         test_file = tests_dir / "test_hello.mojo"
-        test_file.write_text(
-            "from testing import assert_true\n"
-            "def test_hello():\n"
-            "    assert_true(True)\n"
-        )
+        test_file.write_text("from testing import assert_true\ndef test_hello():\n    assert_true(True)\n")
         return tests_dir
 
     def test_output_format_json_produces_ndjson(self, tmp_path):
@@ -283,6 +269,7 @@ class TestTestSubcommandIntegration:
             text=True,
         )
         import json
+
         data = json.loads(result.stdout)
         assert data["type"] == "dry-run"
 
@@ -330,6 +317,7 @@ class TestTestSubcommandIntegration:
             text=True,
         )
         import json
+
         assert result.returncode == 0
         lines = [line for line in result.stdout.strip().splitlines() if line]
         assert len(lines) == 2

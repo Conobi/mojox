@@ -6,7 +6,6 @@ import sys
 from pathlib import PurePosixPath
 
 import pytest
-
 from mojox_core import Command, CommandKind
 
 

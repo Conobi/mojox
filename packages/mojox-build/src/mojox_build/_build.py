@@ -76,8 +76,7 @@ def _run_pre_build(
         if result.returncode != 0:
             stderr = (result.stderr or "").strip() if not verbose else "(see above)"
             raise RuntimeError(
-                f"pre-build hook failed (exit {result.returncode}): {' '.join(cmd_list)}\n"
-                f"  stderr: {stderr}"
+                f"pre-build hook failed (exit {result.returncode}): {' '.join(cmd_list)}\n  stderr: {stderr}"
             )
 
 
@@ -165,9 +164,7 @@ def _compile_binary(
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(
-            f"`mojo build` failed for {source}:\n"
-            f"  cmd:    {' '.join(cmd)}\n"
-            f"  stderr: {result.stderr.strip()}"
+            f"`mojo build` failed for {source}:\n  cmd:    {' '.join(cmd)}\n  stderr: {result.stderr.strip()}"
         )
     if verbose:
         if result.stdout:
@@ -236,10 +233,7 @@ def _compile_all(
 
     workers = min(len(packages), 8)
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [
-            pool.submit(_compile_package, src, out_dir, policy, toolchain, verbose=verbose)
-            for src in packages
-        ]
+        futures = [pool.submit(_compile_package, src, out_dir, policy, toolchain, verbose=verbose) for src in packages]
         for f in concurrent.futures.as_completed(futures):
             f.result()
 
@@ -253,9 +247,7 @@ def _copy_native_libs(root: Path, lib_dir: Path, native_libs: tuple[str, ...]) -
         shutil.copy2(src, lib_dir / src.name)
 
 
-def _copy_license_files(
-    root: Path, dist_info: Path, license_files: list[str]
-) -> list[str]:
+def _copy_license_files(root: Path, dist_info: Path, license_files: list[str]) -> list[str]:
     if not license_files:
         return []
     licenses_dir = dist_info / "licenses"
@@ -282,9 +274,7 @@ def _write_provenance(
         "mojox_build_version": generator_version,
         "toolchain_surface": f"{toolchain.subcommand}/{toolchain.extension}",
     }
-    (dist_info / "mojox-provenance.json").write_text(
-        json.dumps(provenance, indent=2, sort_keys=True) + "\n"
-    )
+    (dist_info / "mojox-provenance.json").write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n")
 
 
 # ============================================================
@@ -324,12 +314,7 @@ def _zip_dir(
             if any(fnmatch(arcname, pat) for pat in wheel_exclude):
                 continue
             content = path.read_bytes()
-            digest = (
-                "sha256="
-                + urlsafe_b64encode(hashlib.sha256(content).digest())
-                .rstrip(b"=")
-                .decode()
-            )
+            digest = "sha256=" + urlsafe_b64encode(hashlib.sha256(content).digest()).rstrip(b"=").decode()
             zinfo = zipfile.ZipInfo(arcname, date_time=date_time)
             zinfo.compress_type = zipfile.ZIP_DEFLATED
             zf.writestr(zinfo, content)
@@ -388,6 +373,7 @@ def build_wheel(
 
         _run_pre_build(root, manifest.pre_build, verbose=verbose)
         from ._preflight import check_post_pre_build
+
         check_post_pre_build(root, manifest)
         packages = _resolve_package_dirs(root, manifest)
         _compile_all(packages, pkg_dir, policy, toolchain, verbose=verbose)
@@ -396,9 +382,7 @@ def build_wheel(
 
         has_compiled = bool(packages)
 
-        license_relpaths = _copy_license_files(
-            root, dist_info, list(manifest.license_files)
-        )
+        license_relpaths = _copy_license_files(root, dist_info, list(manifest.license_files))
 
         compiler_version = toolchain.version if has_compiled else None
         (dist_info / "METADATA").write_text(
@@ -414,7 +398,9 @@ def build_wheel(
 
         if has_compiled:
             _write_provenance(
-                dist_info, toolchain, GENERATOR_VERSION,
+                dist_info,
+                toolchain,
+                GENERATOR_VERSION,
             )
 
         _zip_dir(staging, wheel_directory / wheel_name, dist_info.name, list(manifest.wheel_exclude))
@@ -461,6 +447,7 @@ def build_editable_wheel(
 
         _run_pre_build(root, manifest.pre_build, verbose=verbose)
         from ._preflight import check_post_pre_build
+
         check_post_pre_build(root, manifest)
 
         packages = _resolve_package_dirs(root, manifest)
@@ -470,12 +457,8 @@ def build_editable_wheel(
         _copy_native_libs(root, lib_dir, manifest.native_libs)
         _build_binaries(root, scripts_dir, manifest.binaries, policy, toolchain, verbose=verbose)
 
-        license_relpaths = _copy_license_files(
-            root, dist_info, list(manifest.license_files)
-        )
-        (dist_info / "METADATA").write_text(
-            render_metadata(manifest, root, license_relpaths)
-        )
+        license_relpaths = _copy_license_files(root, dist_info, list(manifest.license_files))
+        (dist_info / "METADATA").write_text(render_metadata(manifest, root, license_relpaths))
         (dist_info / "WHEEL").write_text(
             render_wheel_file(
                 tag=tag,
@@ -506,14 +489,8 @@ def _write_editable_hook(
 
     shutil.copy2(hook_template, platlib / hook_name)
     (platlib / pth_name).write_text(f"import {hook_name[:-3]}\n")
-    manifest_data = {
-        "packages": {
-            pkg.name: str(pkg.resolve()) for pkg in packages
-        }
-    }
-    (platlib / manifest_name).write_text(
-        json.dumps(manifest_data, indent=2) + "\n"
-    )
+    manifest_data = {"packages": {pkg.name: str(pkg.resolve()) for pkg in packages}}
+    (platlib / manifest_name).write_text(json.dumps(manifest_data, indent=2) + "\n")
 
 
 # ============================================================
@@ -543,10 +520,7 @@ def _sdist_files(root: Path, manifest: Manifest) -> list[Path]:
     if manifest.source_include:
         files: list[Path] = []
         for pattern in manifest.source_include:
-            files.extend(
-                p for p in root.glob(pattern)
-                if p.is_file() and _is_not_symlink(p)
-            )
+            files.extend(p for p in root.glob(pattern) if p.is_file() and _is_not_symlink(p))
     else:
         files = []
         for p in root.rglob("*"):
@@ -561,7 +535,8 @@ def _sdist_files(root: Path, manifest: Manifest) -> list[Path]:
 
     if manifest.source_exclude:
         files = [
-            p for p in files
+            p
+            for p in files
             if not _match_any(str(p.relative_to(root)).replace(os.sep, "/"), list(manifest.source_exclude))
         ]
 

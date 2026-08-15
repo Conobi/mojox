@@ -39,7 +39,7 @@ def read_distributions(platlib: str | None = None) -> list[dict]:
             if len(parts) >= 2 and parts[0] == "mojo_packages":
                 has_mojo = True
                 pkg_name = parts[1]
-                if pkg_name.endswith(".mojoc") or pkg_name.endswith(".mojopkg"):
+                if pkg_name.endswith((".mojoc", ".mojopkg")):
                     pkg_name = pkg_name.rsplit(".", 1)[0]
                     kind = DistKind.PRECOMPILED
                 elif not pkg_name.startswith("_") and pkg_name != "lib":
@@ -50,14 +50,16 @@ def read_distributions(platlib: str | None = None) -> list[dict]:
                     packages.append(pkg_name)
 
         if has_mojo and packages:
-            dists.append({
-                "name": dist.metadata["Name"],
-                "include_dir": str(mojo_packages_dir),
-                "kind": kind,
-                "packages": packages,
-                "provenance": dist.metadata.get("Version", "unknown"),
-                "native_lib_dirs": (),
-            })
+            dists.append(
+                {
+                    "name": dist.metadata["Name"],
+                    "include_dir": str(mojo_packages_dir),
+                    "kind": kind,
+                    "packages": packages,
+                    "provenance": dist.metadata.get("Version", "unknown"),
+                    "native_lib_dirs": (),
+                }
+            )
 
     return dists
 

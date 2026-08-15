@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import pytest
-
 from mojox_core._types import (
     BinaryEntry,
     Command,
     CommandKind,
     Diagnostic,
-    DistEntry,
     DistKind,
     HostFacts,
     LintConfig,
@@ -19,7 +17,6 @@ from mojox_core._types import (
     Profile,
     ResolvedEnv,
     Target,
-    TargetGraph,
     TargetKind,
     Toolchain,
 )

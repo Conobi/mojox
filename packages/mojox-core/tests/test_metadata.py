@@ -11,7 +11,6 @@ from mojox_core._types import (
     Diagnostic,
     DistEntry,
     DistKind,
-    HostFacts,
     LintConfig,
     Policy,
     ResolvedEnv,
@@ -32,18 +31,23 @@ def _make_fixture():
         edges=(),
     )
     env = ResolvedEnv(
-        include_sequence=(
-            DistEntry("navette", "/venv/mojo_packages", DistKind.PRECOMPILED, ("navette",), "1.0.0"),
-        ),
+        include_sequence=(DistEntry("navette", "/venv/mojo_packages", DistKind.PRECOMPILED, ("navette",), "1.0.0"),),
         mojo_path="/venv/bin/mojo",
         mojo_version="1.0.0b2",
         path_mojo=None,
         lock_version=1,
     )
     policy = Policy(
-        optimize=0, debug_level="line-tables", defines={"ASSERT": "all"},
-        flags=(), include_paths=(), lints=LintConfig(),
-        jobs=1, jobs_compile=1, jobs_tests=1, timeout_s=300,
+        optimize=0,
+        debug_level="line-tables",
+        defines={"ASSERT": "all"},
+        flags=(),
+        include_paths=(),
+        lints=LintConfig(),
+        jobs=1,
+        jobs_compile=1,
+        jobs_tests=1,
+        timeout_s=300,
     )
     commands = (
         Command(

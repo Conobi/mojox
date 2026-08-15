@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-
 from mojox._settings_reader import (
     _find_project_config,
     _is_path_secure,
@@ -187,7 +185,7 @@ class TestTOCTOU:
     def test_safe_read_toml_uses_o_nofollow(self, tmp_path):
         """_safe_read_toml must open with O_NOFOLLOW, not plain open()."""
         config = tmp_path / "config.toml"
-        config.write_text('jobs = 42\n')
+        config.write_text("jobs = 42\n")
 
         # Should succeed on a regular file
         data = _safe_read_toml(config)
@@ -200,7 +198,7 @@ class TestTOCTOU:
     def test_safe_read_toml_rejects_symlink(self, tmp_path):
         """_safe_read_toml must reject a symlink to a config file."""
         real = tmp_path / "real.toml"
-        real.write_text('jobs = 42\n')
+        real.write_text("jobs = 42\n")
         link = tmp_path / "config.toml"
         link.symlink_to(real)
 
@@ -217,7 +215,7 @@ class TestTOCTOU:
         real_dir = tmp_path / "real_mojox"
         real_dir.mkdir()
         config = real_dir / "config.toml"
-        config.write_text('jobs = 1\n')
+        config.write_text("jobs = 1\n")
 
         # Create a symlink for the .mojox directory
         link_dir = tmp_path / ".mojox"
@@ -237,7 +235,7 @@ class TestTOCTOU:
         config_dir = tmp_path / ".mojox"
         config_dir.mkdir()
         config = config_dir / "config.toml"
-        config.write_text('jobs = 1\n')
+        config.write_text("jobs = 1\n")
 
         # Valid path should pass
         assert _is_path_secure(config, stop_at=tmp_path) is True
@@ -245,7 +243,7 @@ class TestTOCTOU:
     def test_safe_read_toml_windows_fallback(self, tmp_path):
         """On platforms without O_NOFOLLOW, plain open() is used."""
         config = tmp_path / "config.toml"
-        config.write_text('jobs = 99\n')
+        config.write_text("jobs = 99\n")
 
         with patch("mojox._settings_reader._HAS_O_NOFOLLOW", False):
             data = _safe_read_toml(config)
@@ -473,7 +471,6 @@ class TestWalkBoundaries:
             p_str = str(p)
             if p_str == str(tmp_path):
                 # Return a modified stat result with different st_dev
-                import struct
 
                 class FakeStat:
                     """Wrapper that overrides st_dev."""
@@ -492,7 +489,7 @@ class TestWalkBoundaries:
             return result
 
         with patch("os.stat", side_effect=fake_stat):
-            path, root = _find_project_config(project_dir, home=None)
+            path, _root = _find_project_config(project_dir, home=None)
             # The walk should have stopped at the mount boundary
             assert path is None
 
@@ -505,5 +502,5 @@ class TestWalkBoundaries:
         (project / ".git").mkdir()
 
         # Should not error with home parameter
-        path, root = _find_project_config(project, home=home)
+        _path, root = _find_project_config(project, home=home)
         assert root == project.resolve()

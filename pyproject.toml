@@ -20,6 +20,7 @@ line-length = 120
 
 [tool.ruff.lint]
 ignore = [
-  "BLE001",  # blind except Exception — intentional in error-handling layers
-  "S102",    # exec usage — used in test fixtures
+  "BLE001",   # blind except Exception — intentional in error-handling layers
+  "S102",     # exec usage — used in test fixtures
+  "PLW1510",  # subprocess.run without check — returncode checked manually
 ]

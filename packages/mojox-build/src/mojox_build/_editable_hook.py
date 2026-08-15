@@ -3,6 +3,7 @@
 Loaded via _mojox_editable_<dist>.pth on every Python startup.
 Self-contained — no imports beyond stdlib.
 """
+
 import json
 import os
 import sys
@@ -23,7 +24,7 @@ def _ensure():
     prefix = "_mojox_editable_"
     suffix = "_hook.py"
     if hook_file.startswith(prefix) and hook_file.endswith(suffix):
-        dist_name = hook_file[len(prefix):-len(suffix)]
+        dist_name = hook_file[len(prefix) : -len(suffix)]
     else:
         dist_name = ""
     manifest_name = f"_mojox_editable_{dist_name}_manifest.json" if dist_name else "_mojox_editable_manifest.json"

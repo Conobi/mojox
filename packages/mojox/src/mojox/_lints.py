@@ -56,27 +56,31 @@ def lint_bare_assert(path: Path) -> list[LintFinding]:
 
         # Match bare `assert <expr>` but not `assert_*` helpers.
         if re.match(r"\s*assert[\s(]", line) and not re.match(r"\s*assert_", line):
-            findings.append(LintFinding(
-                file=str(path),
-                line=lineno,
-                message=(
-                    "bare `assert` in test target compiles to `debug_assert`, "
-                    "whose behaviour depends on the ASSERT define. "
-                    "Use `std.testing.assert_true()` or "
-                    "`std.testing.assert_equal()` instead."
-                ),
-            ))
+            findings.append(
+                LintFinding(
+                    file=str(path),
+                    line=lineno,
+                    message=(
+                        "bare `assert` in test target compiles to `debug_assert`, "
+                        "whose behaviour depends on the ASSERT define. "
+                        "Use `std.testing.assert_true()` or "
+                        "`std.testing.assert_equal()` instead."
+                    ),
+                )
+            )
         elif re.match(r"\s*debug_assert\s*\(", line):
-            findings.append(LintFinding(
-                file=str(path),
-                line=lineno,
-                message=(
-                    "`debug_assert` in test target: behaviour depends on the "
-                    "ASSERT define. Under `warn` it prints and exits 0; under "
-                    "`all` it aborts (not raises). "
-                    "Use `std.testing.assert_true()` instead."
-                ),
-            ))
+            findings.append(
+                LintFinding(
+                    file=str(path),
+                    line=lineno,
+                    message=(
+                        "`debug_assert` in test target: behaviour depends on the "
+                        "ASSERT define. Under `warn` it prints and exits 0; under "
+                        "`all` it aborts (not raises). "
+                        "Use `std.testing.assert_true()` instead."
+                    ),
+                )
+            )
 
     return findings
 
@@ -118,17 +122,19 @@ def lint_path_source(pyproject_path: Path) -> list[LintFinding]:
             continue
         if pkg_name.lower() not in deps:
             continue
-        findings.append(LintFinding(
-            file=str(pyproject_path),
-            line=0,
-            message=(
-                f"path-source-in-published-manifest: `{pkg_name}` is a "
-                f"declared dependency with a path override "
-                f"(`{source_spec['path']}`). This makes the project "
-                "unbuildable when consumed as a git dependency -- uv "
-                "resolves the path relative to its cache, where it "
-                "does not exist."
-            ),
-        ))
+        findings.append(
+            LintFinding(
+                file=str(pyproject_path),
+                line=0,
+                message=(
+                    f"path-source-in-published-manifest: `{pkg_name}` is a "
+                    f"declared dependency with a path override "
+                    f"(`{source_spec['path']}`). This makes the project "
+                    "unbuildable when consumed as a git dependency -- uv "
+                    "resolves the path relative to its cache, where it "
+                    "does not exist."
+                ),
+            )
+        )
 
     return findings

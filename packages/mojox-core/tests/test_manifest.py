@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import pytest
-
 from mojox_core._errors import ConfigError
-from mojox_core._types import Manifest, BinaryEntry, LintConfig
+from mojox_core._types import BinaryEntry
 from mojox_core.manifest import parse_manifest
 
 

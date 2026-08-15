@@ -3,49 +3,47 @@
 from __future__ import annotations
 
 import pytest
-
 from mojox_core._errors import ConfigError
-from mojox_core._types import LintConfig, LocalSettings, Manifest, Policy, Profile
-from mojox_core.policy import resolve, BUILTIN_DEV, BUILTIN_RELEASE
+from mojox_core._types import LintConfig, LocalSettings, Manifest, Profile
+from mojox_core.policy import BUILTIN_DEV, BUILTIN_RELEASE, resolve
 
 
 def _minimal_manifest(**overrides) -> Manifest:
     """Build a minimal Manifest, overriding specific fields."""
-    from mojox_core._types import BinaryEntry
 
-    defaults = dict(
-        name="x",
-        version="1.0.0",
-        description=None,
-        readme=None,
-        license_expr=None,
-        license_files=(),
-        requires_python=None,
-        dependencies=(),
-        optional_dependencies={},
-        keywords=(),
-        authors=(),
-        maintainers=(),
-        urls={},
-        classifiers=(),
-        packages=None,
-        package_root="src",
-        binaries=(),
-        test_roots=("tests",),
-        test_parallel=False,
-        defines={},
-        flags=(),
-        lints=LintConfig(),
-        optimize=None,
-        debug_level=None,
-        pre_build=(),
-        native_libs=(),
-        source_include=None,
-        source_exclude=(),
-        wheel_exclude=(),
-        profiles={},
-        build_profile="release",
-    )
+    defaults = {
+        "name": "x",
+        "version": "1.0.0",
+        "description": None,
+        "readme": None,
+        "license_expr": None,
+        "license_files": (),
+        "requires_python": None,
+        "dependencies": (),
+        "optional_dependencies": {},
+        "keywords": (),
+        "authors": (),
+        "maintainers": (),
+        "urls": {},
+        "classifiers": (),
+        "packages": None,
+        "package_root": "src",
+        "binaries": (),
+        "test_roots": ("tests",),
+        "test_parallel": False,
+        "defines": {},
+        "flags": (),
+        "lints": LintConfig(),
+        "optimize": None,
+        "debug_level": None,
+        "pre_build": (),
+        "native_libs": (),
+        "source_include": None,
+        "source_exclude": (),
+        "wheel_exclude": (),
+        "profiles": {},
+        "build_profile": "release",
+    }
     defaults.update(overrides)
     return Manifest(**defaults)
 

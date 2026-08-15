@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 
 from mojox._types import Outcome, OutcomeKind, OutputFormat, OutputMode
-from mojox_core import Command, CommandKind, Diagnostic
+from mojox_core import Command, CommandKind
 
 
 class TestOutcomeKind:
@@ -43,6 +43,7 @@ class TestOutcome:
         assert outcome.elapsed_s == 1.5
 
         import pytest
+
         with pytest.raises(AttributeError):
             outcome.kind = OutcomeKind.FAIL  # type: ignore[misc]
 
