@@ -1,23 +1,15 @@
 name: Release
 
-# Tag conventions:
-#   mojox-vX.Y.Z         → publishes packages/mojox
-#   mojox-build-vX.Y.Z   → publishes packages/mojox-build
-#
-# Each package is configured as a separate trusted publisher on PyPI
-# (https://pypi.org/manage/account/publishing/). No API tokens are stored;
-# the job exchanges its GitHub OIDC token for an ephemeral PyPI credential
-# via `uv publish --trusted-publishing always`.
-
+# Mode A: workflow_dispatch — PSR-powered release for mojox / mojox-build
+# Mode B: tag push — manual release for mojox-core
 on:
   push:
     tags:
-      - 'mojox-v*'
-      - 'mojox-build-v*'
+      - 'mojox-core-v*'
   workflow_dispatch:
     inputs:
       package:
-        description: 'Package to publish'
+        description: 'Package to release'
         required: true
         type: choice
         options:
@@ -26,29 +18,125 @@ on:
       destination:
         description: 'Index to publish to'
         required: true
-        default: testpypi
+        default: pypi
         type: choice
         options:
-          - testpypi
           - pypi
+          - testpypi
+
+# ── Mode A: PSR release ─────────────────────────────────────────────
 
 jobs:
-  publish:
-    name: Publish to ${{ github.event.inputs.destination || 'pypi' }}
+  release:
+    name: Semantic Release (${{ github.event.inputs.package }})
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    concurrency:
+      group: release-${{ github.event.inputs.package }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    outputs:
+      released: ${{ steps.version.outputs.released }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref_name }}
 
-    # PyPI trusted publishing requires id-token: write on the workflow job.
-    # contents: read is the default but spelled out for clarity.
+      - name: Force branch to workflow SHA
+        run: git reset --hard ${{ github.sha }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Install semantic-release
+        run: uv tool install python-semantic-release
+
+      - name: Determine version
+        id: version
+        working-directory: packages/${{ github.event.inputs.package }}
+        run: |
+          set -euo pipefail
+          BEFORE=$(git describe --tags --abbrev=0 2>/dev/null || echo "none")
+          semantic-release version
+          AFTER=$(git describe --tags --abbrev=0 2>/dev/null || echo "none")
+          if [ "$BEFORE" != "$AFTER" ]; then
+            echo "released=true" >> "$GITHUB_OUTPUT"
+            echo "tag=$AFTER" >> "$GITHUB_OUTPUT"
+            echo "Released: $AFTER"
+          else
+            echo "released=false" >> "$GITHUB_OUTPUT"
+            echo "No release needed"
+          fi
+
+      - name: Publish to GitHub
+        if: steps.version.outputs.released == 'true'
+        working-directory: packages/${{ github.event.inputs.package }}
+        run: semantic-release publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  deploy:
+    name: Publish to ${{ github.event.inputs.destination }}
+    if: github.event_name == 'workflow_dispatch' && needs.release.outputs.released == 'true'
+    needs: release
+    runs-on: ubuntu-latest
     permissions:
       id-token: write
       contents: read
-
-    # `environment:` is what PyPI's trusted publisher rule matches against
-    # — set it to "pypi" or "testpypi" so the OIDC claim lines up.
     environment:
-      name: ${{ github.event.inputs.destination || 'pypi' }}
-      url: https://${{ github.event.inputs.destination == 'testpypi' && 'test.' || '' }}pypi.org/project/${{ steps.pkg.outputs.name }}
+      name: ${{ github.event.inputs.destination }}
+      url: https://${{ github.event.inputs.destination == 'testpypi' && 'test.' || '' }}pypi.org/project/${{ github.event.inputs.package }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.tag }}
 
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Build
+        run: |
+          rm -rf dist/
+          uv build --package "${{ github.event.inputs.package }}"
+          ls -la dist/
+
+      - name: Publish to PyPI
+        if: github.event.inputs.destination != 'testpypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          print-hash: true
+
+      - name: Publish to TestPyPI
+        if: github.event.inputs.destination == 'testpypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          print-hash: true
+
+  # ── Mode B: mojox-core manual release ──────────────────────────────
+
+  publish-core:
+    name: Publish mojox-core
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    environment:
+      name: pypi
+      url: https://pypi.org/project/mojox-core
     steps:
       - uses: actions/checkout@v4
 
@@ -57,62 +145,26 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Determine package + version from tag (or manual input)
-        id: pkg
-        run: |
-          set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            name="${{ github.event.inputs.package }}"
-            version=$(grep -E '^version[[:space:]]*=' packages/${name}/pyproject.toml \
-                       | head -1 | cut -d'"' -f2)
-          else
-            tag="${GITHUB_REF_NAME}"
-            case "$tag" in
-              mojox-build-v*)
-                name="mojox-build"
-                version="${tag#mojox-build-v}"
-                ;;
-              mojox-v*)
-                name="mojox"
-                version="${tag#mojox-v}"
-                ;;
-              *)
-                echo "Unrecognized tag: $tag" >&2
-                exit 1
-                ;;
-            esac
-          fi
-          echo "name=${name}" >> "$GITHUB_OUTPUT"
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "Releasing ${name} ${version}"
-
       - name: Verify tag matches pyproject.toml version
-        if: github.event_name == 'push'
         run: |
           set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#mojox-core-v}"
           declared=$(grep -E '^version[[:space:]]*=' \
-                       packages/${{ steps.pkg.outputs.name }}/pyproject.toml \
+                       packages/mojox-core/pyproject.toml \
                        | head -1 | cut -d'"' -f2)
-          if [ "$declared" != "${{ steps.pkg.outputs.version }}" ]; then
-            echo "Tag version (${{ steps.pkg.outputs.version }}) does not match" \
-                 "packages/${{ steps.pkg.outputs.name }}/pyproject.toml ($declared)" >&2
+          if [ "$declared" != "$version" ]; then
+            echo "Tag version ($version) does not match" \
+                 "packages/mojox-core/pyproject.toml ($declared)" >&2
             exit 1
           fi
+          echo "Releasing mojox-core $version"
 
       - name: Build
         run: |
           rm -rf dist/
-          uv build --package "${{ steps.pkg.outputs.name }}"
+          uv build --package mojox-core
           ls -la dist/
 
-      - name: Publish to PyPI (trusted publishing, OIDC)
-        if: github.event.inputs.destination != 'testpypi'
+      - name: Publish to PyPI
         run: uv publish --trusted-publishing always dist/*
-
-      - name: Publish to TestPyPI (trusted publishing, OIDC)
-        if: github.event.inputs.destination == 'testpypi'
-        run: |
-          uv publish \
-            --trusted-publishing always \
-            --publish-url https://test.pypi.org/legacy/ \
-            dist/*
