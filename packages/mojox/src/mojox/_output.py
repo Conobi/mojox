@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Callable
 from typing import IO
 
-from mojox_core import Command, Diagnostic
+from mojox_core import Command, CommandKind, Diagnostic
 
 from ._types import Outcome, OutcomeKind, OutputMode
 
@@ -110,7 +111,7 @@ def make_progress_callback(
     stream: IO[str] | None = None,
     success_output: OutputMode = OutputMode.NEVER,
     failure_output: OutputMode = OutputMode.IMMEDIATE,
-):
+) -> Callable[[Outcome], None]:
     """Return a callback suitable for ``run_commands(on_complete=...)``."""
     out = stream or sys.stderr
 
@@ -227,7 +228,7 @@ def render_dry_run(
             _render_grouped_commands(group, out)
 
 
-def _command_group_key(cmd: Command) -> tuple:
+def _command_group_key(cmd: Command) -> tuple[CommandKind, tuple[str, ...], tuple[str, ...], str]:
     """Key for grouping commands with identical flags."""
     argv_without_source = tuple(a for a in cmd.argv if not a.endswith(".mojo") and not a.endswith(".mojoc"))
     return (cmd.kind, argv_without_source, cmd.depends_on, str(cmd.cwd))

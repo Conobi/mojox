@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
-from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
+from concurrent.futures import CancelledError, Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from mojox_core import Command
@@ -328,7 +328,7 @@ def _run_phase(
     triggered = False
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        future_to_idx: dict = {}
+        future_to_idx: dict[Future[Outcome], tuple[int, Command]] = {}
         for idx, cmd in phase:
             skip_outcome = _check_dependencies(cmd, completed)
             if skip_outcome is not None:

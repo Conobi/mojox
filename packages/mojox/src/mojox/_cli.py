@@ -15,11 +15,21 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import IO, TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from mojox_core import Command
+    from mojox_core import (
+        Command,
+        HostFacts,
+        LocalSettings,
+        Manifest,
+        Policy,
+        ResolvedEnv,
+        TargetGraph,
+        Toolchain,
+    )
 
+    from ._lints import LintFinding
     from ._types import Outcome
 
 
@@ -120,9 +130,9 @@ def _add_test_flags(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _build_cli_overrides(args: argparse.Namespace) -> dict:
+def _build_cli_overrides(args: argparse.Namespace) -> dict[str, Any]:
     """Extract CLI override dict from parsed arguments."""
-    overrides: dict = {}
+    overrides: dict[str, Any] = {}
     if getattr(args, "jobs", None) is not None:
         overrides["jobs"] = args.jobs
     if getattr(args, "timeout", None) is not None:
@@ -224,12 +234,14 @@ def apply_filters(
     return tuple(cmd for cmd in commands if _matches_test(cmd))
 
 
-def _interrupted_summary(commands) -> str:
+def _interrupted_summary(commands: tuple[Command, ...]) -> str:
     """Build a short message for Ctrl+C interruption."""
     return f"Interrupted — {len(commands)} targets planned"
 
 
-def _resolve_pipeline(args: argparse.Namespace):
+def _resolve_pipeline(
+    args: argparse.Namespace,
+) -> tuple[Manifest, TargetGraph, ResolvedEnv, Policy, Toolchain, HostFacts, LocalSettings, tuple[Command, ...], tuple[str, ...]]:
     """Run the shared resolution pipeline.
 
     Returns (manifest, graph, env, policy, toolchain, host, settings, commands, include_paths).
@@ -493,8 +505,9 @@ def _cmd_run(args: argparse.Namespace) -> None:
 
         jobs = cli_overrides.get("jobs") or settings.jobs or 1
         timeout = cli_overrides.get("timeout") or settings.timeout_s or 300
+        opt = cli_overrides.get("optimize", BUILTIN_DEV.optimize)
         policy = Policy(
-            optimize=cli_overrides.get("optimize", BUILTIN_DEV.optimize),
+            optimize=opt if opt is not None else 0,
             debug_level=BUILTIN_DEV.debug_level or "line-tables",
             defines=cli_overrides.get("defines", dict(BUILTIN_DEV.defines)),
             flags=tuple(cli_overrides.get("flags", ())),
@@ -703,9 +716,9 @@ def _cmd_check(args: argparse.Namespace) -> None:
 
 
 def _render_lint_findings(
-    findings: list,
+    findings: list[LintFinding],
     root: Path,
-    out,
+    out: IO[str],
 ) -> None:
     """Render lint findings, deduplicating repeated messages per file."""
     from ._output import _YELLOW, _c

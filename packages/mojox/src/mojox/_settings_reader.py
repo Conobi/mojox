@@ -21,6 +21,7 @@ import stat
 import sys
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 from mojox_core import LocalSettings, parse_settings
 
@@ -81,8 +82,8 @@ def read_settings(
         result = parse_settings(None, data, env)
         return replace(result, config_paths=(str(config_file),))
 
-    user_data: dict | None = None
-    project_data: dict | None = None
+    user_data: dict[str, Any] | None = None
+    project_data: dict[str, Any] | None = None
     loaded_paths: list[str] = []
 
     user_path, user_boundary = _user_config_path(env)
@@ -286,7 +287,7 @@ def _is_path_secure_nofollow(
         ``True`` if every directory from *start* up to *stop_at*
         passes ownership and permission checks.
     """
-    o_nofollow = os.O_NOFOLLOW  # type: ignore[attr-defined]
+    o_nofollow = os.O_NOFOLLOW
     o_flags = os.O_RDONLY | o_nofollow | os.O_DIRECTORY
 
     p = start
@@ -362,7 +363,7 @@ def _is_path_secure_fallback(
     return True
 
 
-def _safe_read_toml(path: Path) -> dict | None:
+def _safe_read_toml(path: Path) -> dict[str, Any] | None:
     """Read a TOML file, returning ``None`` on any error.
 
     On platforms with ``O_NOFOLLOW``, opens the file with
@@ -389,7 +390,7 @@ def _safe_read_toml(path: Path) -> dict | None:
 
     try:
         if _HAS_O_NOFOLLOW:
-            o_nofollow = os.O_NOFOLLOW  # type: ignore[attr-defined]
+            o_nofollow = os.O_NOFOLLOW
             fd = os.open(str(path), os.O_RDONLY | o_nofollow)
             f = None
             try:

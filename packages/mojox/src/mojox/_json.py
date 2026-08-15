@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import threading
 from collections.abc import Callable
-from typing import IO
+from typing import IO, Any
 
 from mojox_core import Command, CommandKind, Diagnostic
 
@@ -34,7 +34,7 @@ _COMPILE_KINDS = frozenset(
 )
 
 
-def serialize_suite_started(test_count: int) -> dict:
+def serialize_suite_started(test_count: int) -> dict[str, Any]:
     """Build the suite:started event dict."""
     return {
         "type": "suite",
@@ -44,7 +44,7 @@ def serialize_suite_started(test_count: int) -> dict:
     }
 
 
-def serialize_command_started(cmd: Command) -> dict:
+def serialize_command_started(cmd: Command) -> dict[str, Any]:
     """Build a command:started event dict."""
     return {
         "type": "command",
@@ -54,9 +54,9 @@ def serialize_command_started(cmd: Command) -> dict:
     }
 
 
-def _serialize_diagnostic(d: Diagnostic) -> dict:
+def _serialize_diagnostic(d: Diagnostic) -> dict[str, Any]:
     """Convert a Diagnostic to a JSON-ready dict, omitting None fields."""
-    result: dict = {"kind": d.kind, "message": d.message}
+    result: dict[str, Any] = {"kind": d.kind, "message": d.message}
     if d.file is not None:
         result["file"] = d.file
     if d.line is not None:
@@ -68,7 +68,7 @@ def _serialize_diagnostic(d: Diagnostic) -> dict:
     return result
 
 
-def serialize_command_completed(outcome: Outcome) -> dict:
+def serialize_command_completed(outcome: Outcome) -> dict[str, Any]:
     """Build a command:completed event dict."""
     return {
         "type": "command",
@@ -87,7 +87,7 @@ def serialize_suite_finished(
     outcomes: tuple[Outcome, ...],
     *,
     elapsed_s: float,
-) -> dict:
+) -> dict[str, Any]:
     """Build the suite:finished event dict with split test/compile counts."""
     test_outcomes = [o for o in outcomes if o.command.kind == CommandKind.RUN_TEST]
     compile_outcomes = [o for o in outcomes if o.command.kind in _COMPILE_KINDS]
@@ -123,7 +123,7 @@ class JsonEventWriter:
         self._stream = stream
         self._lock = threading.Lock()
 
-    def write_event(self, event: dict) -> None:
+    def write_event(self, event: dict[str, Any]) -> None:
         """Serialize and write a single event as one NDJSON line."""
         line = json.dumps(event, separators=(",", ":")) + "\n"
         with self._lock:
