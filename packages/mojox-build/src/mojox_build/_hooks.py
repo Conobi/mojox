@@ -6,7 +6,9 @@ The hooks live here so ``__init__.py`` can stay a clean re-export surface.
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 
 from mojox_core import (
     ConfigError,
@@ -31,7 +33,7 @@ from ._metadata import render_metadata, render_wheel_file
 from ._preflight import check as _preflight
 
 
-def _verbose_from(config_settings: dict | None) -> bool:
+def _verbose_from(config_settings: dict[str, object] | None) -> bool:
     """Extract the verbose flag from PEP 517 config_settings."""
     if not config_settings:
         return False
@@ -47,7 +49,10 @@ def _load(root: Path) -> Manifest:
     return parse_manifest(raw)
 
 
-def _run(action, *args, **kwargs):
+_T = TypeVar("_T")
+
+
+def _run(action: Callable[..., _T], *args: object, **kwargs: object) -> _T:
     """Run a hook, converting ConfigError into a clean fatal message."""
     try:
         return action(*args, **kwargs)
@@ -63,7 +68,7 @@ def _run(action, *args, **kwargs):
 
 def hook_build_wheel(
     wheel_directory: str,
-    config_settings: dict | None = None,
+    config_settings: dict[str, object] | None = None,
     metadata_directory: str | None = None,
 ) -> str:
     """Build a wheel containing compiled Mojo packages."""
@@ -87,7 +92,7 @@ def hook_build_wheel(
     return _run(_do)
 
 
-def hook_get_requires_for_build_wheel(config_settings: dict | None = None) -> list[str]:
+def hook_get_requires_for_build_wheel(config_settings: dict[str, object] | None = None) -> list[str]:
     """Return additional requirements for building a wheel."""
     del config_settings
     return []
@@ -95,7 +100,7 @@ def hook_get_requires_for_build_wheel(config_settings: dict | None = None) -> li
 
 def hook_prepare_metadata_for_build_wheel(
     metadata_directory: str,
-    config_settings: dict | None = None,
+    config_settings: dict[str, object] | None = None,
 ) -> str:
     """Prepare wheel metadata without building the wheel."""
     del config_settings
@@ -135,7 +140,7 @@ def hook_prepare_metadata_for_build_wheel(
 
 def hook_build_sdist(
     sdist_directory: str,
-    config_settings: dict | None = None,
+    config_settings: dict[str, object] | None = None,
 ) -> str:
     """Build a source distribution."""
     del config_settings
@@ -148,7 +153,7 @@ def hook_build_sdist(
     return _run(_do)
 
 
-def hook_get_requires_for_build_sdist(config_settings: dict | None = None) -> list[str]:
+def hook_get_requires_for_build_sdist(config_settings: dict[str, object] | None = None) -> list[str]:
     """Return additional requirements for building an sdist."""
     del config_settings
     return []
@@ -161,7 +166,7 @@ def hook_get_requires_for_build_sdist(config_settings: dict | None = None) -> li
 
 def hook_build_editable(
     wheel_directory: str,
-    config_settings: dict | None = None,
+    config_settings: dict[str, object] | None = None,
     metadata_directory: str | None = None,
 ) -> str:
     """Build an editable wheel that symlinks source dirs at runtime."""
@@ -185,7 +190,7 @@ def hook_build_editable(
     return _run(_do)
 
 
-def hook_get_requires_for_build_editable(config_settings: dict | None = None) -> list[str]:
+def hook_get_requires_for_build_editable(config_settings: dict[str, object] | None = None) -> list[str]:
     """Return additional requirements for building an editable wheel."""
     del config_settings
     return []
@@ -193,7 +198,7 @@ def hook_get_requires_for_build_editable(config_settings: dict | None = None) ->
 
 def hook_prepare_metadata_for_build_editable(
     metadata_directory: str,
-    config_settings: dict | None = None,
+    config_settings: dict[str, object] | None = None,
 ) -> str:
     """Prepare editable-wheel metadata (delegates to the wheel variant)."""
     return hook_prepare_metadata_for_build_wheel(metadata_directory, config_settings)

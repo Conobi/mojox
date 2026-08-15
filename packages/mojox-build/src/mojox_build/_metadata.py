@@ -7,14 +7,14 @@ from pathlib import Path
 from mojox_core import Manifest
 
 
-def _person(p: dict) -> tuple[str | None, str | None]:
+def _person(p: dict[str, str]) -> tuple[str | None, str | None]:
     """Extract name and email from a person dict."""
     name = p.get("name", "").strip() or None
     email = p.get("email", "").strip() or None
     return name, email
 
 
-def _render_person_line(p: dict, *, kind: str) -> str | None:
+def _render_person_line(p: dict[str, str], *, kind: str) -> str | None:
     """Render one Author/Maintainer metadata line."""
     name, email = _person(p)
     if email:

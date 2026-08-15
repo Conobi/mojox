@@ -18,7 +18,7 @@ from base64 import urlsafe_b64encode
 from fnmatch import fnmatch
 from pathlib import Path
 
-from mojox_core import Manifest, Policy, Toolchain
+from mojox_core import BinaryEntry, Manifest, Policy, Toolchain
 
 from ._metadata import render_metadata, render_wheel_file
 
@@ -37,7 +37,7 @@ _ZIP_EPOCH_FLOOR = 315532800  # 1980-01-01 UTC
 def host_platform_tag() -> str:
     """Return a PEP 425 platform tag for the host."""
     try:
-        from packaging.tags import sys_tags  # type: ignore[import-not-found]
+        from packaging.tags import sys_tags
 
         for tag in sys_tags():
             if tag.platform != "any":
@@ -176,7 +176,7 @@ def _compile_binary(
 def _build_binaries(
     root: Path,
     scripts_dir: Path,
-    binaries: tuple,
+    binaries: tuple[BinaryEntry, ...],
     policy: Policy,
     toolchain: Toolchain,
     *,

@@ -9,7 +9,7 @@ import os
 import sys
 
 
-def _ensure():
+def _ensure() -> None:
     """Create or update symlinks for this distribution's Mojo packages.
 
     Also purges symlinks in mojo_packages/ that this distribution
