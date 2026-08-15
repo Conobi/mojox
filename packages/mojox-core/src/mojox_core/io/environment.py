@@ -10,7 +10,6 @@ import importlib.metadata
 import os
 import sysconfig
 from pathlib import Path
-
 from typing import Any
 
 from .._types import DistKind, HostFacts

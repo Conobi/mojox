@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import posixpath
 from pathlib import PurePosixPath
-
 from typing import Any
 
 from ._errors import ConfigError
