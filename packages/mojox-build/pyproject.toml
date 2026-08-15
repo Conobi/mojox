@@ -27,3 +27,13 @@ testpaths = ["tests"]
 
 [tool.mypy]
 strict = true
+
+[tool.semantic_release]
+commit_parser = "conventional-monorepo"
+tag_format = "mojox-build-v{version}"
+version_toml = ["pyproject.toml:project.version"]
+commit_message = "chore: release mojox-build {version}"
+allow_zero_version = true
+
+[tool.semantic_release.commit_parser_options]
+path_filters = ["."]

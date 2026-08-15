@@ -30,3 +30,13 @@ markers = [
 
 [tool.mypy]
 strict = true
+
+[tool.semantic_release]
+commit_parser = "conventional-monorepo"
+tag_format = "mojox-v{version}"
+version_toml = ["pyproject.toml:project.version"]
+commit_message = "chore: release mojox {version}"
+allow_zero_version = true
+
+[tool.semantic_release.commit_parser_options]
+path_filters = ["."]
