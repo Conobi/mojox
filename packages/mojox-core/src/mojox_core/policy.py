@@ -13,6 +13,8 @@ Merge semantics per key:
 
 from __future__ import annotations
 
+from typing import Any
+
 from ._errors import ConfigError
 from ._types import LocalSettings, Manifest, Policy, Profile
 
@@ -42,7 +44,7 @@ _DEFAULT_TIMEOUT = 300
 def resolve(
     manifest: Manifest,
     profile_name: str,
-    cli_overrides: dict,
+    cli_overrides: dict[str, Any],
     settings: LocalSettings,
 ) -> Policy:
     """Resolve the full flag set from all precedence layers.
@@ -77,7 +79,7 @@ def resolve(
         None,  # settings don't carry optimize
         cli_overrides.get("optimize"),
     )
-    if optimize is None:
+    if not isinstance(optimize, int):
         optimize = 0
 
     debug_level = _resolve_scalar(
@@ -87,7 +89,7 @@ def resolve(
         None,  # settings don't carry debug_level
         cli_overrides.get("debug_level"),
     )
-    if debug_level is None:
+    if not isinstance(debug_level, str):
         debug_level = "none"
 
     # Defines: map, replace by key.  Builtin -> manifest -> profile -> CLI

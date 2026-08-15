@@ -5,6 +5,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from typing import Any
+
 from .._errors import ConfigError
 
 if sys.version_info >= (3, 11):
@@ -13,7 +15,7 @@ else:
     import tomli as tomllib  # type: ignore[import-not-found, no-redef]
 
 
-def read(path: Path) -> dict:
+def read(path: Path) -> dict[str, Any]:
     """Read and parse a pyproject.toml file.
 
     Returns the parsed dict. Raises ConfigError if the file is missing or

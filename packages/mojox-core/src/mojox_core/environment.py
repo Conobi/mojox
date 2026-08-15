@@ -6,6 +6,8 @@ The IO reader that enumerates distributions lives in mojox_core.io.environment.
 
 from __future__ import annotations
 
+from typing import Any
+
 from ._errors import ConfigError
 from ._types import Diagnostic, DistEntry, DistKind, ResolvedEnv
 
@@ -13,8 +15,8 @@ _MAX_KNOWN_LOCK_VERSION = 1
 
 
 def build_env(
-    dists: list[dict],
-    lock_data: dict | None,
+    dists: list[dict[str, Any]],
+    lock_data: dict[str, Any] | None,
     mojo_path: str,
     mojo_version: str,
     *,
@@ -76,7 +78,7 @@ def build_env(
     )
 
 
-def _check_source_shadows_precompiled(dists: list[dict]) -> None:
+def _check_source_shadows_precompiled(dists: list[dict[str, Any]]) -> None:
     """Raise ConfigError if any package is both source and precompiled in the same dir.
 
     Args:
@@ -105,7 +107,7 @@ def _check_source_shadows_precompiled(dists: list[dict]) -> None:
 
 
 def _extract_lock_version(
-    lock_data: dict | None,
+    lock_data: dict[str, Any] | None,
     diagnostics: list[Diagnostic],
 ) -> int | None:
     """Extract and validate the lockfile schema version.

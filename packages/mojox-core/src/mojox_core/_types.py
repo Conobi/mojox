@@ -202,7 +202,7 @@ class LocalSettings:
 
 
 # Bootstrap the EMPTY sentinel after the class is defined.
-LocalSettings.EMPTY = LocalSettings()  # type: ignore[attr-defined]
+LocalSettings.EMPTY = LocalSettings()
 
 
 @dataclass(frozen=True)

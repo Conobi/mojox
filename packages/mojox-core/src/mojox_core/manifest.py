@@ -9,6 +9,8 @@ from __future__ import annotations
 import posixpath
 from pathlib import PurePosixPath
 
+from typing import Any
+
 from ._errors import ConfigError
 from ._types import BinaryEntry, LintConfig, Manifest, Profile
 
@@ -16,7 +18,7 @@ _VALID_OPTIMIZE = frozenset({0, 1, 2, 3})
 _VALID_DEBUG_LEVELS = frozenset({"none", "line-tables", "full"})
 
 
-def parse_manifest(data: dict) -> Manifest:
+def parse_manifest(data: dict[str, Any]) -> Manifest:
     """Parse a pyproject.toml dict into a frozen Manifest.
 
     Every rejection is a ConfigError with key path and remediation.
@@ -69,7 +71,7 @@ def parse_manifest(data: dict) -> Manifest:
 # -- Helpers ---------------------------------------------------------------
 
 
-def _require_table(data: dict, key: str) -> dict:
+def _require_table(data: dict[str, Any], key: str) -> dict[str, Any]:
     """Require *key* to exist in *data* and be a dict (TOML table)."""
     if key not in data:
         raise ConfigError(key, f"missing [{key}] table")
@@ -79,7 +81,7 @@ def _require_table(data: dict, key: str) -> dict:
     return val
 
 
-def _require_str(table: dict, prefix: str, key: str) -> str:
+def _require_str(table: dict[str, Any], prefix: str, key: str) -> str:
     """Require *key* to exist in *table* and be a string."""
     if key not in table:
         raise ConfigError(f"{prefix}.{key}", "required field is missing")
@@ -89,7 +91,7 @@ def _require_str(table: dict, prefix: str, key: str) -> str:
     return val
 
 
-def _parse_version(project: dict) -> str:
+def _parse_version(project: dict[str, Any]) -> str:
     """Extract and validate the project version.
 
     Rejects dynamic versions since mojox requires a static version string.
@@ -106,7 +108,7 @@ def _parse_version(project: dict) -> str:
     return str(project["version"])
 
 
-def _parse_license(project: dict) -> str | None:
+def _parse_license(project: dict[str, Any]) -> str | None:
     """Parse the license field, handling both string and table forms."""
     lic = project.get("license")
     if lic is None:
@@ -129,7 +131,7 @@ def _normalise_path(raw: str, key_path: str) -> str:
     return normalised
 
 
-def _parse_str_list(mojox: dict, key: str, default: tuple[str, ...] = ()) -> tuple[str, ...]:
+def _parse_str_list(mojox: dict[str, Any], key: str, default: tuple[str, ...] = ()) -> tuple[str, ...]:
     """Parse a key that must be a list of strings."""
     if key not in mojox:
         return default
@@ -142,7 +144,7 @@ def _parse_str_list(mojox: dict, key: str, default: tuple[str, ...] = ()) -> tup
     return tuple(raw)
 
 
-def _parse_path_list(mojox: dict, key: str, default: tuple[str, ...] = ()) -> tuple[str, ...]:
+def _parse_path_list(mojox: dict[str, Any], key: str, default: tuple[str, ...] = ()) -> tuple[str, ...]:
     """Parse a key that must be a list of relative path strings."""
     if key not in mojox:
         return default
@@ -155,14 +157,14 @@ def _parse_path_list(mojox: dict, key: str, default: tuple[str, ...] = ()) -> tu
     return tuple(_normalise_path(p, f"tool.mojox.{key}") for p in raw)
 
 
-def _parse_path_list_optional(mojox: dict, key: str) -> tuple[str, ...] | None:
+def _parse_path_list_optional(mojox: dict[str, Any], key: str) -> tuple[str, ...] | None:
     """Parse an optional path list — None if absent, validated if present."""
     if key not in mojox:
         return None
     return _parse_path_list(mojox, key)
 
 
-def _parse_optional_path(mojox: dict, key: str) -> str | None:
+def _parse_optional_path(mojox: dict[str, Any], key: str) -> str | None:
     """Parse an optional single path string."""
     raw = mojox.get(key)
     if raw is None:
@@ -172,7 +174,7 @@ def _parse_optional_path(mojox: dict, key: str) -> str | None:
     return _normalise_path(raw, f"tool.mojox.{key}")
 
 
-def _parse_defines(mojox: dict) -> dict[str, str]:
+def _parse_defines(mojox: dict[str, Any]) -> dict[str, str]:
     """Parse defines, validating the value is a table."""
     raw = mojox.get("defines", {})
     if not isinstance(raw, dict):
@@ -180,7 +182,7 @@ def _parse_defines(mojox: dict) -> dict[str, str]:
     return {str(k): str(v) for k, v in raw.items()}
 
 
-def _parse_packages(mojox: dict) -> tuple[str, ...] | None:
+def _parse_packages(mojox: dict[str, Any]) -> tuple[str, ...] | None:
     """Parse the packages list, normalising each path."""
     if "packages" not in mojox:
         return None
@@ -194,9 +196,14 @@ def _parse_optimize(value: object, key_path: str) -> int | None:
     """Parse and validate the optimisation level (0--3)."""
     if value is None:
         return None
-    try:
-        level = int(value)  # type: ignore[arg-type]
-    except (ValueError, TypeError):
+    if isinstance(value, int):
+        level = value
+    elif isinstance(value, (str, float)):
+        try:
+            level = int(value)
+        except (ValueError, TypeError):
+            raise ConfigError(key_path, f"must be 0–3, got {value!r}")
+    else:
         raise ConfigError(key_path, f"must be 0–3, got {value!r}")
     if level not in _VALID_OPTIMIZE:
         raise ConfigError(key_path, f"must be 0–3, got {value!r}")
@@ -216,7 +223,7 @@ def _parse_debug_level(value: object, key_path: str) -> str | None:
     return s
 
 
-def _parse_binaries(items: list) -> tuple[BinaryEntry, ...]:
+def _parse_binaries(items: list[Any]) -> tuple[BinaryEntry, ...]:
     """Parse the binaries list, validating each entry for uniqueness."""
     out: list[BinaryEntry] = []
     seen: set[str] = set()
@@ -281,7 +288,7 @@ def _parse_lints(raw: object) -> LintConfig:
     )
 
 
-def _parse_pre_build(items: list) -> tuple[tuple[str, ...], ...]:
+def _parse_pre_build(items: list[Any]) -> tuple[tuple[str, ...], ...]:
     """Parse pre-build commands (shell strings or argv lists)."""
     out: list[tuple[str, ...]] = []
     for i, item in enumerate(items):
@@ -298,7 +305,7 @@ def _parse_pre_build(items: list) -> tuple[tuple[str, ...], ...]:
     return tuple(out)
 
 
-def _parse_defines_for_key(table: dict, key_path: str) -> dict[str, str]:
+def _parse_defines_for_key(table: dict[str, Any], key_path: str) -> dict[str, str]:
     """Parse a defines sub-table, validating it is a dict of strings."""
     raw = table.get("defines", {})
     if not isinstance(raw, dict):
@@ -306,7 +313,7 @@ def _parse_defines_for_key(table: dict, key_path: str) -> dict[str, str]:
     return {str(k): str(v) for k, v in raw.items()}
 
 
-def _parse_str_list_for_key(table: dict, key: str, key_path: str) -> tuple[str, ...]:
+def _parse_str_list_for_key(table: dict[str, Any], key: str, key_path: str) -> tuple[str, ...]:
     """Parse a string-list value from *table[key]*, raising on bad types."""
     raw = table.get(key, ())
     if isinstance(raw, str):
@@ -319,7 +326,7 @@ def _parse_str_list_for_key(table: dict, key: str, key_path: str) -> tuple[str, 
     return tuple(raw)
 
 
-def _parse_build_profile(mojox: dict) -> str:
+def _parse_build_profile(mojox: dict[str, Any]) -> str:
     """Parse the build-profile key, defaulting to 'release'."""
     raw = mojox.get("build-profile", "release")
     if not isinstance(raw, str):
@@ -330,7 +337,7 @@ def _parse_build_profile(mojox: dict) -> str:
     return raw
 
 
-def _parse_profiles(raw: dict) -> dict[str, Profile]:
+def _parse_profiles(raw: dict[str, Any]) -> dict[str, Profile]:
     """Parse profile tables into Profile objects."""
     profiles: dict[str, Profile] = {}
     for name, table in raw.items():

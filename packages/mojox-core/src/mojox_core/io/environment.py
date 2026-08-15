@@ -11,10 +11,12 @@ import os
 import sysconfig
 from pathlib import Path
 
+from typing import Any
+
 from .._types import DistKind, HostFacts
 
 
-def read_distributions(platlib: str | None = None) -> list[dict]:
+def read_distributions(platlib: str | None = None) -> list[dict[str, Any]]:
     """Enumerate installed distributions that ship Mojo packages.
 
     Returns a list of dicts suitable for passing to environment.build_env().
@@ -27,7 +29,7 @@ def read_distributions(platlib: str | None = None) -> list[dict]:
     if not mojo_packages_dir.is_dir():
         return []
 
-    dists: list[dict] = []
+    dists: list[dict[str, Any]] = []
     for dist in importlib.metadata.distributions():
         if dist.files is None:
             continue
@@ -64,7 +66,7 @@ def read_distributions(platlib: str | None = None) -> list[dict]:
     return dists
 
 
-def read_lockfile(project_root: Path) -> dict | None:
+def read_lockfile(project_root: Path) -> dict[str, Any] | None:
     """Read uv.lock if it exists, returning parsed TOML or None."""
     import sys
 

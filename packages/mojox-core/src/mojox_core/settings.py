@@ -7,6 +7,8 @@ is what makes "local settings never influence a published wheel" structural.
 
 from __future__ import annotations
 
+from typing import Any
+
 from ._errors import ConfigError
 from ._types import LocalSettings
 
@@ -30,15 +32,15 @@ _FORBIDDEN_KEYS = frozenset(
 
 
 def parse_settings(
-    user: dict | None,
-    project: dict | None,
+    user: dict[str, Any] | None,
+    project: dict[str, Any] | None,
     env: dict[str, str],
 ) -> LocalSettings:
     """Parse local settings from user and project TOML dicts plus env vars.
 
     Precedence: project file wins over user file; MOJOX_* env vars win over both.
     """
-    merged: dict = {}
+    merged: dict[str, Any] = {}
 
     if user is not None:
         _validate_no_forbidden(user)
@@ -77,7 +79,7 @@ def parse_settings(
     )
 
 
-def _validate_no_forbidden(settings: dict) -> None:
+def _validate_no_forbidden(settings: dict[str, Any]) -> None:
     """Reject settings keys that belong in the manifest, not local config."""
     for key in settings:
         if key in _FORBIDDEN_KEYS:

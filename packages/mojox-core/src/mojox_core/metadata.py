@@ -6,6 +6,8 @@ Deterministic, fixed key order, byte-identical for equal inputs.
 
 from __future__ import annotations
 
+from typing import Any
+
 from ._types import (
     Command,
     Diagnostic,
@@ -25,7 +27,7 @@ def serialize(
     commands: tuple[Command, ...],
     toolchain: Toolchain,
     diagnostics: tuple[Diagnostic, ...],
-) -> dict:
+) -> dict[str, Any]:
     """Serialize the complete build plan into a JSON-serialisable dict.
 
     Args:
@@ -37,7 +39,7 @@ def serialize(
         diagnostics: Any compiler or mojox diagnostics to include.
 
     Returns:
-        A plain dict that is directly JSON-serialisable via ``json.dumps``.
+        A plain ``dict[str, Any]`` that is directly JSON-serialisable via ``json.dumps``.
         Key order is fixed and deterministic for equal inputs.
     """
     has_source_generating_hook = False
