@@ -7,6 +7,7 @@ license = "MIT"
 requires-python = ">=3.10"
 authors = [{ name = "Conobi" }]
 dependencies = [
+  "mojox-core",
   "packaging>=23.0",
   'tomli >= 1.1.0; python_version < "3.11"',
 ]
@@ -20,3 +21,19 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mojox_build"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+strict = true
+
+[tool.semantic_release]
+commit_parser = "conventional-monorepo"
+tag_format = "mojox-build-v{version}"
+version_toml = ["pyproject.toml:project.version"]
+commit_message = "chore: release mojox-build {version}"
+allow_zero_version = true
+
+[tool.semantic_release.commit_parser_options]
+path_filters = ["."]

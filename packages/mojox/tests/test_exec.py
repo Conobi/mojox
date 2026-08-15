@@ -1,0 +1,354 @@
+"""Exec runner: Command → Outcome via subprocess."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path, PurePosixPath
+
+import pytest
+from mojox._exec import run_command, run_commands
+from mojox._types import OutcomeKind
+from mojox_core import Command, CommandKind
+
+
+def _cmd(argv: tuple[str, ...], **overrides) -> Command:
+    """Build a test command with sensible defaults."""
+    defaults = {
+        "argv": argv,
+        "cwd": PurePosixPath("."),
+        "env": {"PATH": "/usr/bin", "HOME": ""},
+        "kind": CommandKind.RUN_TEST,
+        "target_id": "t.mojo",
+        "timeout_s": 30,
+        "outputs": (),
+        "depends_on": (),
+    }
+    defaults.update(overrides)
+    return Command(**defaults)
+
+
+class TestRunCommand:
+    def test_successful_command(self):
+        cmd = _cmd((sys.executable, "-c", "print('hello')"))
+        outcome = run_command(cmd)
+        assert outcome.kind == OutcomeKind.PASS
+        assert outcome.exit_code == 0
+        assert "hello" in outcome.stdout
+        assert outcome.elapsed_s > 0
+
+    def test_failing_command(self):
+        cmd = _cmd((sys.executable, "-c", "import sys; sys.exit(1)"))
+        outcome = run_command(cmd)
+        assert outcome.kind == OutcomeKind.FAIL
+        assert outcome.exit_code == 1
+
+    def test_stderr_captured(self):
+        cmd = _cmd((sys.executable, "-c", "import sys; print('err', file=sys.stderr)"))
+        outcome = run_command(cmd)
+        assert outcome.kind == OutcomeKind.PASS
+        assert "err" in outcome.stderr
+
+    def test_timeout_produces_timeout_outcome(self):
+        cmd = _cmd(
+            (sys.executable, "-c", "import time; time.sleep(60)"),
+            timeout_s=1,
+        )
+        outcome = run_command(cmd)
+        assert outcome.kind == OutcomeKind.TIMEOUT
+        assert outcome.exit_code is None
+
+    def test_env_is_constructed_not_inherited(self):
+        cmd = _cmd(
+            (sys.executable, "-c", "import os; print(os.environ.get('MOJOX_TEST_MARKER', 'absent'))"),
+            env={"PATH": f"{sys.prefix}/bin:/usr/bin:/bin", "HOME": "", "MOJOX_TEST_MARKER": "present"},
+        )
+        outcome = run_command(cmd)
+        assert "present" in outcome.stdout
+
+    def test_command_with_no_timeout(self):
+        cmd = _cmd(
+            (sys.executable, "-c", "print('ok')"),
+            timeout_s=None,
+        )
+        outcome = run_command(cmd)
+        assert outcome.kind == OutcomeKind.PASS
+
+    def test_extra_env_merged(self):
+        cmd = _cmd(
+            (sys.executable, "-c", "import os; print(os.environ.get('EXTRA', 'missing'))"),
+            env={"PATH": f"{sys.prefix}/bin:/usr/bin:/bin", "HOME": ""},
+        )
+        outcome = run_command(cmd, extra_env={"EXTRA": "found"})
+        assert "found" in outcome.stdout
+
+    def test_command_not_found(self):
+        cmd = _cmd(("/nonexistent/binary",))
+        outcome = run_command(cmd)
+        assert outcome.kind == OutcomeKind.COMPILE_ERROR
+        assert outcome.exit_code is None
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="signals not available on Windows")
+    def test_signal_death_produces_crash_outcome(self):
+        """A process killed by a signal produces a CRASH outcome."""
+        cmd = _cmd((sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"))
+        outcome = run_command(cmd)
+        assert outcome.kind == OutcomeKind.CRASH
+        assert outcome.exit_code is not None
+        assert outcome.exit_code < 0
+
+
+class TestRunCommands:
+    def test_empty_command_list(self):
+        """Empty input returns empty output."""
+        results = run_commands(())
+        assert results == ()
+
+    def test_sequential_execution(self):
+        """Multiple independent commands all execute."""
+        cmd1 = _cmd((sys.executable, "-c", "print('one')"), target_id="one")
+        cmd2 = _cmd((sys.executable, "-c", "print('two')"), target_id="two")
+        results = run_commands((cmd1, cmd2), max_workers=1)
+        assert len(results) == 2
+        assert results[0].kind == OutcomeKind.PASS
+        assert results[1].kind == OutcomeKind.PASS
+
+    def test_depends_on_ordering(self):
+        """Commands with depends_on wait for dependencies to complete."""
+        precompile = _cmd(
+            (sys.executable, "-c", "import time; time.sleep(0.1); print('precompiled')"),
+            kind=CommandKind.COMPILE_PACKAGE,
+            target_id="mylib",
+        )
+        test = _cmd(
+            (sys.executable, "-c", "print('tested')"),
+            target_id="t.mojo",
+            depends_on=("mylib",),
+        )
+        results = run_commands((precompile, test), max_workers=2)
+        assert len(results) == 2
+        assert results[0].command.target_id == "mylib"
+        assert results[1].command.target_id == "t.mojo"
+        assert results[0].kind == OutcomeKind.PASS
+        assert results[1].kind == OutcomeKind.PASS
+
+    def test_failure_in_dependency_skips_dependents(self):
+        """When a dependency fails, its dependents are skipped."""
+        precompile = _cmd(
+            (sys.executable, "-c", "import sys; sys.exit(1)"),
+            kind=CommandKind.COMPILE_PACKAGE,
+            target_id="mylib",
+        )
+        test = _cmd(
+            (sys.executable, "-c", "print('should not run')"),
+            target_id="t.mojo",
+            depends_on=("mylib",),
+        )
+        results = run_commands((precompile, test), max_workers=2)
+        assert results[0].kind == OutcomeKind.FAIL
+        assert results[1].kind == OutcomeKind.SKIPPED
+        assert "dependency" in results[1].stderr.lower()
+
+    def test_concurrent_independent_commands(self):
+        """Independent commands run concurrently."""
+        cmds = tuple(
+            _cmd(
+                (sys.executable, "-c", f"print({i})"),
+                target_id=f"t{i}.mojo",
+            )
+            for i in range(4)
+        )
+        results = run_commands(cmds, max_workers=4)
+        assert len(results) == 4
+        assert all(r.kind == OutcomeKind.PASS for r in results)
+
+    def test_extra_env_passed_through(self):
+        """extra_env is forwarded to each command."""
+        cmd = _cmd(
+            (sys.executable, "-c", "import os; print(os.environ.get('MY_VAR', 'absent'))"),
+            env={"PATH": f"{sys.prefix}/bin:/usr/bin:/bin", "HOME": ""},
+        )
+        results = run_commands((cmd,), extra_env={"MY_VAR": "present"})
+        assert "present" in results[0].stdout
+
+
+class TestOutputDirectoryCreation:
+    """Output parent directories must be created before execution."""
+
+    def test_output_dirs_created(self, tmp_path: Path):
+        """Parent directories for Command.outputs are created automatically."""
+        out_file = tmp_path / "deep" / "nested" / "pkg" / "lib.mojoc"
+        cmd = _cmd(
+            (sys.executable, "-c", "print('ok')"),
+            outputs=(str(out_file),),
+        )
+        outcome = run_command(cmd)
+        assert outcome.kind == OutcomeKind.PASS
+        assert out_file.parent.is_dir()
+
+
+class TestFailFast:
+    def test_fail_fast_cancels_remaining(self):
+        """After first failure, remaining queued commands are SKIPPED."""
+        fast_fail = _cmd(
+            (sys.executable, "-c", "import sys; sys.exit(1)"),
+            target_id="fail.mojo",
+        )
+        cmds = (fast_fail,) + tuple(
+            _cmd(
+                (sys.executable, "-c", "import time; time.sleep(2)"),
+                target_id=f"t{i}.mojo",
+            )
+            for i in range(5)
+        )
+        results = run_commands(cmds, max_workers=1, fail_fast=True)
+        skipped = [r for r in results if r.kind == OutcomeKind.SKIPPED]
+        assert len(skipped) >= 1
+        assert results[0].kind == OutcomeKind.FAIL
+
+    def test_no_fail_fast_runs_all(self):
+        """Without fail-fast, all commands run even after failure."""
+        cmds = (
+            _cmd((sys.executable, "-c", "import sys; sys.exit(1)"), target_id="f1.mojo"),
+            _cmd((sys.executable, "-c", "print('ok')"), target_id="t1.mojo"),
+        )
+        results = run_commands(cmds, max_workers=1, fail_fast=False)
+        assert results[0].kind == OutcomeKind.FAIL
+        assert results[1].kind == OutcomeKind.PASS
+
+    def test_fail_fast_default_is_false(self):
+        """Default fail_fast parameter is False (backward compatible)."""
+        cmds = (
+            _cmd((sys.executable, "-c", "import sys; sys.exit(1)"), target_id="f.mojo"),
+            _cmd((sys.executable, "-c", "print('ok')"), target_id="t.mojo"),
+        )
+        results = run_commands(cmds, max_workers=1)
+        assert results[1].kind == OutcomeKind.PASS
+
+    def test_fail_fast_skips_phase2_after_phase1_failure(self):
+        """If fail-fast triggers in phase 1, phase 2 commands are SKIPPED."""
+        compile_fail = _cmd(
+            (sys.executable, "-c", "import sys; sys.exit(1)"),
+            kind=CommandKind.COMPILE_PACKAGE,
+            target_id="mylib",
+        )
+        compile_ok = _cmd(
+            (sys.executable, "-c", "print('ok')"),
+            kind=CommandKind.COMPILE_PACKAGE,
+            target_id="otherlib",
+        )
+        test = _cmd(
+            (sys.executable, "-c", "print('test')"),
+            target_id="t.mojo",
+            depends_on=("mylib",),
+        )
+        results = run_commands(
+            (compile_fail, compile_ok, test),
+            max_workers=1,
+            fail_fast=True,
+        )
+        assert results[2].kind == OutcomeKind.SKIPPED
+
+
+class TestOnStartCallback:
+    def test_on_start_called_for_each_command(self):
+        """on_start fires once per executed command."""
+        started: list[str] = []
+        cmds = (
+            _cmd((sys.executable, "-c", "print('a')"), target_id="a.mojo"),
+            _cmd((sys.executable, "-c", "print('b')"), target_id="b.mojo"),
+        )
+        run_commands(
+            cmds,
+            max_workers=1,
+            on_start=lambda cmd: started.append(cmd.target_id),
+        )
+        assert set(started) == {"a.mojo", "b.mojo"}
+
+    def test_on_start_not_called_for_skipped(self):
+        """SKIPPED commands do not fire on_start."""
+        started: list[str] = []
+        compile_fail = _cmd(
+            (sys.executable, "-c", "import sys; sys.exit(1)"),
+            kind=CommandKind.COMPILE_PACKAGE,
+            target_id="mylib",
+        )
+        test = _cmd(
+            (sys.executable, "-c", "print('test')"),
+            target_id="t.mojo",
+            depends_on=("mylib",),
+        )
+        run_commands(
+            (compile_fail, test),
+            max_workers=1,
+            on_start=lambda cmd: started.append(cmd.target_id),
+        )
+        assert "mylib" in started
+        assert "t.mojo" not in started
+
+
+class TestNativeLibPathInjection:
+    """Standard mojo run path must set LD_LIBRARY_PATH for native libs.
+
+    The subprocess path must find native shared libraries shipped by
+    dependencies in their lib/ subdirectories.
+    """
+
+    def test_ld_library_path_injected_for_native_libs(self, tmp_path: Path):
+        """lib/ subdirs from include_paths appear in LD_LIBRARY_PATH."""
+        inc_dir = tmp_path / "deps" / "navette"
+        lib_dir = inc_dir / "lib"
+        lib_dir.mkdir(parents=True)
+
+        cmd = _cmd(
+            (sys.executable, "-c", "import os; print(os.environ.get('LD_LIBRARY_PATH', ''))"),
+            env={"PATH": f"{sys.prefix}/bin:/usr/bin:/bin", "HOME": ""},
+        )
+        outcome = run_command(cmd, include_paths=(str(inc_dir),))
+        assert outcome.kind == OutcomeKind.PASS
+        assert str(lib_dir) in outcome.stdout
+
+    def test_no_ld_library_path_when_no_lib_dirs(self, tmp_path: Path):
+        """Without lib/ subdirs, LD_LIBRARY_PATH is not injected."""
+        inc_dir = tmp_path / "deps" / "navette"
+        inc_dir.mkdir(parents=True)
+
+        cmd = _cmd(
+            (sys.executable, "-c", "import os; print(os.environ.get('LD_LIBRARY_PATH', 'NONE'))"),
+            env={"PATH": f"{sys.prefix}/bin:/usr/bin:/bin", "HOME": ""},
+        )
+        outcome = run_command(cmd, include_paths=(str(inc_dir),))
+        assert outcome.kind == OutcomeKind.PASS
+        assert "NONE" in outcome.stdout
+
+    def test_ld_library_path_appended_to_existing(self, tmp_path: Path):
+        """New lib dirs are appended to any existing LD_LIBRARY_PATH."""
+        inc_dir = tmp_path / "deps" / "navette"
+        lib_dir = inc_dir / "lib"
+        lib_dir.mkdir(parents=True)
+
+        cmd = _cmd(
+            (sys.executable, "-c", "import os; print(os.environ.get('LD_LIBRARY_PATH', ''))"),
+            env={"PATH": f"{sys.prefix}/bin:/usr/bin:/bin", "HOME": "", "LD_LIBRARY_PATH": "/existing/lib"},
+        )
+        outcome = run_command(cmd, include_paths=(str(inc_dir),))
+        assert outcome.kind == OutcomeKind.PASS
+        assert "/existing/lib" in outcome.stdout
+        assert str(lib_dir) in outcome.stdout
+
+    def test_multiple_lib_dirs_all_included(self, tmp_path: Path):
+        """Multiple include paths with lib/ dirs all appear."""
+        inc1 = tmp_path / "deps" / "navette"
+        lib1 = inc1 / "lib"
+        lib1.mkdir(parents=True)
+        inc2 = tmp_path / "deps" / "boucle"
+        lib2 = inc2 / "lib"
+        lib2.mkdir(parents=True)
+
+        cmd = _cmd(
+            (sys.executable, "-c", "import os; print(os.environ.get('LD_LIBRARY_PATH', ''))"),
+            env={"PATH": f"{sys.prefix}/bin:/usr/bin:/bin", "HOME": ""},
+        )
+        outcome = run_command(cmd, include_paths=(str(inc1), str(inc2)))
+        assert outcome.kind == OutcomeKind.PASS
+        assert str(lib1) in outcome.stdout
+        assert str(lib2) in outcome.stdout
