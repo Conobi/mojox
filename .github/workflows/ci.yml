@@ -20,15 +20,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: Build & smoke-test (${{ matrix.os }} / py${{ matrix.python }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        python: ['3.10', '3.11', '3.12']
-
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -37,15 +31,96 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Ruff check
+        run: uvx ruff check .
+
+      - name: Ruff format
+        run: uvx ruff format --check .
+
+  typecheck:
+    name: Type check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Mypy mojox-core
+        working-directory: packages/mojox-core
+        run: uv run --with mypy mypy --strict src/
+
+      - name: Mypy mojox
+        working-directory: packages/mojox
+        run: uv run --with mypy mypy --strict src/
+
+      - name: Mypy mojox-build
+        working-directory: packages/mojox-build
+        run: uv run --with mypy mypy --strict src/
+
+  test:
+    name: Test (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install Python ${{ matrix.python }}
+        run: uv python install ${{ matrix.python }}
+
+      - name: Test mojox-core
+        working-directory: packages/mojox-core
+        run: uv run --python ${{ matrix.python }} --with pytest pytest tests/
+
+      - name: Test mojox
+        working-directory: packages/mojox
+        run: uv run --python ${{ matrix.python }} --with pytest pytest tests/
+
+      - name: Test mojox-build
+        working-directory: packages/mojox-build
+        run: uv run --python ${{ matrix.python }} --with pytest pytest tests/
+
+  build:
+    name: Build & smoke-test (${{ matrix.os }} / py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ['3.10', '3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install Python ${{ matrix.python }}
+        run: uv python install ${{ matrix.python }}
+
+      - name: Build mojox-core
+        run: uv build --python ${{ matrix.python }} --package mojox-core
+
       - name: Build mojox
-        run: uv build --package mojox
+        run: uv build --python ${{ matrix.python }} --package mojox
 
       - name: Build mojox-build
-        run: uv build --package mojox-build
+        run: uv build --python ${{ matrix.python }} --package mojox-build
 
       - name: Smoke-test mojox-build hooks
         run: |
-          uv run --no-project --with packaging --with ./packages/mojox-build python - <<'PY'
+          uv run --python ${{ matrix.python }} --no-project --with packaging --with ./packages/mojox-build python - <<'PY'
           import mojox_build as m
           required = {
               "build_wheel",
@@ -63,11 +138,8 @@ jobs:
           PY
 
       - name: Smoke-test mojox shim imports
-        # The mojo._entrypoints import only resolves when mojo-compiler is
-        # installed, so we patch it out and just verify the wrapper loads
-        # and dispatches subcommands correctly.
         run: |
-          uv run --no-project --with ./packages/mojox python - <<'PY'
+          uv run --python ${{ matrix.python }} --no-project --with ./packages/mojox python - <<'PY'
           import sys, types
           fake = types.ModuleType("mojo._entrypoints")
           fake.exec_mojo = lambda: print("exec_mojo called")
