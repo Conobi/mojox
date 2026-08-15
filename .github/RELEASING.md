@@ -1,80 +1,85 @@
 # Releasing
 
-This repo publishes two packages independently:
+This repo publishes three packages independently:
 
-- `mojox` → tag `mojox-vX.Y.Z`
-- `mojox-build` → tag `mojox-build-vX.Y.Z`
+- `mojox` → automated via python-semantic-release (PSR)
+- `mojox-build` → automated via python-semantic-release (PSR)
+- `mojox-core` → manual version bump + tag push
 
-## One-time setup per package
+## mojox & mojox-build (PSR-powered)
 
-PyPI [trusted publishing](https://docs.pypi.org/trusted-publishers/) is configured per package. For each package, do this once:
+Version bumps are determined automatically from conventional commit messages:
 
-### If the package already exists on PyPI (case: `mojox`)
+- `fix:` → patch bump (0.4.0 → 0.4.1)
+- `feat:` → minor bump (0.4.0 → 0.5.0)
+- `feat!:` or `BREAKING CHANGE:` footer → major bump (0.4.0 → 1.0.0)
+- `chore:`, `refactor:`, `docs:`, `test:`, `ci:` → no bump
 
-1. <https://pypi.org/manage/project/mojox/settings/publishing/>
+### To release
+
+1. Go to **Actions → Release → Run workflow**
+2. Select the package (`mojox` or `mojox-build`)
+3. Select the destination (`pypi` or `testpypi`)
+4. Click **Run workflow**
+
+PSR will:
+1. Analyze commits since the last tag for that package
+2. Determine the bump level from commit messages
+3. Update `version` in `pyproject.toml`
+4. Generate/update `CHANGELOG.md` in the package directory
+5. Commit, tag, and push
+6. Create a GitHub Release
+7. Build and publish to PyPI via trusted publishing (OIDC)
+
+If no bump-worthy commits exist, the workflow exits cleanly without releasing.
+
+## mojox-core (manual)
+
+```bash
+# 1. Bump version in pyproject.toml
+$EDITOR packages/mojox-core/pyproject.toml      # version = "0.6.0"
+
+# 2. Commit + tag + push
+git commit -am "chore: release mojox-core 0.6.0" -- packages/mojox-core/pyproject.toml
+git tag mojox-core-v0.6.0
+git push origin main --tags
+```
+
+The release workflow automatically:
+1. Verifies the tag version matches `pyproject.toml`
+2. Builds with `uv build --package mojox-core`
+3. Publishes to PyPI via `uv publish --trusted-publishing always`
+
+## Release ordering
+
+When a change spans mojox-core and a dependent package:
+1. Release mojox-core first (manual tag-push)
+2. Verify it's available on PyPI
+3. Then trigger the dependent's release via workflow dispatch
+
+## Trusted publishing setup
+
+PyPI [trusted publishing](https://docs.pypi.org/trusted-publishers/) is configured per package.
+No API tokens are stored — the workflow exchanges its GitHub OIDC token for an ephemeral PyPI credential.
+
+### For each package
+
+1. Go to the package's PyPI publishing settings:
+   - `mojox`: <https://pypi.org/manage/project/mojox/settings/publishing/>
+   - `mojox-build`: <https://pypi.org/manage/project/mojox-build/settings/publishing/>
+   - `mojox-core`: <https://pypi.org/manage/project/mojox-core/settings/publishing/>
 2. **Add a new publisher** with:
    - Owner: `Conobi`
    - Repository name: `mojox`
    - Workflow name: `release.yml`
    - Environment name: `pypi`
 
-### If the package is brand new (case: `mojox-build`)
-
-Use a **pending publisher** so the first OIDC publish *creates* the project on PyPI:
-
-1. <https://pypi.org/manage/account/publishing/> (logged in to your account)
-2. **Add a new pending publisher** with:
-   - Project name: `mojox-build`
-   - Owner: `Conobi`
-   - Repository name: `mojox`
-   - Workflow name: `release.yml`
-   - Environment name: `pypi`
-
-The pending publisher becomes a real publisher automatically the first time the workflow publishes successfully.
+For a brand-new package, use a **pending publisher** at <https://pypi.org/manage/account/publishing/>.
 
 ### TestPyPI (optional, for dry runs)
 
-Repeat the appropriate flow on <https://test.pypi.org/manage/account/publishing/> with environment name `testpypi`. Use the workflow's manual dispatch to publish there.
+Repeat the setup on <https://test.pypi.org/manage/account/publishing/> with environment name `testpypi`.
 
 ## GitHub environments
 
-The workflow's `environment: pypi` / `environment: testpypi` is what PyPI's publisher rule matches against. Create those two environments in **Settings → Environments** on the repo (no special config needed, just the names).
-
-## Releasing a version
-
-```bash
-# 1. Bump version in the relevant package
-$EDITOR packages/mojox-build/pyproject.toml      # version = "0.2.1"
-
-# 2. Commit
-git commit -am "chore(mojox-build): bump to 0.2.1" -- packages/mojox-build/pyproject.toml
-
-# 3. Tag
-git tag mojox-build-v0.2.1
-
-# 4. Push
-git push origin main --tags
-```
-
-The release workflow:
-1. Verifies tag version matches `pyproject.toml` (fails fast otherwise).
-2. `uv build --package <pkg>`.
-3. `uv publish --trusted-publishing always` exchanges the GitHub OIDC token for an ephemeral PyPI credential. No tokens stored.
-
-## TestPyPI dry-run
-
-For changes you want to validate before they touch real PyPI:
-
-1. **Actions → Release → Run workflow**.
-2. Pick the package and `testpypi` as the destination.
-3. Install into a throwaway venv to verify:
-   ```bash
-   uv venv /tmp/dry && cd /tmp/dry
-   uv pip install \
-     --index-strategy unsafe-best-match \
-     --index https://test.pypi.org/simple/ \
-     --index https://pypi.org/simple/ \
-     mojox-build==0.2.0 mojo-compiler==0.26.2
-   ```
-
-`--index-strategy unsafe-best-match` lets uv fall back to real PyPI for build dependencies that TestPyPI doesn't mirror (e.g. `packaging`).
+Create `pypi` and `testpypi` environments in **Settings → Environments** on the repo (no special config needed, just the names).
