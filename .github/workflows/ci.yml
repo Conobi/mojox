@@ -143,18 +143,19 @@ jobs:
           print(f"mojox-build {m.__version__}: all hooks reachable")
           PY
 
-      - name: Smoke-test mojox shim imports
+      - name: Smoke-test mojox CLI entry point
         run: |
           uv run --python ${{ matrix.python }} --no-project --with ./packages/mojox python - <<'PY'
-          import sys, types
-          fake = types.ModuleType("mojo._entrypoints")
-          fake.exec_mojo = lambda: print("exec_mojo called")
-          sys.modules.setdefault("mojo", types.ModuleType("mojo"))
-          sys.modules["mojo._entrypoints"] = fake
-
-          sys.argv = ["mojox", "run", "x.mojo"]
+          import sys
           from mojox._cli import main
-          main()
+          from mojox._exec import execute_commands
+          from mojox._output import make_progress_callback
+          sys.argv = ["mojox", "--help"]
+          try:
+              main()
+          except SystemExit as e:
+              assert e.code == 0, f"--help exited with {e.code}"
+          print("mojox CLI: entry point and imports reachable")
           PY
 
       - name: Upload built artifacts
