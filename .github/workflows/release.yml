@@ -137,7 +137,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       id-token: write
-      contents: read
+      contents: write
     environment:
       name: pypi
     steps:
@@ -195,3 +195,12 @@ jobs:
 
       - name: Publish to PyPI
         run: uv publish --trusted-publishing always dist/*
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${{ steps.pkg.outputs.name }} v${{ steps.pkg.outputs.version }}" \
+            --generate-notes
