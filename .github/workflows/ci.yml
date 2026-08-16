@@ -148,7 +148,7 @@ jobs:
           uv run --python ${{ matrix.python }} --no-project --with ./packages/mojox python - <<'PY'
           import sys
           from mojox._cli import main
-          from mojox._exec import execute_commands
+          from mojox._exec import run_commands
           from mojox._output import make_progress_callback
           sys.argv = ["mojox", "--help"]
           try:
