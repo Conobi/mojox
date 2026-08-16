@@ -6,21 +6,23 @@ This repo publishes three packages independently:
 - `mojox-build` → automated via python-semantic-release (PSR)
 - `mojox-core` → manual version bump + tag push
 
+All releases publish directly to PyPI. There is no TestPyPI step — CI
+(ruff + mypy + pytest + build matrix) validates the code before release.
+
 ## mojox & mojox-build (PSR-powered)
 
 Version bumps are determined automatically from conventional commit messages:
 
-- `fix:` → patch bump (0.4.0 → 0.4.1)
-- `feat:` → minor bump (0.4.0 → 0.5.0)
-- `feat!:` or `BREAKING CHANGE:` footer → major bump (0.4.0 → 1.0.0)
+- `fix:` → patch bump (0.5.0 → 0.5.1)
+- `feat:` → minor bump (0.5.0 → 0.6.0)
+- `feat!:` or `BREAKING CHANGE:` footer → major bump (0.5.0 → 1.0.0)
 - `chore:`, `refactor:`, `docs:`, `test:`, `ci:` → no bump
 
 ### To release
 
 1. Go to **Actions → Release → Run workflow**
 2. Select the package (`mojox` or `mojox-build`)
-3. Select the destination (`pypi` or `testpypi`)
-4. Click **Run workflow**
+3. Click **Run workflow**
 
 PSR will:
 1. Analyze commits since the last tag for that package
@@ -33,22 +35,26 @@ PSR will:
 
 If no bump-worthy commits exist, the workflow exits cleanly without releasing.
 
-## mojox-core (manual)
+## Manual release (any package)
+
+Any package can be released manually via tag push. This is the primary
+method for mojox-core, and a fallback for mojox and mojox-build.
 
 ```bash
 # 1. Bump version in pyproject.toml
-$EDITOR packages/mojox-core/pyproject.toml      # version = "0.6.0"
+$EDITOR packages/<package>/pyproject.toml
 
 # 2. Commit + tag + push
-git commit -am "chore: release mojox-core 0.6.0" -- packages/mojox-core/pyproject.toml
-git tag mojox-core-v0.6.0
+git commit -am "chore: release <package> <version>" -- packages/<package>/pyproject.toml
+git tag <package>-v<version>
 git push origin main --tags
 ```
 
 The release workflow automatically:
 1. Verifies the tag version matches `pyproject.toml`
-2. Builds with `uv build --package mojox-core`
+2. Builds with `uv build --package <package>`
 3. Publishes to PyPI via `uv publish --trusted-publishing always`
+4. Creates a GitHub Release
 
 ## Release ordering
 
@@ -76,10 +82,7 @@ No API tokens are stored — the workflow exchanges its GitHub OIDC token for an
 
 For a brand-new package, use a **pending publisher** at <https://pypi.org/manage/account/publishing/>.
 
-### TestPyPI (optional, for dry runs)
-
-Repeat the setup on <https://test.pypi.org/manage/account/publishing/> with environment name `testpypi`.
-
 ## GitHub environments
 
-Create `pypi` and `testpypi` environments in **Settings → Environments** on the repo (no special config needed, just the names).
+Create a `pypi` environment in **Settings → Environments** on the repo
+(no special config needed, just the name).

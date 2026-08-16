@@ -17,14 +17,6 @@ on:
         options:
           - mojox
           - mojox-build
-      destination:
-        description: 'Index to publish to'
-        required: true
-        default: pypi
-        type: choice
-        options:
-          - pypi
-          - testpypi
 
 # ── Mode A: PSR release ─────────────────────────────────────────────
 
@@ -90,7 +82,7 @@ jobs:
         run: semantic-release publish
 
   deploy:
-    name: Publish to ${{ github.event.inputs.destination }}
+    name: Publish to PyPI
     if: github.event_name == 'workflow_dispatch' && needs.release.outputs.released == 'true'
     needs: release
     runs-on: ubuntu-latest
@@ -98,8 +90,8 @@ jobs:
       id-token: write
       contents: read
     environment:
-      name: ${{ github.event.inputs.destination }}
-      url: https://${{ github.event.inputs.destination == 'testpypi' && 'test.' || '' }}pypi.org/project/${{ github.event.inputs.package }}
+      name: pypi
+      url: https://pypi.org/project/${{ github.event.inputs.package }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -117,16 +109,8 @@ jobs:
           ls -la dist/
 
       - name: Publish to PyPI
-        if: github.event.inputs.destination != 'testpypi'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          print-hash: true
-
-      - name: Publish to TestPyPI
-        if: github.event.inputs.destination == 'testpypi'
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
           print-hash: true
 
   # ── Mode B: manual tag-push release ─────────────────────────────────
