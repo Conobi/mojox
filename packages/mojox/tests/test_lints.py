@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from mojox._lints import lint_bare_assert, lint_path_source
+from mojox.lints import lint_bare_assert, lint_path_source
 
 
 class TestLintBareAssert:

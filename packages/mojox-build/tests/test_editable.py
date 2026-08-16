@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mojox_build._build import _write_editable_hook
+from mojox_build.build import _write_editable_hook
 
 
 class TestEditableHookFiles:

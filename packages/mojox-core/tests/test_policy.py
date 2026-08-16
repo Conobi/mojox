@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import pytest
-from mojox_core._errors import ConfigError
-from mojox_core._types import LintConfig, LocalSettings, Manifest, Profile
+from mojox_core.errors import ConfigError
+from mojox_core.types import LintConfig, LocalSettings, Manifest, Profile
 from mojox_core.policy import BUILTIN_DEV, BUILTIN_RELEASE, resolve
 
 

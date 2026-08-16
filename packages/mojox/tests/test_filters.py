@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path, PurePosixPath
 
-from mojox._cli import apply_filters
+from mojox.cli import apply_filters
 from mojox_core import Command, CommandKind
 
 

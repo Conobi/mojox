@@ -6,7 +6,7 @@ import os
 from unittest.mock import patch
 
 import pytest
-from mojox._settings_reader import (
+from mojox.settings_reader import (
     _find_project_config,
     _is_path_secure,
     _safe_read_toml,
@@ -245,7 +245,7 @@ class TestTOCTOU:
         config = tmp_path / "config.toml"
         config.write_text("jobs = 99\n")
 
-        with patch("mojox._settings_reader._HAS_O_NOFOLLOW", False):
+        with patch("mojox.settings_reader._HAS_O_NOFOLLOW", False):
             data = _safe_read_toml(config)
             assert data == {"jobs": 99}
 

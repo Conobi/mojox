@@ -16,8 +16,8 @@ import pytest
 
 # Pure modules: everything in mojox_core except the io subpackage.
 _PURE_MODULES = [
-    "mojox_core._types",
-    "mojox_core._errors",
+    "mojox_core.types",
+    "mojox_core.errors",
     "mojox_core.manifest",
     "mojox_core.policy",
     "mojox_core.targets",

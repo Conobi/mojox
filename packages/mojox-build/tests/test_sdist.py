@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from mojox_build._build import _sdist_files
+from mojox_build.build import _sdist_files
 from mojox_core import parse_manifest
 from mojox_core.io.manifest import read as read_manifest
 

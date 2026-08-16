@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .._errors import ConfigError
+from ..errors import ConfigError
 
 if sys.version_info >= (3, 11):
     import tomllib

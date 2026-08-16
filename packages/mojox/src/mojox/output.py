@@ -12,7 +12,7 @@ from typing import IO
 
 from mojox_core import Command, CommandKind, Diagnostic
 
-from ._types import Outcome, OutcomeKind, OutputMode
+from .types import Outcome, OutcomeKind, OutputMode
 
 # -- ANSI helpers -----------------------------------------------------------
 

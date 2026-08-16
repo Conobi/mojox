@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 
-from ._types import (
+from .types import (
     Command,
     CommandKind,
     HostFacts,

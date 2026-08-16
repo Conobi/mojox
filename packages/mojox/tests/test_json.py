@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 from pathlib import PurePosixPath
 
-from mojox._json import (
+from mojox.json import (
     serialize_command_completed,
     serialize_command_started,
     serialize_suite_finished,
     serialize_suite_started,
 )
-from mojox._types import Outcome, OutcomeKind
+from mojox.types import Outcome, OutcomeKind
 from mojox_core import Command, CommandKind, Diagnostic
 
 

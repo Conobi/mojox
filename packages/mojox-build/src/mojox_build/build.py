@@ -20,7 +20,7 @@ from pathlib import Path
 
 from mojox_core import BinaryEntry, Manifest, Policy, Toolchain
 
-from ._metadata import render_metadata, render_wheel_file
+from .metadata import render_metadata, render_wheel_file
 
 GENERATOR_VERSION = "0.5.0"
 
@@ -372,7 +372,7 @@ def build_wheel(
         dist_info.mkdir()
 
         _run_pre_build(root, manifest.pre_build, verbose=verbose)
-        from ._preflight import check_post_pre_build
+        from .preflight import check_post_pre_build
 
         check_post_pre_build(root, manifest)
         packages = _resolve_package_dirs(root, manifest)
@@ -446,7 +446,7 @@ def build_editable_wheel(
         dist_info.mkdir()
 
         _run_pre_build(root, manifest.pre_build, verbose=verbose)
-        from ._preflight import check_post_pre_build
+        from .preflight import check_post_pre_build
 
         check_post_pre_build(root, manifest)
 
@@ -482,7 +482,7 @@ def _write_editable_hook(
     Files are qualified by *dist_name* so that two mojox projects
     installed editable into the same venv do not clobber each other.
     """
-    hook_template = Path(__file__).parent / "_editable_hook.py"
+    hook_template = Path(__file__).parent / "editable_hook.py"
     hook_name = f"_mojox_editable_{dist_name}_hook.py"
     manifest_name = f"_mojox_editable_{dist_name}_manifest.json"
     pth_name = f"_mojox_editable_{dist_name}.pth"

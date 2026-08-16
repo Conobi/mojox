@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 
 import pytest
-from mojox._cli import determine_exit_code
-from mojox._types import Outcome, OutcomeKind
+from mojox.cli import determine_exit_code
+from mojox.types import Outcome, OutcomeKind
 from mojox_core import Command, CommandKind
 
 

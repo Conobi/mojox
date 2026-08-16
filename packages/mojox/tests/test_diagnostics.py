@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from mojox._diagnostics import parse_diagnostics
+from mojox.diagnostics import parse_diagnostics
 
 
 class TestParseDiagnostics:

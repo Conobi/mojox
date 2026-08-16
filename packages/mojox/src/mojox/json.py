@@ -12,7 +12,7 @@ from typing import IO, Any
 
 from mojox_core import Command, CommandKind, Diagnostic
 
-from ._types import Outcome, OutcomeKind
+from .types import Outcome, OutcomeKind
 
 _SCHEMA_VERSION = 1
 

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import pytest
-from mojox_core._errors import ConfigError
-from mojox_core._types import LocalSettings
+from mojox_core.errors import ConfigError
+from mojox_core.types import LocalSettings
 from mojox_core.settings import parse_settings
 
 _FORBIDDEN_KEYS = [

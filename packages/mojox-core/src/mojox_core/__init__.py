@@ -6,8 +6,8 @@ Public API:
   - Errors: ConfigError
 """
 
-from ._errors import ConfigError
-from ._types import (
+from .errors import ConfigError
+from .types import (
     BinaryEntry,
     Command,
     CommandKind,

@@ -15,8 +15,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from ._errors import ConfigError
-from ._types import LocalSettings, Manifest, Policy, Profile
+from .errors import ConfigError
+from .types import LocalSettings, Manifest, Policy, Profile
 
 BUILTIN_DEV = Profile(
     optimize=0,

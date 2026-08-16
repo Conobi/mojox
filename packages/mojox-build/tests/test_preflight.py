@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from mojox_build._preflight import check
+from mojox_build.preflight import check
 from mojox_core import ConfigError, Manifest, Toolchain, parse_manifest
 from mojox_core.io.manifest import read as read_manifest
 

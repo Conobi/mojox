@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from ._errors import ConfigError
-from ._types import Diagnostic, DistEntry, DistKind, ResolvedEnv
+from .errors import ConfigError
+from .types import Diagnostic, DistEntry, DistKind, ResolvedEnv
 
 _MAX_KNOWN_LOCK_VERSION = 1
 

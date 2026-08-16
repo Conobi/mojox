@@ -9,8 +9,8 @@ from __future__ import annotations
 import importlib.metadata
 from pathlib import Path
 
-from .._errors import ConfigError
-from .._types import Toolchain
+from ..errors import ConfigError
+from ..types import Toolchain
 
 
 def resolve() -> Toolchain:

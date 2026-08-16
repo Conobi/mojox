@@ -5,14 +5,14 @@ from __future__ import annotations
 import io
 from pathlib import PurePosixPath
 
-from mojox._output import (
+from mojox.output import (
     render_diagnostics,
     render_dry_run,
     render_final_output,
     render_outcome,
     render_summary,
 )
-from mojox._types import Outcome, OutcomeKind, OutputMode
+from mojox.types import Outcome, OutcomeKind, OutputMode
 from mojox_core import Command, CommandKind, Diagnostic
 
 

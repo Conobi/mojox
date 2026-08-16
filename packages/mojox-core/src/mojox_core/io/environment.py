@@ -12,7 +12,7 @@ import sysconfig
 from pathlib import Path
 from typing import Any
 
-from .._types import DistKind, HostFacts
+from ..types import DistKind, HostFacts
 
 
 def read_distributions(platlib: str | None = None) -> list[dict[str, Any]]:

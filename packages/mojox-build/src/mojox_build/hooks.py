@@ -20,7 +20,7 @@ from mojox_core import (
 from mojox_core.io.manifest import read as read_manifest
 from mojox_core.io.toolchain import resolve as resolve_toolchain
 
-from ._build import (
+from .build import (
     GENERATOR_VERSION,
     _normalize_name,
     _resolve_package_dirs,
@@ -29,8 +29,8 @@ from ._build import (
     build_wheel,
     host_platform_tag,
 )
-from ._metadata import render_metadata, render_wheel_file
-from ._preflight import check as _preflight
+from .metadata import render_metadata, render_wheel_file
+from .preflight import check as _preflight
 
 
 def _verbose_from(config_settings: dict[str, object] | None) -> bool:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 
-from mojox._types import Outcome, OutcomeKind, OutputFormat, OutputMode
+from mojox.types import Outcome, OutcomeKind, OutputFormat, OutputMode
 from mojox_core import Command, CommandKind
 
 

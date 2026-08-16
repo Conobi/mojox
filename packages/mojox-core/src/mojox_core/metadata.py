@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ._types import (
+from .types import (
     Command,
     Diagnostic,
     Policy,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 
-from mojox_core._types import (
+from mojox_core.types import (
     CommandKind,
     DistEntry,
     DistKind,

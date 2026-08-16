@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from mojox_core._types import (
+from mojox_core.types import (
     BinaryEntry,
     Command,
     CommandKind,

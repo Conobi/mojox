@@ -1,6 +1,6 @@
 """ConfigError carries a key path and a remediation sentence."""
 
-from mojox_core._errors import ConfigError
+from mojox_core.errors import ConfigError
 
 
 def test_config_error_has_key_path_and_message():

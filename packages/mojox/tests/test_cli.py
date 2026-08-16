@@ -6,7 +6,7 @@ import subprocess
 import sys
 
 import pytest
-from mojox._cli import build_parser
+from mojox.cli import build_parser
 
 
 class TestBuildParser:

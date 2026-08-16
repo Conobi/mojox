@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ._errors import ConfigError
-from ._types import Manifest, Target, TargetGraph, TargetKind
+from .errors import ConfigError
+from .types import Manifest, Target, TargetGraph, TargetKind
 
 _EXCLUDED_DIRS = frozenset(
     {

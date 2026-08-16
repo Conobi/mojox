@@ -6,8 +6,8 @@ import sys
 from pathlib import Path, PurePosixPath
 
 import pytest
-from mojox._exec import run_command, run_commands
-from mojox._types import OutcomeKind
+from mojox.exec import run_command, run_commands
+from mojox.types import OutcomeKind
 from mojox_core import Command, CommandKind
 
 

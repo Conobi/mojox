@@ -29,8 +29,8 @@ if TYPE_CHECKING:
         Toolchain,
     )
 
-    from ._lints import LintFinding
-    from ._types import Outcome
+    from .lints import LintFinding
+    from .types import Outcome
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -160,7 +160,7 @@ def determine_exit_code(outcomes: tuple[Outcome, ...]) -> int:
     """
     from mojox_core import CommandKind
 
-    from ._types import OutcomeKind
+    from .types import OutcomeKind
 
     has_test_failure = any(
         o.kind not in (OutcomeKind.PASS, OutcomeKind.SKIPPED) and o.command.kind == CommandKind.RUN_TEST
@@ -268,7 +268,7 @@ def _resolve_pipeline(
     from mojox_core.io.manifest import read as read_manifest
     from mojox_core.io.toolchain import resolve as resolve_toolchain
 
-    from ._settings_reader import read_settings
+    from .settings_reader import read_settings
 
     root = Path.cwd()
     pyproject_path = root / "pyproject.toml"
@@ -342,8 +342,8 @@ def _cmd_test(args: argparse.Namespace) -> None:
 
     from mojox_core import CommandKind
 
-    from ._exec import run_commands
-    from ._output import (
+    from .exec import run_commands
+    from .output import (
         make_progress_callback,
         render_diagnostics,
         render_dry_run,
@@ -351,7 +351,7 @@ def _cmd_test(args: argparse.Namespace) -> None:
         render_starting,
         render_summary,
     )
-    from ._types import OutputFormat, OutputMode
+    from .types import OutputFormat, OutputMode
 
     _manifest, _graph, env, policy, _toolchain, _host, settings, commands, include_paths = _resolve_pipeline(args)
 
@@ -375,7 +375,7 @@ def _cmd_test(args: argparse.Namespace) -> None:
         if test_count == 0:
             print("No tests match the filter", file=sys.stderr)
             if output_format == OutputFormat.JSON:
-                from ._json import JsonEventWriter, serialize_suite_finished, serialize_suite_started
+                from .json import JsonEventWriter, serialize_suite_finished, serialize_suite_started
 
                 writer = JsonEventWriter(sys.stdout)
                 writer.write_event(serialize_suite_started(0))
@@ -415,7 +415,7 @@ def _cmd_test(args: argparse.Namespace) -> None:
     on_complete = None
 
     if output_format == OutputFormat.JSON:
-        from ._json import JsonEventWriter, make_json_callbacks, serialize_suite_finished, serialize_suite_started
+        from .json import JsonEventWriter, make_json_callbacks, serialize_suite_finished, serialize_suite_started
 
         test_count = sum(1 for c in commands if c.kind == CommandKind.RUN_TEST)
         writer = JsonEventWriter(sys.stdout)
@@ -470,15 +470,15 @@ def _cmd_run(args: argparse.Namespace) -> None:
         plan,
         resolve,
     )
-    from mojox_core._types import LintConfig, Policy, Target, TargetGraph, TargetKind
+    from mojox_core.types import LintConfig, Policy, Target, TargetGraph, TargetKind
     from mojox_core.environment import build_env
     from mojox_core.io.environment import read_distributions, read_host_facts, read_lockfile
     from mojox_core.io.manifest import read as read_manifest
     from mojox_core.io.toolchain import resolve as resolve_toolchain
 
-    from ._exec import run_command
-    from ._output import render_diagnostics
-    from ._settings_reader import read_settings
+    from .exec import run_command
+    from .output import render_diagnostics
+    from .settings_reader import read_settings
 
     root = Path.cwd()
 
@@ -558,7 +558,7 @@ def _cmd_run(args: argparse.Namespace) -> None:
     commands = plan(graph, env, policy, toolchain, host)
 
     if args.dry_run:
-        from ._output import render_dry_run
+        from .output import render_dry_run
 
         render_dry_run(commands, compact=not args.verbose)
         return
@@ -580,15 +580,15 @@ def _cmd_build(args: argparse.Namespace) -> None:
     """Execute the build subcommand."""
     from mojox_core import CommandKind
 
-    from ._exec import run_commands
-    from ._output import (
+    from .exec import run_commands
+    from .output import (
         make_progress_callback,
         render_diagnostics,
         render_dry_run,
         render_starting,
         render_summary,
     )
-    from ._types import OutputMode
+    from .types import OutputMode
 
     _manifest, _graph, env, policy, _toolchain, _host, settings, commands, include_paths = _resolve_pipeline(args)
 
@@ -618,7 +618,7 @@ def _cmd_build(args: argparse.Namespace) -> None:
         sys.exit(130)
     render_summary(outcomes)
 
-    from ._types import OutcomeKind
+    from .types import OutcomeKind
 
     if any(o.kind != OutcomeKind.PASS for o in outcomes):
         sys.exit(1)
@@ -629,8 +629,8 @@ def _cmd_check(args: argparse.Namespace) -> None:
     from mojox_core import ConfigError, parse_manifest
     from mojox_core.io.manifest import read as read_manifest
 
-    from ._lints import lint_bare_assert, lint_path_source
-    from ._output import _BOLD, _DIM, _GREEN, _RED, _c
+    from .lints import lint_bare_assert, lint_path_source
+    from .output import _BOLD, _DIM, _GREEN, _RED, _c
 
     root = Path.cwd()
     pyproject_path = root / "pyproject.toml"
@@ -672,7 +672,7 @@ def _cmd_check(args: argparse.Namespace) -> None:
 
     from mojox_core import CommandKind
 
-    from ._output import render_diagnostics, render_dry_run
+    from .output import render_diagnostics, render_dry_run
 
     if env.diagnostics:
         render_diagnostics(env.diagnostics)
@@ -691,7 +691,7 @@ def _cmd_check(args: argparse.Namespace) -> None:
         render_dry_run(compile_commands, compact=not args.verbose)
         return
 
-    from ._exec import run_commands
+    from .exec import run_commands
 
     try:
         outcomes = run_commands(
@@ -704,7 +704,7 @@ def _cmd_check(args: argparse.Namespace) -> None:
         print(f"\n{_interrupted_summary(compile_commands)}", file=sys.stderr)
         sys.exit(130)
 
-    from ._types import OutcomeKind
+    from .types import OutcomeKind
 
     for o in outcomes:
         if o.kind != OutcomeKind.PASS and o.stderr:
@@ -731,7 +731,7 @@ def _render_lint_findings(
     out: IO[str],
 ) -> None:
     """Render lint findings, deduplicating repeated messages per file."""
-    from ._output import _YELLOW, _c
+    from .output import _YELLOW, _c
 
     groups: dict[tuple[str, str], list[int]] = {}
     for f in findings:
@@ -759,7 +759,7 @@ def _cmd_metadata(args: argparse.Namespace) -> None:
     """Execute the metadata subcommand: output build plan as JSON."""
     from mojox_core import serialize
 
-    from ._output import render_diagnostics
+    from .output import render_diagnostics
 
     _manifest, graph, env, policy, toolchain, _host, _settings, commands, _include_paths = _resolve_pipeline(args)
 

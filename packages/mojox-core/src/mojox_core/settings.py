@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from ._errors import ConfigError
-from ._types import LocalSettings
+from .errors import ConfigError
+from .types import LocalSettings
 
 _FORBIDDEN_KEYS = frozenset(
     {

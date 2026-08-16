@@ -10,8 +10,8 @@ import posixpath
 from pathlib import PurePosixPath
 from typing import Any
 
-from ._errors import ConfigError
-from ._types import BinaryEntry, LintConfig, Manifest, Profile
+from .errors import ConfigError
+from .types import BinaryEntry, LintConfig, Manifest, Profile
 
 _VALID_OPTIMIZE = frozenset({0, 1, 2, 3})
 _VALID_DEBUG_LEVELS = frozenset({"none", "line-tables", "full"})

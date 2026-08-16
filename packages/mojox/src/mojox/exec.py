@@ -17,8 +17,8 @@ from pathlib import Path
 
 from mojox_core import Command
 
-from ._diagnostics import parse_diagnostics
-from ._types import Outcome, OutcomeKind
+from .diagnostics import parse_diagnostics
+from .types import Outcome, OutcomeKind
 
 
 def _inject_native_lib_paths(

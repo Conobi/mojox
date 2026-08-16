@@ -6,13 +6,13 @@ import json
 from pathlib import Path
 
 import pytest
-from mojox_build._build import (
+from mojox_build.build import (
     GENERATOR_VERSION,
     _normalize_name,
     _write_provenance,
     host_platform_tag,
 )
-from mojox_build._metadata import render_metadata
+from mojox_build.metadata import render_metadata
 from mojox_core import Manifest, Toolchain, parse_manifest
 from mojox_core.io.manifest import read as read_manifest
 

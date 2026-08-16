@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import PurePosixPath
 
-from mojox_core._types import (
+from mojox_core.types import (
     Command,
     CommandKind,
     Diagnostic,
