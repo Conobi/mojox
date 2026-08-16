@@ -33,7 +33,7 @@ wheels = [
 
 [[package]]
 name = "mojox"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/mojox" }
 dependencies = [
     { name = "mojo-compiler" },
@@ -48,7 +48,7 @@ requires-dist = [
 
 [[package]]
 name = "mojox-build"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/mojox-build" }
 dependencies = [
     { name = "mojox-core" },
