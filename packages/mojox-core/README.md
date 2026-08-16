@@ -32,13 +32,19 @@ skip them entirely and feed fixtures directly into the pipeline.
 from pathlib import Path
 
 from mojox_core import (
-    parse_manifest, discover, resolve, plan, serialize,
+    parse_manifest,
+    discover,
+    resolve,
+    plan,
+    serialize,
     LocalSettings,
 )
 from mojox_core.io.manifest import read as read_manifest
 from mojox_core.io.toolchain import resolve as resolve_toolchain
 from mojox_core.io.environment import (
-    read_distributions, read_lockfile, read_host_facts,
+    read_distributions,
+    read_lockfile,
+    read_host_facts,
 )
 from mojox_core import build_env
 
@@ -128,8 +134,8 @@ mojox_core.io.environment.read_host_facts(manifest_dir: Path) -> HostFacts
 
 ```python
 class ConfigError(Exception):
-    key_path: str   # dotted path to the offending key
-    message: str    # human-readable explanation
+    key_path: str  # dotted path to the offending key
+    message: str  # human-readable explanation
 ```
 
 Raised on invalid manifest or settings. No `KeyError` or `TypeError` reaches

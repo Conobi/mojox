@@ -241,7 +241,17 @@ def _interrupted_summary(commands: tuple[Command, ...]) -> str:
 
 def _resolve_pipeline(
     args: argparse.Namespace,
-) -> tuple[Manifest, TargetGraph, ResolvedEnv, Policy, Toolchain, HostFacts, LocalSettings, tuple[Command, ...], tuple[str, ...]]:
+) -> tuple[
+    Manifest,
+    TargetGraph,
+    ResolvedEnv,
+    Policy,
+    Toolchain,
+    HostFacts,
+    LocalSettings,
+    tuple[Command, ...],
+    tuple[str, ...],
+]:
     """Run the shared resolution pipeline.
 
     Returns (manifest, graph, env, policy, toolchain, host, settings, commands, include_paths).
