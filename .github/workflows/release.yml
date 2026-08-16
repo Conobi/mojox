@@ -1,10 +1,12 @@
 name: Release
 
 # Mode A: workflow_dispatch — PSR-powered release for mojox / mojox-build
-# Mode B: tag push — manual release for mojox-core
+# Mode B: tag push — manual release for any package
 on:
   push:
     tags:
+      - 'mojox-v*'
+      - 'mojox-build-v*'
       - 'mojox-core-v*'
   workflow_dispatch:
     inputs:
@@ -127,10 +129,10 @@ jobs:
           repository-url: https://test.pypi.org/legacy/
           print-hash: true
 
-  # ── Mode B: mojox-core manual release ──────────────────────────────
+  # ── Mode B: manual tag-push release ─────────────────────────────────
 
-  publish-core:
-    name: Publish mojox-core
+  publish-tag:
+    name: Publish (tag push)
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
@@ -138,7 +140,6 @@ jobs:
       contents: read
     environment:
       name: pypi
-      url: https://pypi.org/project/mojox-core
     steps:
       - uses: actions/checkout@v4
 
@@ -147,25 +148,49 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Verify tag matches pyproject.toml version
+      - name: Determine package from tag
+        id: pkg
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
-          version="${tag#mojox-core-v}"
+          case "$tag" in
+            mojox-build-v*)
+              name="mojox-build"
+              version="${tag#mojox-build-v}"
+              ;;
+            mojox-core-v*)
+              name="mojox-core"
+              version="${tag#mojox-core-v}"
+              ;;
+            mojox-v*)
+              name="mojox"
+              version="${tag#mojox-v}"
+              ;;
+            *)
+              echo "Unrecognized tag: $tag" >&2
+              exit 1
+              ;;
+          esac
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag matches pyproject.toml version
+        run: |
+          set -euo pipefail
           declared=$(grep -E '^version[[:space:]]*=' \
-                       packages/mojox-core/pyproject.toml \
+                       "packages/${{ steps.pkg.outputs.name }}/pyproject.toml" \
                        | head -1 | cut -d'"' -f2)
-          if [ "$declared" != "$version" ]; then
-            echo "Tag version ($version) does not match" \
-                 "packages/mojox-core/pyproject.toml ($declared)" >&2
+          if [ "$declared" != "${{ steps.pkg.outputs.version }}" ]; then
+            echo "Tag version (${{ steps.pkg.outputs.version }}) does not match" \
+                 "packages/${{ steps.pkg.outputs.name }}/pyproject.toml ($declared)" >&2
             exit 1
           fi
-          echo "Releasing mojox-core $version"
+          echo "Releasing ${{ steps.pkg.outputs.name }} ${{ steps.pkg.outputs.version }}"
 
       - name: Build
         run: |
           rm -rf dist/
-          uv build --package mojox-core
+          uv build --package "${{ steps.pkg.outputs.name }}"
           ls -la dist/
 
       - name: Publish to PyPI
