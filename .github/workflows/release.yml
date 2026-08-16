@@ -64,6 +64,8 @@ jobs:
       - name: Determine version
         id: version
         working-directory: packages/${{ github.event.inputs.package }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           BEFORE=$(git describe --tags --abbrev=0 2>/dev/null || echo "none")
@@ -81,9 +83,9 @@ jobs:
       - name: Publish to GitHub
         if: steps.version.outputs.released == 'true'
         working-directory: packages/${{ github.event.inputs.package }}
-        run: semantic-release publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: semantic-release publish
 
   deploy:
     name: Publish to ${{ github.event.inputs.destination }}
