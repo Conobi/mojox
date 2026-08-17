@@ -535,10 +535,31 @@ def run_cached_test(
             remaining_timeout=cmd.timeout_s,
         )
 
-    # --- cache miss: build ---
-    build_outcome = run_command(cmd, extra_env=extra_env, include_paths=include_paths)
+    # --- cache miss: build to temp path, then rename ---
+    tmp_binary = f"{binary_path}.tmp.{os.getpid()}"
+    Path(binary_path).parent.mkdir(parents=True, exist_ok=True)
+
+    build_argv = list(cmd.argv)
+    try:
+        o_idx = build_argv.index("-o")
+        build_argv[o_idx + 1] = tmp_binary
+    except (ValueError, IndexError):
+        build_argv.extend(["-o", tmp_binary])
+
+    build_cmd = Command(
+        argv=tuple(build_argv),
+        cwd=cmd.cwd,
+        env=cmd.env,
+        kind=cmd.kind,
+        target_id=cmd.target_id,
+        timeout_s=cmd.timeout_s,
+        outputs=(tmp_binary,),
+        depends_on=cmd.depends_on,
+    )
+    build_outcome = run_command(build_cmd, extra_env=extra_env, include_paths=include_paths)
 
     if build_outcome.kind != OutcomeKind.PASS:
+        Path(tmp_binary).unlink(missing_ok=True)
         return Outcome(
             command=cmd,
             kind=OutcomeKind.COMPILE_ERROR,
@@ -549,7 +570,7 @@ def run_cached_test(
             elapsed_s=build_outcome.elapsed_s,
         )
 
-    if not Path(binary_path).exists():
+    if not Path(tmp_binary).exists():
         return Outcome(
             command=cmd,
             kind=OutcomeKind.COMPILE_ERROR,
@@ -562,6 +583,8 @@ def run_cached_test(
             diagnostics=build_outcome.diagnostics,
             elapsed_s=build_outcome.elapsed_s,
         )
+
+    os.rename(tmp_binary, binary_path)
 
     # persist cache metadata
     write_cache_meta(
@@ -593,6 +616,6 @@ def run_cached_test(
         exit_code=exec_outcome.exit_code,
         stdout=exec_outcome.stdout,
         stderr=combined_stderr,
-        diagnostics=exec_outcome.diagnostics,
+        diagnostics=build_outcome.diagnostics + exec_outcome.diagnostics,
         elapsed_s=total_elapsed,
     )

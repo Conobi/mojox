@@ -372,7 +372,7 @@ def _build_test_cmd(
         A Command with ``kind=BUILD_TEST`` and ``outputs=(output_path,)``.
     """
     defaults = {
-        "argv": build_argv,
+        "argv": (*build_argv, "-o", output_path),
         "cwd": PurePosixPath("."),
         "env": {"PATH": f"{sys.prefix}/bin:/usr/bin:/bin", "HOME": ""},
         "kind": CommandKind.BUILD_TEST,
@@ -393,10 +393,12 @@ class TestRunCachedTest:
         binary = tmp_path / "test_hello"
         meta_dir = tmp_path / "meta"
 
-        # Build script: create executable shell script as the binary
+        # Build script: reads -o from argv to find output path
         build_script = (
             "import stat, pathlib, sys\n"
-            f"p = pathlib.Path({str(binary)!r})\n"
+            "idx = sys.argv.index('-o')\n"
+            "p = pathlib.Path(sys.argv[idx + 1])\n"
+            "p.parent.mkdir(parents=True, exist_ok=True)\n"
             "p.write_text('#!/bin/sh\\necho hello-from-binary\\n')\n"
             "p.chmod(p.stat().st_mode | stat.S_IEXEC)\n"
         )
@@ -496,9 +498,11 @@ class TestRunCachedTest:
 
         # Build script: sleeps 1s, then creates a binary that sleeps 30s
         build_script = (
-            "import time, stat, pathlib\n"
+            "import time, stat, pathlib, sys\n"
             "time.sleep(1)\n"
-            f"p = pathlib.Path({str(binary)!r})\n"
+            "idx = sys.argv.index('-o')\n"
+            "p = pathlib.Path(sys.argv[idx + 1])\n"
+            "p.parent.mkdir(parents=True, exist_ok=True)\n"
             "p.write_text('#!/bin/sh\\nsleep 30\\n')\n"
             "p.chmod(p.stat().st_mode | stat.S_IEXEC)\n"
         )
@@ -530,7 +534,9 @@ class TestRunCachedTest:
         build_script = (
             "import sys, stat, pathlib\n"
             "print('BUILD-WARNING', file=sys.stderr)\n"
-            f"p = pathlib.Path({str(binary)!r})\n"
+            "idx = sys.argv.index('-o')\n"
+            "p = pathlib.Path(sys.argv[idx + 1])\n"
+            "p.parent.mkdir(parents=True, exist_ok=True)\n"
             "p.write_text('#!/bin/sh\\necho EXEC-STDERR >&2\\necho ok\\n')\n"
             "p.chmod(p.stat().st_mode | stat.S_IEXEC)\n"
         )
