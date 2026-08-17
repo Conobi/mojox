@@ -17,6 +17,8 @@ import sys
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any
 
+from mojox_core import CommandKind
+
 if TYPE_CHECKING:
     from mojox_core import (
         Command,
@@ -31,6 +33,8 @@ if TYPE_CHECKING:
 
     from .lints import LintFinding
     from .types import Outcome
+
+_TEST_KINDS = frozenset({CommandKind.RUN_TEST, CommandKind.BUILD_TEST})
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -155,15 +159,13 @@ def determine_exit_code(outcomes: tuple[Outcome, ...]) -> int:
     """Determine process exit code from command outcomes.
 
     Returns 0 (success), 1 (test failure), or 2 (compilation failure).
-    SKIPPED outcomes are ignored. Test failures take precedence over
-    compilation failures.
+    SKIPPED outcomes are ignored. Test failures (RUN_TEST and BUILD_TEST)
+    take precedence over compilation failures.
     """
-    from mojox_core import CommandKind
-
     from .types import OutcomeKind
 
     has_test_failure = any(
-        o.kind not in (OutcomeKind.PASS, OutcomeKind.SKIPPED) and o.command.kind == CommandKind.RUN_TEST
+        o.kind not in (OutcomeKind.PASS, OutcomeKind.SKIPPED) and o.command.kind in _TEST_KINDS
         for o in outcomes
     )
     if has_test_failure:
@@ -194,12 +196,10 @@ def apply_filters(
 ) -> tuple[Command, ...]:
     """Filter commands by path prefixes and/or name pattern.
 
-    Only RUN_TEST commands are filtered; compile commands pass through.
-    Path arguments are resolved against cwd, relativized against
-    project_root, and normalized.
+    Only test commands (RUN_TEST and BUILD_TEST) are filtered; compile
+    commands pass through. Path arguments are resolved against cwd,
+    relativized against project_root, and normalized.
     """
-    from mojox_core import CommandKind
-
     if not paths and pattern is None:
         return commands
 
@@ -214,7 +214,7 @@ def apply_filters(
         normalized_paths.append(os.path.normpath(rel).rstrip(os.sep))
 
     def _matches_test(cmd: Command) -> bool:
-        if cmd.kind != CommandKind.RUN_TEST:
+        if cmd.kind not in _TEST_KINDS:
             return True
 
         tid = cmd.target_id
@@ -340,8 +340,6 @@ def _cmd_test(args: argparse.Namespace) -> None:
     """Execute the test subcommand."""
     import time
 
-    from mojox_core import CommandKind
-
     from .exec import run_commands
     from .output import (
         make_progress_callback,
@@ -371,7 +369,7 @@ def _cmd_test(args: argparse.Namespace) -> None:
             pattern=filter_pattern,
             project_root=Path.cwd(),
         )
-        test_count = sum(1 for c in commands if c.kind == CommandKind.RUN_TEST)
+        test_count = sum(1 for c in commands if c.kind in _TEST_KINDS)
         if test_count == 0:
             print("No tests match the filter", file=sys.stderr)
             if output_format == OutputFormat.JSON:
@@ -417,7 +415,7 @@ def _cmd_test(args: argparse.Namespace) -> None:
     if output_format == OutputFormat.JSON:
         from .json import JsonEventWriter, make_json_callbacks, serialize_suite_finished, serialize_suite_started
 
-        test_count = sum(1 for c in commands if c.kind == CommandKind.RUN_TEST)
+        test_count = sum(1 for c in commands if c.kind in _TEST_KINDS)
         writer = JsonEventWriter(sys.stdout)
         writer.write_event(serialize_suite_started(test_count))
 
@@ -578,8 +576,6 @@ def _cmd_run(args: argparse.Namespace) -> None:
 
 def _cmd_build(args: argparse.Namespace) -> None:
     """Execute the build subcommand."""
-    from mojox_core import CommandKind
-
     from .exec import run_commands
     from .output import (
         make_progress_callback,
@@ -669,8 +665,6 @@ def _cmd_check(args: argparse.Namespace) -> None:
         else:
             print(_c(sys.stderr, _GREEN, "check: OK (manifest only)"), file=sys.stderr)
         return
-
-    from mojox_core import CommandKind
 
     from .output import render_diagnostics, render_dry_run
 

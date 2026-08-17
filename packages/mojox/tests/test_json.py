@@ -188,3 +188,30 @@ class TestSerializeSuiteFinished:
         event = serialize_suite_finished(outcomes, elapsed_s=1.0)
         assert event["compile_passed"] == 1
         assert event["compile_failed"] == 0
+
+
+class TestBuildTestJsonCompat:
+    """BUILD_TEST serializes as run-test for backward compatibility."""
+
+    def test_command_started_emits_run_test_kind(self):
+        cmd = _cmd("tests/test_aot.mojo", CommandKind.BUILD_TEST)
+        event = serialize_command_started(cmd)
+        assert event["kind"] == "run-test"
+
+    def test_command_completed_emits_run_test_kind(self):
+        outcome = _outcome(
+            target_id="tests/test_aot.mojo",
+            kind=OutcomeKind.PASS,
+            cmd_kind=CommandKind.BUILD_TEST,
+        )
+        event = serialize_command_completed(outcome)
+        assert event["kind"] == "run-test"
+
+    def test_suite_finished_counts_build_test_as_test(self):
+        outcomes = (
+            _outcome(kind=OutcomeKind.PASS, cmd_kind=CommandKind.BUILD_TEST, target_id="t1"),
+            _outcome(kind=OutcomeKind.FAIL, cmd_kind=CommandKind.BUILD_TEST, target_id="t2"),
+        )
+        event = serialize_suite_finished(outcomes, elapsed_s=2.0)
+        assert event["passed"] == 1
+        assert event["failed"] == 1

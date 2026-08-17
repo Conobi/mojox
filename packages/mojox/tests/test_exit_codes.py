@@ -102,3 +102,24 @@ class TestDetermineExitCode:
             _outcome(OutcomeKind.PASS, CommandKind.RUN_TEST),
         )
         assert determine_exit_code(outcomes) == 0
+
+
+class TestBuildTestExitCodes:
+    """Exit code matrix for BUILD_TEST commands."""
+
+    @pytest.mark.parametrize(
+        "kind",
+        [
+            OutcomeKind.FAIL,
+            OutcomeKind.TIMEOUT,
+            OutcomeKind.CRASH,
+            OutcomeKind.COMPILE_ERROR,
+        ],
+    )
+    def test_build_test_failure_exits_1(self, kind):
+        outcomes = (_outcome(kind, CommandKind.BUILD_TEST),)
+        assert determine_exit_code(outcomes) == 1
+
+    def test_build_test_pass_exits_0(self):
+        outcomes = (_outcome(OutcomeKind.PASS, CommandKind.BUILD_TEST),)
+        assert determine_exit_code(outcomes) == 0

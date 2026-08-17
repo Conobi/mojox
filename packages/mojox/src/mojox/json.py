@@ -25,6 +25,8 @@ _EVENT_MAP: dict[OutcomeKind, str] = {
     OutcomeKind.SKIPPED: "skipped",
 }
 
+_TEST_KINDS = frozenset({CommandKind.RUN_TEST, CommandKind.BUILD_TEST})
+
 _COMPILE_KINDS = frozenset(
     {
         CommandKind.COMPILE_PACKAGE,
@@ -32,6 +34,13 @@ _COMPILE_KINDS = frozenset(
         CommandKind.CHECK_EXAMPLE,
     }
 )
+
+
+def _serialize_kind(kind: CommandKind) -> str:
+    """Serialize CommandKind, mapping BUILD_TEST to run-test for backward compat."""
+    if kind == CommandKind.BUILD_TEST:
+        return CommandKind.RUN_TEST.value
+    return kind.value
 
 
 def serialize_suite_started(test_count: int) -> dict[str, Any]:
@@ -50,7 +59,7 @@ def serialize_command_started(cmd: Command) -> dict[str, Any]:
         "type": "command",
         "event": "started",
         "name": cmd.target_id,
-        "kind": cmd.kind.value,
+        "kind": _serialize_kind(cmd.kind),
     }
 
 
@@ -74,7 +83,7 @@ def serialize_command_completed(outcome: Outcome) -> dict[str, Any]:
         "type": "command",
         "event": _EVENT_MAP[outcome.kind],
         "name": outcome.command.target_id,
-        "kind": outcome.command.kind.value,
+        "kind": _serialize_kind(outcome.command.kind),
         "elapsed_s": outcome.elapsed_s,
         "exit_code": outcome.exit_code,
         "stdout": outcome.stdout,
@@ -89,7 +98,7 @@ def serialize_suite_finished(
     elapsed_s: float,
 ) -> dict[str, Any]:
     """Build the suite:finished event dict with split test/compile counts."""
-    test_outcomes = [o for o in outcomes if o.command.kind == CommandKind.RUN_TEST]
+    test_outcomes = [o for o in outcomes if o.command.kind in _TEST_KINDS]
     compile_outcomes = [o for o in outcomes if o.command.kind in _COMPILE_KINDS]
 
     passed = sum(1 for o in test_outcomes if o.kind == OutcomeKind.PASS)

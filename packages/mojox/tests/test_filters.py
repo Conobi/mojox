@@ -180,3 +180,25 @@ class TestApplyFilters:
             os.chdir(old_cwd)
         assert len(result) == 1
         assert result[0].target_id == "tests/unit/test_a.mojo"
+
+
+class TestBuildTestFiltering:
+    """BUILD_TEST commands are filtered the same as RUN_TEST."""
+
+    def test_build_test_filtered_by_pattern(self, tmp_path: Path):
+        cmds = (
+            _cmd("tests/test_parse.mojo", CommandKind.BUILD_TEST),
+            _cmd("tests/test_other.mojo", CommandKind.BUILD_TEST),
+        )
+        result = apply_filters(cmds, paths=(), pattern="parse", project_root=tmp_path)
+        assert len(result) == 1
+        assert result[0].target_id == "tests/test_parse.mojo"
+
+    def test_compile_passes_through_alongside_build_test(self, tmp_path: Path):
+        cmds = (
+            _cmd("lib/mylib", CommandKind.COMPILE_PACKAGE),
+            _cmd("tests/test_a.mojo", CommandKind.BUILD_TEST),
+        )
+        result = apply_filters(cmds, paths=(), pattern="nonexistent", project_root=tmp_path)
+        assert len(result) == 1
+        assert result[0].kind == CommandKind.COMPILE_PACKAGE
