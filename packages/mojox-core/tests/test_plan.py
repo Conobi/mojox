@@ -397,7 +397,7 @@ class TestBuildTestCommand:
         assert "run" not in cmds[0].argv
 
     def test_output_flag_with_cache_path(self):
-        """-o flag points to .mojox/cache/bin/<stem>."""
+        """-o flag points to .mojox/cache/bin/<safe_name> derived from full path."""
         graph = TargetGraph(
             targets=(Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),),
             edges=(),
@@ -406,7 +406,7 @@ class TestBuildTestCommand:
         argv = list(cmds[0].argv)
         o_idx = argv.index("-o")
         output = argv[o_idx + 1]
-        assert output == ".mojox/cache/bin/test_a"
+        assert output == ".mojox/cache/bin/tests_test_a"
 
     def test_outputs_tuple_is_populated(self):
         """The outputs tuple contains the cache binary path."""
@@ -415,7 +415,7 @@ class TestBuildTestCommand:
             edges=(),
         )
         cmds = plan(graph, _make_env(), _make_policy(), _make_toolchain(), _make_host())
-        assert cmds[0].outputs == (".mojox/cache/bin/test_a",)
+        assert cmds[0].outputs == (".mojox/cache/bin/tests_test_a",)
 
     def test_source_file_before_output_flag(self):
         """Source file appears in argv before the -o flag."""
@@ -454,8 +454,8 @@ class TestBuildTestCommand:
             # depends_on contains the precompiled lib target
             assert "src/mylib" in c.depends_on
 
-    def test_output_stem_varies_per_target(self):
-        """Each test target gets a distinct output path based on its stem."""
+    def test_output_path_varies_per_target(self):
+        """Each test target gets a distinct output path based on its full path."""
         graph = TargetGraph(
             targets=(
                 Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),
@@ -465,7 +465,22 @@ class TestBuildTestCommand:
         )
         cmds = plan(graph, _make_env(), _make_policy(), _make_toolchain(), _make_host())
         outputs = [c.outputs[0] for c in cmds]
-        assert outputs == [".mojox/cache/bin/test_a", ".mojox/cache/bin/test_b"]
+        assert outputs == [".mojox/cache/bin/tests_test_a", ".mojox/cache/bin/tests_test_b"]
+
+    def test_same_basename_in_different_dirs_no_collision(self):
+        """Two test files with the same basename in different dirs get distinct paths."""
+        graph = TargetGraph(
+            targets=(
+                Target(TargetKind.TEST, "tests/http/test_method.mojo", "tests/http/test_method.mojo"),
+                Target(TargetKind.TEST, "tests/dns/test_method.mojo", "tests/dns/test_method.mojo"),
+            ),
+            edges=(),
+        )
+        cmds = plan(graph, _make_env(), _make_policy(), _make_toolchain(), _make_host())
+        outputs = [c.outputs[0] for c in cmds]
+        assert outputs[0] != outputs[1]
+        assert outputs[0] == ".mojox/cache/bin/tests_http_test_method"
+        assert outputs[1] == ".mojox/cache/bin/tests_dns_test_method"
 
 
 class TestLintFlagTranslation:

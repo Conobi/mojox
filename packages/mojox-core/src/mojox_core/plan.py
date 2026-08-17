@@ -164,12 +164,12 @@ def _build_test_command(
     """Build a build-test command with optimization, defines, and thread count.
 
     Uses ``mojo build`` to compile the test file into a cached binary at
-    ``.mojox/cache/bin/<stem>``.  The source file appears immediately after
-    the subcommand, followed by ``-o`` and compiler flags.
+    ``.mojox/cache/bin/<safe_name>``.  The binary name is derived from the
+    full target path (not just the stem) to avoid collisions when different
+    test directories contain files with the same basename.
     """
-    output_path = str(
-        PurePosixPath(".mojox/cache/bin") / PurePosixPath(target.path).stem
-    )
+    safe_name = PurePosixPath(target.path).with_suffix("").as_posix().replace("/", "_")
+    output_path = str(PurePosixPath(".mojox/cache/bin") / safe_name)
     argv: list[str] = [toolchain.mojo_path, "build", target.path, "-o", output_path]
 
     if policy.optimize is not None:
