@@ -163,7 +163,7 @@ class TestPrecompilation:
         if CommandKind.COMPILE_PACKAGE in kinds:
             compile_idx = kinds.index(CommandKind.COMPILE_PACKAGE)
             for i, k in enumerate(kinds):
-                if k == CommandKind.RUN_TEST:
+                if k == CommandKind.BUILD_TEST:
                     assert i > compile_idx
 
     def test_test_targets_point_at_mojoc_not_source(self):
@@ -176,7 +176,7 @@ class TestPrecompilation:
             edges=(),
         )
         cmds = plan(graph, _make_env(), _make_policy(), _make_toolchain(), _make_host())
-        test_cmds = [c for c in cmds if c.kind == CommandKind.RUN_TEST]
+        test_cmds = [c for c in cmds if c.kind == CommandKind.BUILD_TEST]
         if any(c.kind == CommandKind.COMPILE_PACKAGE for c in cmds):
             for c in test_cmds:
                 argv = list(c.argv)
@@ -208,7 +208,7 @@ class TestThreadDivision:
         host = HostFacts(cpu_count=8, available_memory_mb=16384, manifest_dir=PurePosixPath("/project"))
         cmds = plan(graph, _make_env(), pol, _make_toolchain(), host)
         for c in cmds:
-            if c.kind == CommandKind.RUN_TEST:
+            if c.kind == CommandKind.BUILD_TEST:
                 argv = list(c.argv)
                 if "--num-threads" in argv:
                     idx = argv.index("--num-threads")
@@ -312,11 +312,11 @@ class TestCommandEnv:
             assert c.env["MODULAR_DEBUG"] == "stack-trace-on-error"
 
 
-class TestRunArgvOrdering:
-    """mojo run treats post-file args as script args, so flags must precede the source file."""
+class TestBuildTestArgvOrdering:
+    """mojo build places source before -o and flags."""
 
-    def test_source_file_is_last_in_run_test_argv(self):
-        """All compiler flags (-I, -D, -O, --num-threads) must appear before the source file."""
+    def test_source_file_precedes_output_flag(self):
+        """Source file appears before -o in mojo build argv."""
         graph = TargetGraph(
             targets=(Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),),
             edges=(),
@@ -329,14 +329,33 @@ class TestRunArgvOrdering:
         cmds = plan(graph, _make_env(), pol, _make_toolchain(), _make_host())
         assert len(cmds) == 1
         argv = list(cmds[0].argv)
-        assert argv[-1] == "tests/test_a.mojo", f"source file must be last in argv, got: {argv}"
         file_idx = argv.index("tests/test_a.mojo")
+        o_idx = argv.index("-o")
+        assert file_idx < o_idx, f"source file must precede -o flag, got: {argv}"
+
+    def test_flags_follow_output_path(self):
+        """Compiler flags (-I, -D, -O, --num-threads) appear after -o <path>."""
+        graph = TargetGraph(
+            targets=(Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),),
+            edges=(),
+        )
+        pol = _make_policy(
+            optimize=2,
+            defines={"ASSERT": "all"},
+            include_paths=("/extra/inc",),
+        )
+        cmds = plan(graph, _make_env(), pol, _make_toolchain(), _make_host())
+        argv = list(cmds[0].argv)
+        o_idx = argv.index("-o")
+        output_val_idx = o_idx + 1  # the value after -o
         for flag in ("-I", "-D", "-O2", "--num-threads"):
             if flag in argv:
-                assert argv.index(flag) < file_idx, f"{flag} must appear before source file in mojo run argv"
+                assert argv.index(flag) > output_val_idx, (
+                    f"{flag} must appear after -o <path> in mojo build argv"
+                )
 
-    def test_source_file_after_include_paths_with_precompile(self):
-        """When precompilation is active, -I for the pkg dir still precedes the source file."""
+    def test_source_before_flags_with_precompile(self):
+        """When precompilation is active, source still precedes -o and flags."""
         graph = TargetGraph(
             targets=(
                 Target(TargetKind.LIB, "src/mylib", "src/mylib"),
@@ -347,9 +366,106 @@ class TestRunArgvOrdering:
         )
         cmds = plan(graph, _make_env(), _make_policy(), _make_toolchain(), _make_host())
         for c in cmds:
-            if c.kind == CommandKind.RUN_TEST:
+            if c.kind == CommandKind.BUILD_TEST:
                 argv = list(c.argv)
-                assert argv[-1] == c.target_id.split("::")[-1], f"source file must be last, got: {argv}"
+                file_idx = argv.index(c.target_id)
+                o_idx = argv.index("-o")
+                assert file_idx < o_idx, f"source must precede -o, got: {argv}"
+
+
+class TestBuildTestCommand:
+    """Tests for BUILD_TEST command specifics."""
+
+    def test_build_test_kind_is_emitted(self):
+        """Test targets emit BUILD_TEST kind."""
+        graph = TargetGraph(
+            targets=(Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),),
+            edges=(),
+        )
+        cmds = plan(graph, _make_env(), _make_policy(), _make_toolchain(), _make_host())
+        assert len(cmds) == 1
+        assert cmds[0].kind == CommandKind.BUILD_TEST
+
+    def test_argv_uses_build_subcommand(self):
+        """Test commands use 'build' subcommand, not 'run'."""
+        graph = TargetGraph(
+            targets=(Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),),
+            edges=(),
+        )
+        cmds = plan(graph, _make_env(), _make_policy(), _make_toolchain(), _make_host())
+        assert cmds[0].argv[1] == "build"
+        assert "run" not in cmds[0].argv
+
+    def test_output_flag_with_cache_path(self):
+        """-o flag points to .mojox/cache/bin/<stem>."""
+        graph = TargetGraph(
+            targets=(Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),),
+            edges=(),
+        )
+        cmds = plan(graph, _make_env(), _make_policy(), _make_toolchain(), _make_host())
+        argv = list(cmds[0].argv)
+        o_idx = argv.index("-o")
+        output = argv[o_idx + 1]
+        assert output == ".mojox/cache/bin/test_a"
+
+    def test_outputs_tuple_is_populated(self):
+        """The outputs tuple contains the cache binary path."""
+        graph = TargetGraph(
+            targets=(Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),),
+            edges=(),
+        )
+        cmds = plan(graph, _make_env(), _make_policy(), _make_toolchain(), _make_host())
+        assert cmds[0].outputs == (".mojox/cache/bin/test_a",)
+
+    def test_source_file_before_output_flag(self):
+        """Source file appears in argv before the -o flag."""
+        graph = TargetGraph(
+            targets=(Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),),
+            edges=(),
+        )
+        cmds = plan(graph, _make_env(), _make_policy(), _make_toolchain(), _make_host())
+        argv = list(cmds[0].argv)
+        assert argv[2] == "tests/test_a.mojo"
+        assert argv[3] == "-o"
+
+    def test_flags_defines_includes_carry_through(self):
+        """Optimization, defines, includes, and depends_on all carry through."""
+        graph = TargetGraph(
+            targets=(
+                Target(TargetKind.LIB, "src/mylib", "src/mylib"),
+                Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),
+                Target(TargetKind.TEST, "tests/test_b.mojo", "tests/test_b.mojo"),
+            ),
+            edges=(),
+        )
+        pol = _make_policy(
+            optimize=2,
+            defines={"ASSERT": "all", "DEBUG": "true"},
+            include_paths=("/extra/inc",),
+        )
+        cmds = plan(graph, _make_env(), pol, _make_toolchain(), _make_host())
+        test_cmds = [c for c in cmds if c.kind == CommandKind.BUILD_TEST]
+        assert len(test_cmds) == 2
+        for c in test_cmds:
+            argv = list(c.argv)
+            assert "-O2" in argv
+            assert "-D" in argv
+            assert "-I" in argv
+            # depends_on contains the precompiled lib target
+            assert "src/mylib" in c.depends_on
+
+    def test_output_stem_varies_per_target(self):
+        """Each test target gets a distinct output path based on its stem."""
+        graph = TargetGraph(
+            targets=(
+                Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),
+                Target(TargetKind.TEST, "tests/test_b.mojo", "tests/test_b.mojo"),
+            ),
+            edges=(),
+        )
+        cmds = plan(graph, _make_env(), _make_policy(), _make_toolchain(), _make_host())
+        outputs = [c.outputs[0] for c in cmds]
+        assert outputs == [".mojox/cache/bin/test_a", ".mojox/cache/bin/test_b"]
 
 
 class TestLintFlagTranslation:

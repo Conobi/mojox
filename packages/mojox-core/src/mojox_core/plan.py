@@ -81,7 +81,7 @@ def plan(
     # Test targets
     for target in graph.targets:
         if target.kind == TargetKind.TEST:
-            cmd = _build_run_test_command(
+            cmd = _build_test_command(
                 target,
                 toolchain,
                 policy,
@@ -153,7 +153,7 @@ def _build_precompile_command(
     )
 
 
-def _build_run_test_command(
+def _build_test_command(
     target: Target,
     toolchain: Toolchain,
     policy: Policy,
@@ -161,13 +161,16 @@ def _build_run_test_command(
     host: HostFacts,
     precompiled_ids: list[str],
 ) -> Command:
-    """Build a run-test command with optimization, defines, and thread count.
+    """Build a build-test command with optimization, defines, and thread count.
 
-    The source file must appear last in argv: ``mojo run`` treats anything
-    after the source path as script arguments, so compiler flags like ``-I``
-    are silently ignored when they follow the source file.
+    Uses ``mojo build`` to compile the test file into a cached binary at
+    ``.mojox/cache/bin/<stem>``.  The source file appears immediately after
+    the subcommand, followed by ``-o`` and compiler flags.
     """
-    argv: list[str] = [toolchain.mojo_path, "run"]
+    output_path = str(
+        PurePosixPath(".mojox/cache/bin") / PurePosixPath(target.path).stem
+    )
+    argv: list[str] = [toolchain.mojo_path, "build", target.path, "-o", output_path]
 
     if policy.optimize is not None:
         argv.append(f"-O{policy.optimize}")
@@ -187,17 +190,14 @@ def _build_run_test_command(
     _append_lint_flags(argv, policy.lints)
     argv.extend(policy.flags)
 
-    # Source file MUST be last — mojo run treats post-file args as script args.
-    argv.append(target.path)
-
     return Command(
         argv=tuple(argv),
         cwd=host.manifest_dir,
         env=_construct_env(toolchain),
-        kind=CommandKind.RUN_TEST,
+        kind=CommandKind.BUILD_TEST,
         target_id=target.target_id,
         timeout_s=policy.timeout_s,
-        outputs=(),
+        outputs=(output_path,),
         depends_on=tuple(precompiled_ids),
     )
 
