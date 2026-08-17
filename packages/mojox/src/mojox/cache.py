@@ -70,7 +70,7 @@ def compute_cache_key(
     h.update(project_hash.encode())
     h.update(tests_tree_hash.encode())
     h.update(compiler_version.encode())
-    for flag in flags:
+    for flag in sorted(flags):
         h.update(flag.encode())
     return h.hexdigest()
 

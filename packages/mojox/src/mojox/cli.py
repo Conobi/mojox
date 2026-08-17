@@ -363,7 +363,7 @@ def _cmd_test(args: argparse.Namespace) -> None:
     )
     from .types import OutputFormat, OutputMode
 
-    manifest, _graph, env, policy, toolchain, _host, settings, commands, include_paths = _resolve_pipeline(args)
+    manifest, graph, env, policy, toolchain, _host, settings, commands, include_paths = _resolve_pipeline(args)
 
     if env.diagnostics:
         render_diagnostics(env.diagnostics)
@@ -423,11 +423,13 @@ def _cmd_test(args: argparse.Namespace) -> None:
     # --- Cache context ---
     root = Path.cwd()
 
+    from mojox_core import TargetKind
+
     pkg_hashes: list[str] = []
-    if manifest.packages:
-        for pkg in manifest.packages:
-            pkg_hashes.append(hash_directory_tree(root / pkg))
-    project_hash = hashlib.sha256("".join(pkg_hashes).encode()).hexdigest()
+    for target in graph.targets:
+        if target.kind == TargetKind.LIB:
+            pkg_hashes.append(hash_directory_tree(root / target.path))
+    project_hash = hashlib.sha256("".join(sorted(pkg_hashes)).encode()).hexdigest()
 
     test_hashes: list[str] = []
     for test_root in manifest.test_roots:

@@ -127,9 +127,9 @@ def _resolve_cache_for_build_test(
     Computes the cache key from the command's argv and the shared
     :class:`CacheContext`, then delegates to :func:`run_cached_test`.
 
-    When caching is disabled (``cache_context.enabled is False``), a
-    unique throwaway key is generated so the compound build-then-execute
-    workflow always runs without stale cache hits.
+    When caching is disabled (``cache_context.enabled is False``), the
+    binary is built to a temporary directory and cache metadata is not
+    written, preserving any existing cache state for future runs.
 
     Args:
         cmd: A ``BUILD_TEST`` :class:`Command`.
@@ -156,11 +156,8 @@ def _resolve_cache_for_build_test(
                 flags=flags,
             )
         else:
-            # Cannot determine source file — use a unique key to skip
-            # cache but still run the compound workflow.
             cache_key = uuid.uuid4().hex
     else:
-        # Caching disabled: unique key guarantees a miss every time.
         cache_key = uuid.uuid4().hex
 
     return run_cached_test(
@@ -170,6 +167,7 @@ def _resolve_cache_for_build_test(
         compiler_version=cache_context.compiler_version,
         extra_env=extra_env,
         include_paths=include_paths,
+        skip_cache_write=not cache_context.enabled,
     )
 
 
@@ -641,6 +639,7 @@ def run_cached_test(
     compiler_version: str,
     extra_env: dict[str, str] | None = None,
     include_paths: tuple[str, ...] = (),
+    skip_cache_write: bool = False,
 ) -> Outcome:
     """Build and execute a test binary with cache support.
 
@@ -654,6 +653,10 @@ def run_cached_test(
     the build step may consume part of it, and the remainder (minimum
     1 s) is given to the execution step.
 
+    When *skip_cache_write* is True (``--no-cache``), the binary is
+    built to a temporary location and removed after execution. No cache
+    metadata is written, preserving existing cache state.
+
     Args:
         cmd: A ``BUILD_TEST`` :class:`Command` produced by the planner.
         cache_key: Precomputed composite cache key for this test.
@@ -665,29 +668,39 @@ def run_cached_test(
             the build and execution steps.
         include_paths: Dependency include directories whose ``lib/``
             subdirectories are added to the dynamic linker search path.
+        skip_cache_write: If True, build to a temp path, skip metadata
+            writes, and clean up the binary after execution.
 
     Returns:
         An :class:`Outcome` for the test execution (or a
         ``COMPILE_ERROR`` outcome if the build fails).
     """
+    import tempfile
+
     binary_path = cmd.outputs[0]
     target_name = Path(binary_path).name
     meta_path = meta_dir / f"{target_name}.json"
 
-    # --- cache hit path ---
-    stored_key = read_cache_meta(meta_path)
-    if stored_key == cache_key and Path(binary_path).exists():
-        return _execute_binary(
-            cmd,
-            binary_path,
-            extra_env=extra_env,
-            include_paths=include_paths,
-            remaining_timeout=cmd.timeout_s,
-        )
+    # --- cache hit path (skipped when cache writes are disabled) ---
+    if not skip_cache_write:
+        stored_key = read_cache_meta(meta_path)
+        if stored_key == cache_key and Path(binary_path).exists():
+            return _execute_binary(
+                cmd,
+                binary_path,
+                extra_env=extra_env,
+                include_paths=include_paths,
+                remaining_timeout=cmd.timeout_s,
+            )
 
-    # --- cache miss: build to temp path, then rename ---
-    tmp_binary = f"{binary_path}.tmp.{os.getpid()}"
-    Path(binary_path).parent.mkdir(parents=True, exist_ok=True)
+    # --- cache miss: build to temp path ---
+    if skip_cache_write:
+        tmp_dir = tempfile.mkdtemp(prefix="mojox_nocache_")
+        tmp_binary = str(Path(tmp_dir) / target_name)
+    else:
+        tmp_dir = None
+        tmp_binary = f"{binary_path}.tmp.{os.getpid()}"
+        Path(binary_path).parent.mkdir(parents=True, exist_ok=True)
 
     build_argv = list(cmd.argv)
     try:
@@ -734,24 +747,31 @@ def run_cached_test(
             elapsed_s=build_outcome.elapsed_s,
         )
 
-    os.rename(tmp_binary, binary_path)
-
-    # persist cache metadata
-    write_cache_meta(
-        meta_path,
-        cache_key=cache_key,
-        compiler_version=compiler_version,
-    )
+    if skip_cache_write:
+        exec_binary = tmp_binary
+    else:
+        os.rename(tmp_binary, binary_path)
+        write_cache_meta(
+            meta_path,
+            cache_key=cache_key,
+            compiler_version=compiler_version,
+        )
+        exec_binary = binary_path
 
     # --- execute ---
     timeout_left = _remaining_timeout(cmd.timeout_s, build_outcome.elapsed_s)
     exec_outcome = _execute_binary(
         cmd,
-        binary_path,
+        exec_binary,
         extra_env=extra_env,
         include_paths=include_paths,
         remaining_timeout=timeout_left,
     )
+
+    if skip_cache_write and tmp_dir is not None:
+        import shutil
+
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
     # combine: prepend build warnings to execution stderr
     combined_stderr = exec_outcome.stderr
