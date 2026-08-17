@@ -129,7 +129,7 @@ def write_cache_meta(
         "built_at_epoch": time.time(),
     }
 
-    tmp_path = meta_path.parent / f".{os.getpid()}.tmp"
+    tmp_path = meta_path.parent / f".{meta_path.name}.{os.getpid()}.tmp"
     try:
         tmp_path.write_text(json.dumps(payload))
         os.rename(tmp_path, meta_path)

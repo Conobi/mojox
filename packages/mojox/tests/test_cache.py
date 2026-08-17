@@ -210,3 +210,27 @@ class TestCacheMetaRoundtrip:
         meta = tmp_path / "deep" / "nested" / "cache_meta.json"
         write_cache_meta(meta, cache_key="abc", compiler_version="25.4.0")
         assert read_cache_meta(meta) == "abc"
+
+    def test_concurrent_writes_no_cross_contamination(self, tmp_path: Path):
+        """Two threads writing different targets in the same dir don't clobber."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        meta_a = tmp_path / "test_a.json"
+        meta_b = tmp_path / "test_b.json"
+
+        def write_a() -> None:
+            for _ in range(20):
+                write_cache_meta(meta_a, cache_key="key_a", compiler_version="1.0.0b2")
+
+        def write_b() -> None:
+            for _ in range(20):
+                write_cache_meta(meta_b, cache_key="key_b", compiler_version="1.0.0b2")
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fa = pool.submit(write_a)
+            fb = pool.submit(write_b)
+            fa.result()
+            fb.result()
+
+        assert read_cache_meta(meta_a) == "key_a"
+        assert read_cache_meta(meta_b) == "key_b"
