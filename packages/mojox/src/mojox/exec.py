@@ -15,8 +15,9 @@ from collections.abc import Callable
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from mojox_core import Command
+from mojox_core import Command, CommandKind
 
+from .cache import read_cache_meta, write_cache_meta
 from .diagnostics import parse_diagnostics
 from .types import Outcome, OutcomeKind
 
@@ -419,3 +420,179 @@ def _check_dependencies(
                 elapsed_s=0.0,
             )
     return None
+
+
+def _remaining_timeout(total: int | None, elapsed: float) -> int | None:
+    """Compute remaining timeout budget after the build step.
+
+    When ``total`` is ``None`` (no timeout), returns ``None``.
+    Otherwise returns ``max(1, total - int(elapsed))``, guaranteeing
+    at least one second for the execution step.
+
+    Args:
+        total: The original timeout budget in seconds, or ``None``.
+        elapsed: Wall-clock seconds consumed by the build step.
+
+    Returns:
+        Remaining seconds (at least 1), or ``None`` when unlimited.
+    """
+    if total is None:
+        return None
+    return max(1, total - int(elapsed))
+
+
+def _execute_binary(
+    cmd: Command,
+    binary_path: str,
+    *,
+    extra_env: dict[str, str] | None = None,
+    include_paths: tuple[str, ...] = (),
+    remaining_timeout: int | None = None,
+) -> Outcome:
+    """Execute a compiled test binary by constructing a new Command for it.
+
+    Builds a fresh :class:`Command` pointing at the binary and delegates
+    to :func:`run_command`.  The new command inherits *cmd*'s working
+    directory, environment, and target metadata, but uses the binary as
+    ``argv[0]`` and the caller-supplied ``remaining_timeout``.
+
+    Args:
+        cmd: The original ``BUILD_TEST`` command (used for cwd, env,
+            target_id, etc.).
+        binary_path: Absolute or relative path to the compiled binary.
+        extra_env: Additional environment variables forwarded to
+            :func:`run_command`.
+        include_paths: Dependency include directories whose ``lib/``
+            subdirectories are added to the dynamic linker search path.
+        remaining_timeout: Timeout budget for execution, or ``None``
+            for unlimited.
+
+    Returns:
+        An :class:`Outcome` from running the binary.
+    """
+    exec_cmd = Command(
+        argv=(binary_path,),
+        cwd=cmd.cwd,
+        env=cmd.env,
+        kind=CommandKind.RUN_TEST,
+        target_id=cmd.target_id,
+        timeout_s=remaining_timeout,
+        outputs=(),
+        depends_on=(),
+    )
+    return run_command(exec_cmd, extra_env=extra_env, include_paths=include_paths)
+
+
+def run_cached_test(
+    cmd: Command,
+    *,
+    cache_key: str,
+    meta_dir: Path,
+    compiler_version: str,
+    extra_env: dict[str, str] | None = None,
+    include_paths: tuple[str, ...] = (),
+) -> Outcome:
+    """Build and execute a test binary with cache support.
+
+    Implements the compound build-then-execute workflow for AOT test
+    binaries.  On a cache hit the build step is skipped entirely; on a
+    miss the binary is compiled first, metadata is written, and then the
+    binary is executed.
+
+    The *cmd* must be a ``BUILD_TEST`` command whose ``outputs[0]``
+    gives the expected binary path.  ``timeout_s`` is a shared budget:
+    the build step may consume part of it, and the remainder (minimum
+    1 s) is given to the execution step.
+
+    Args:
+        cmd: A ``BUILD_TEST`` :class:`Command` produced by the planner.
+        cache_key: Precomputed composite cache key for this test.
+        meta_dir: Directory where ``<target_name>.json`` metadata files
+            are stored.
+        compiler_version: Mojo compiler version string (written into
+            cache metadata on a miss).
+        extra_env: Additional environment variables forwarded to both
+            the build and execution steps.
+        include_paths: Dependency include directories whose ``lib/``
+            subdirectories are added to the dynamic linker search path.
+
+    Returns:
+        An :class:`Outcome` for the test execution (or a
+        ``COMPILE_ERROR`` outcome if the build fails).
+    """
+    binary_path = cmd.outputs[0]
+    target_name = Path(binary_path).name
+    meta_path = meta_dir / f"{target_name}.json"
+
+    # --- cache hit path ---
+    stored_key = read_cache_meta(meta_path)
+    if stored_key == cache_key and Path(binary_path).exists():
+        return _execute_binary(
+            cmd,
+            binary_path,
+            extra_env=extra_env,
+            include_paths=include_paths,
+            remaining_timeout=cmd.timeout_s,
+        )
+
+    # --- cache miss: build ---
+    build_outcome = run_command(cmd, extra_env=extra_env, include_paths=include_paths)
+
+    if build_outcome.kind != OutcomeKind.PASS:
+        return Outcome(
+            command=cmd,
+            kind=OutcomeKind.COMPILE_ERROR,
+            exit_code=build_outcome.exit_code,
+            stdout=build_outcome.stdout,
+            stderr=build_outcome.stderr,
+            diagnostics=build_outcome.diagnostics,
+            elapsed_s=build_outcome.elapsed_s,
+        )
+
+    if not Path(binary_path).exists():
+        return Outcome(
+            command=cmd,
+            kind=OutcomeKind.COMPILE_ERROR,
+            exit_code=0,
+            stdout=build_outcome.stdout,
+            stderr=(
+                f"Build succeeded but binary not found: {binary_path}\n"
+                + build_outcome.stderr
+            ),
+            diagnostics=build_outcome.diagnostics,
+            elapsed_s=build_outcome.elapsed_s,
+        )
+
+    # persist cache metadata
+    write_cache_meta(
+        meta_path,
+        cache_key=cache_key,
+        compiler_version=compiler_version,
+    )
+
+    # --- execute ---
+    timeout_left = _remaining_timeout(cmd.timeout_s, build_outcome.elapsed_s)
+    exec_outcome = _execute_binary(
+        cmd,
+        binary_path,
+        extra_env=extra_env,
+        include_paths=include_paths,
+        remaining_timeout=timeout_left,
+    )
+
+    # combine: prepend build warnings to execution stderr
+    combined_stderr = exec_outcome.stderr
+    if build_outcome.stderr:
+        combined_stderr = build_outcome.stderr + combined_stderr
+
+    total_elapsed = build_outcome.elapsed_s + exec_outcome.elapsed_s
+
+    return Outcome(
+        command=cmd,
+        kind=exec_outcome.kind,
+        exit_code=exec_outcome.exit_code,
+        stdout=exec_outcome.stdout,
+        stderr=combined_stderr,
+        diagnostics=exec_outcome.diagnostics,
+        elapsed_s=total_elapsed,
+    )

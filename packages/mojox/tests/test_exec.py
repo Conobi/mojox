@@ -6,7 +6,8 @@ import sys
 from pathlib import Path, PurePosixPath
 
 import pytest
-from mojox.exec import run_command, run_commands
+from mojox.cache import write_cache_meta
+from mojox.exec import run_cached_test, run_command, run_commands
 from mojox.types import OutcomeKind
 from mojox_core import Command, CommandKind
 
@@ -352,3 +353,203 @@ class TestNativeLibPathInjection:
         assert outcome.kind == OutcomeKind.PASS
         assert str(lib1) in outcome.stdout
         assert str(lib2) in outcome.stdout
+
+
+def _build_test_cmd(
+    build_argv: tuple[str, ...],
+    output_path: str,
+    **overrides,
+) -> Command:
+    """Build a BUILD_TEST command with sensible defaults.
+
+    Args:
+        build_argv: The argv for the build step (e.g. a Python script
+            that creates the binary).
+        output_path: Path to the expected compiled binary.
+        **overrides: Additional Command field overrides.
+
+    Returns:
+        A Command with ``kind=BUILD_TEST`` and ``outputs=(output_path,)``.
+    """
+    defaults = {
+        "argv": build_argv,
+        "cwd": PurePosixPath("."),
+        "env": {"PATH": f"{sys.prefix}/bin:/usr/bin:/bin", "HOME": ""},
+        "kind": CommandKind.BUILD_TEST,
+        "target_id": "test_hello",
+        "timeout_s": 30,
+        "outputs": (output_path,),
+        "depends_on": (),
+    }
+    defaults.update(overrides)
+    return Command(**defaults)
+
+
+class TestRunCachedTest:
+    """Tests for the compound build+execute path with caching."""
+
+    def test_cache_miss_builds_and_executes(self, tmp_path: Path):
+        """On a cache miss the build runs, binary executes, PASS returned."""
+        binary = tmp_path / "test_hello"
+        meta_dir = tmp_path / "meta"
+
+        # Build script: create executable shell script as the binary
+        build_script = (
+            "import stat, pathlib, sys\n"
+            f"p = pathlib.Path({str(binary)!r})\n"
+            "p.write_text('#!/bin/sh\\necho hello-from-binary\\n')\n"
+            "p.chmod(p.stat().st_mode | stat.S_IEXEC)\n"
+        )
+
+        cmd = _build_test_cmd(
+            (sys.executable, "-c", build_script),
+            str(binary),
+        )
+        outcome = run_cached_test(
+            cmd,
+            cache_key="abc123",
+            meta_dir=meta_dir,
+            compiler_version="mojo-test-1.0",
+        )
+
+        assert outcome.kind == OutcomeKind.PASS
+        assert "hello-from-binary" in outcome.stdout
+        # Cache metadata should now exist
+        assert (meta_dir / "test_hello.json").exists()
+
+    def test_cache_hit_skips_build(self, tmp_path: Path):
+        """On a cache hit the build command is NOT executed."""
+        binary = tmp_path / "test_hello"
+        meta_dir = tmp_path / "meta"
+
+        # Pre-create the binary
+        binary.write_text("#!/bin/sh\necho cached-result\n")
+        binary.chmod(0o755)
+
+        # Pre-create matching cache metadata
+        write_cache_meta(
+            meta_dir / "test_hello.json",
+            cache_key="match-key",
+            compiler_version="mojo-test-1.0",
+        )
+
+        # The build command should NOT run — use a command that would
+        # fail if executed
+        cmd = _build_test_cmd(
+            ("/nonexistent/should-not-run",),
+            str(binary),
+        )
+        outcome = run_cached_test(
+            cmd,
+            cache_key="match-key",
+            meta_dir=meta_dir,
+            compiler_version="mojo-test-1.0",
+        )
+
+        assert outcome.kind == OutcomeKind.PASS
+        assert "cached-result" in outcome.stdout
+
+    def test_build_failure_returns_compile_error(self, tmp_path: Path):
+        """When the build exits non-zero, a COMPILE_ERROR outcome is returned."""
+        binary = tmp_path / "test_hello"
+        meta_dir = tmp_path / "meta"
+
+        cmd = _build_test_cmd(
+            (sys.executable, "-c", "import sys; sys.exit(1)"),
+            str(binary),
+        )
+        outcome = run_cached_test(
+            cmd,
+            cache_key="abc123",
+            meta_dir=meta_dir,
+            compiler_version="mojo-test-1.0",
+        )
+
+        assert outcome.kind == OutcomeKind.COMPILE_ERROR
+        # No metadata should be written on failure
+        assert not (meta_dir / "test_hello.json").exists()
+
+    def test_missing_binary_after_build(self, tmp_path: Path):
+        """Build exits 0 but binary missing produces COMPILE_ERROR."""
+        binary = tmp_path / "nonexistent_binary"
+        meta_dir = tmp_path / "meta"
+
+        # Build script succeeds but does NOT create the binary
+        cmd = _build_test_cmd(
+            (sys.executable, "-c", "print('built nothing')"),
+            str(binary),
+        )
+        outcome = run_cached_test(
+            cmd,
+            cache_key="abc123",
+            meta_dir=meta_dir,
+            compiler_version="mojo-test-1.0",
+        )
+
+        assert outcome.kind == OutcomeKind.COMPILE_ERROR
+        assert "binary not found" in outcome.stderr.lower()
+
+    def test_timeout_shared_budget(self, tmp_path: Path):
+        """The timeout budget is shared between build and execute steps."""
+        binary = tmp_path / "test_hello"
+        meta_dir = tmp_path / "meta"
+
+        # Build script: sleeps 1s, then creates a binary that sleeps 30s
+        build_script = (
+            "import time, stat, pathlib\n"
+            "time.sleep(1)\n"
+            f"p = pathlib.Path({str(binary)!r})\n"
+            "p.write_text('#!/bin/sh\\nsleep 30\\n')\n"
+            "p.chmod(p.stat().st_mode | stat.S_IEXEC)\n"
+        )
+
+        cmd = _build_test_cmd(
+            (sys.executable, "-c", build_script),
+            str(binary),
+            timeout_s=4,
+        )
+        outcome = run_cached_test(
+            cmd,
+            cache_key="abc123",
+            meta_dir=meta_dir,
+            compiler_version="mojo-test-1.0",
+        )
+
+        # The execute step should time out because the build consumed
+        # part of the 4-second budget
+        assert outcome.kind == OutcomeKind.TIMEOUT
+        assert outcome.elapsed_s < 6  # should not run full 30s
+
+    def test_build_warnings_prepended_to_stderr(self, tmp_path: Path):
+        """Build stderr (warnings) appears before execution stderr."""
+        binary = tmp_path / "test_hello"
+        meta_dir = tmp_path / "meta"
+
+        # Build script: emits a warning on stderr, then creates binary
+        # that also writes to stderr
+        build_script = (
+            "import sys, stat, pathlib\n"
+            "print('BUILD-WARNING', file=sys.stderr)\n"
+            f"p = pathlib.Path({str(binary)!r})\n"
+            "p.write_text('#!/bin/sh\\necho EXEC-STDERR >&2\\necho ok\\n')\n"
+            "p.chmod(p.stat().st_mode | stat.S_IEXEC)\n"
+        )
+
+        cmd = _build_test_cmd(
+            (sys.executable, "-c", build_script),
+            str(binary),
+        )
+        outcome = run_cached_test(
+            cmd,
+            cache_key="abc123",
+            meta_dir=meta_dir,
+            compiler_version="mojo-test-1.0",
+        )
+
+        assert outcome.kind == OutcomeKind.PASS
+        assert "BUILD-WARNING" in outcome.stderr
+        assert "EXEC-STDERR" in outcome.stderr
+        # Build warnings come first
+        build_pos = outcome.stderr.index("BUILD-WARNING")
+        exec_pos = outcome.stderr.index("EXEC-STDERR")
+        assert build_pos < exec_pos
