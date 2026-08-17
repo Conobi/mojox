@@ -22,6 +22,7 @@ class CommandKind(Enum):
     COMPILE_PACKAGE = "compile-package"
     COMPILE_BINARY = "compile-binary"
     RUN_TEST = "run-test"
+    BUILD_TEST = "build-test"
     CHECK_EXAMPLE = "check-example"
     RUN = "run"
 
