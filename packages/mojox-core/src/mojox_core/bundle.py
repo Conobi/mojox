@@ -1,8 +1,9 @@
 """Bundle harness generator for single-binary test runners.
 
 Discovers test functions from Mojo source strings and generates a
-harness that imports and runs them with error isolation. This module
-is pure: no I/O, no subprocess, no filesystem access.
+harness that imports and runs them with error isolation. All functions
+are pure (no I/O) except :func:`has_boucle`, which probes include
+paths for a ``boucle/`` directory.
 """
 
 from __future__ import annotations

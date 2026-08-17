@@ -110,4 +110,4 @@ def cleanup_staging(staging_dir: Path) -> None:
         staging_dir: Root of the staging directory to remove.
     """
     if staging_dir.is_dir():
-        shutil.rmtree(staging_dir)
+        shutil.rmtree(staging_dir, ignore_errors=True)

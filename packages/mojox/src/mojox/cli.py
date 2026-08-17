@@ -380,11 +380,15 @@ def _cmd_test(args: argparse.Namespace) -> None:
     # --- Filtering ---
     filter_paths = tuple(getattr(args, "paths", []))
     filter_pattern = getattr(args, "filter", None)
-    if filter_paths or filter_pattern is not None:
+    is_bundle = getattr(args, "bundle", False)
+    # In bundle mode, -k filters at runtime inside the harness binary,
+    # not at the file level. Path filters still apply to scope the bundle.
+    effective_pattern = None if is_bundle else filter_pattern
+    if filter_paths or effective_pattern is not None:
         commands = apply_filters(
             commands,
             paths=filter_paths,
-            pattern=filter_pattern,
+            pattern=effective_pattern,
             project_root=Path.cwd(),
         )
         test_count = sum(1 for c in commands if c.kind in _TEST_KINDS)
@@ -452,9 +456,8 @@ def _cmd_test(args: argparse.Namespace) -> None:
     )
 
     # --- Bundle mode ---
-    if getattr(args, "bundle", False):
+    if is_bundle:
         _run_bundle_test(
-            args=args,
             graph=graph,
             env=env,
             policy=policy,
@@ -529,7 +532,6 @@ def _cmd_test(args: argparse.Namespace) -> None:
 
 def _run_bundle_test(
     *,
-    args: argparse.Namespace,
     graph: TargetGraph,
     env: ResolvedEnv,
     policy: Policy,
