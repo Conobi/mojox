@@ -79,15 +79,18 @@ def create_bundle_staging(
             dirs_seen.add(dir_rel)
 
     for dir_rel in sorted(dirs_seen):
-        original_init = project_root / dir_rel / "__init__.mojo"
-        staged_init = stage_root / dir_rel / "__init__.mojo"
+        original_dir = project_root / dir_rel
+        staged_dir = stage_root / dir_rel
+        staged_dir.mkdir(parents=True, exist_ok=True)
 
-        if original_init.exists():
-            if staged_init.exists() or staged_init.is_symlink():
-                staged_init.unlink()
-            os.symlink(original_init.resolve(), staged_init)
-        elif not staged_init.exists():
-            staged_init.write_text("")
+        for mojo_file in sorted(original_dir.glob("*.mojo")):
+            dest = staged_dir / mojo_file.name
+            if dest.exists() or dest.is_symlink():
+                continue
+            os.symlink(mojo_file.resolve(), dest)
+
+        if not (staged_dir / "__init__.mojo").exists():
+            (staged_dir / "__init__.mojo").write_text("")
 
     harness_path = staging_dir / "harness.mojo"
     harness_path.parent.mkdir(parents=True, exist_ok=True)

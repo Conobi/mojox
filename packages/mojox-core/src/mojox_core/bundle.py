@@ -98,7 +98,7 @@ def generate_harness(modules: Sequence[TestModule]) -> str:
         Complete Mojo source code for the harness entry point.
     """
     lines: list[str] = []
-    lines.append("from sys import argv")
+    lines.append("from std.sys import argv")
     lines.append("")
 
     all_tests: list[tuple[str, str, str]] = []
@@ -113,7 +113,7 @@ def generate_harness(modules: Sequence[TestModule]) -> str:
     lines.append("def main() raises:")
     lines.append('    var filter_pattern = String("")')
     lines.append("    if len(argv()) > 1:")
-    lines.append("        filter_pattern = str(argv()[1]).lower()")
+    lines.append("        filter_pattern = String(argv()[1]).lower()")
     lines.append("")
     lines.append("    var passed: Int = 0")
     lines.append("    var failed: Int = 0")
@@ -123,7 +123,7 @@ def generate_harness(modules: Sequence[TestModule]) -> str:
         label = f"{file_path}::{func_name}"
         lines.append("")
         lines.append(
-            f"    if len(filter_pattern) == 0"
+            f"    if filter_pattern.byte_length() == 0"
             f' or String("{func_name}").lower().find(filter_pattern) != -1:'
         )
         lines.append("        try:")
@@ -141,7 +141,7 @@ def generate_harness(modules: Sequence[TestModule]) -> str:
         '    print(passed, "passed,", failed, "failed,", skipped, "skipped")'
     )
     lines.append("    if failed > 0:")
-    lines.append('        raise Error(str(failed) + " test(s) failed")')
+    lines.append('        raise Error(String(failed) + " test(s) failed")')
     lines.append("")
 
     return "\n".join(lines)

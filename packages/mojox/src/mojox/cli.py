@@ -568,7 +568,7 @@ def _run_bundle_test(
         file_path_to_module_path,
         generate_harness,
     )
-    from mojox_core.types import Target, TargetGraph as TG
+    from mojox_core.types import Policy as PolicyT, Target, TargetGraph as TG
 
     from .exec import CacheContext, run_commands
     from .output import (
@@ -578,6 +578,7 @@ def _run_bundle_test(
         render_summary,
     )
     from .staging import cleanup_staging, create_bundle_staging
+    from .types import OutputFormat, OutputMode
 
     root = Path.cwd()
 
@@ -628,7 +629,7 @@ def _run_bundle_test(
         )
 
         # Prepend staging include path for __init__.mojo resolution
-        bundle_policy = Policy(
+        bundle_policy = PolicyT(
             optimize=policy.optimize,
             debug_level=policy.debug_level,
             defines=policy.defines,
