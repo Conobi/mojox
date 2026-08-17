@@ -150,6 +150,18 @@ class TestTestSubcommandFlags:
         args = parser.parse_args(["test"])
         assert args.paths == []
 
+    def test_no_cache_flag_default_false(self):
+        """--no-cache defaults to False."""
+        parser = build_parser()
+        args = parser.parse_args(["test"])
+        assert args.no_cache is False
+
+    def test_no_cache_flag(self):
+        """--no-cache sets no_cache to True."""
+        parser = build_parser()
+        args = parser.parse_args(["test", "--no-cache"])
+        assert args.no_cache is True
+
     def test_build_does_not_have_filter(self):
         parser = build_parser()
         with pytest.raises(SystemExit):
@@ -328,3 +340,50 @@ class TestTestSubcommandIntegration:
         assert started["test_count"] == 0
         assert finished["type"] == "suite"
         assert finished["event"] == "ok"
+
+
+class TestCacheSubcommand:
+    """Tests for the cache subcommand."""
+
+    def test_cache_subcommand_recognized(self):
+        """cache clean is recognized by the parser."""
+        parser = build_parser()
+        args = parser.parse_args(["cache", "clean"])
+        assert args.subcommand == "cache"
+        assert args.cache_action == "clean"
+
+    def test_cache_without_action_exits(self):
+        """cache without an action triggers an error."""
+        parser = build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["cache"])
+
+    def test_cache_clean_removes_directory(self, tmp_path):
+        """cache clean removes the .mojox/cache directory."""
+        cache_dir = tmp_path / ".mojox" / "cache"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "bin").mkdir()
+        (cache_dir / "bin" / "test_hello").write_text("binary")
+        (cache_dir / "meta").mkdir()
+        (cache_dir / "meta" / "test_hello.json").write_text("{}")
+
+        result = subprocess.run(
+            [sys.executable, "-m", "mojox", "cache", "clean"],
+            cwd=str(tmp_path),
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "Removed" in result.stdout
+        assert not cache_dir.exists()
+
+    def test_cache_clean_nothing_to_clean(self, tmp_path):
+        """cache clean with no cache directory prints info message."""
+        result = subprocess.run(
+            [sys.executable, "-m", "mojox", "cache", "clean"],
+            cwd=str(tmp_path),
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "Nothing to clean" in result.stdout

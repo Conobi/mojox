@@ -67,6 +67,10 @@ def build_parser() -> argparse.ArgumentParser:
     meta_p.set_defaults(profile="dev")
     _add_common_flags(meta_p)
 
+    cache_p = sub.add_parser("cache", help="Cache management")
+    cache_sub = cache_p.add_subparsers(dest="cache_action", required=True)
+    cache_sub.add_parser("clean", help="Remove cached test binaries and metadata")
+
     return parser
 
 
@@ -118,6 +122,12 @@ def _add_test_flags(parser: argparse.ArgumentParser) -> None:
         default=None,
         choices=["immediate", "final", "never"],
         help="When to show failing test output (default: immediate)",
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        default=False,
+        help="Disable binary cache for AOT test compilation",
     )
     parser.add_argument(
         "-k",
@@ -338,9 +348,11 @@ def _resolve_pipeline(
 
 def _cmd_test(args: argparse.Namespace) -> None:
     """Execute the test subcommand."""
+    import hashlib
     import time
 
-    from .exec import run_commands
+    from .cache import hash_directory_tree
+    from .exec import CacheContext, run_commands
     from .output import (
         make_progress_callback,
         render_diagnostics,
@@ -351,7 +363,7 @@ def _cmd_test(args: argparse.Namespace) -> None:
     )
     from .types import OutputFormat, OutputMode
 
-    _manifest, _graph, env, policy, _toolchain, _host, settings, commands, include_paths = _resolve_pipeline(args)
+    manifest, _graph, env, policy, toolchain, _host, settings, commands, include_paths = _resolve_pipeline(args)
 
     if env.diagnostics:
         render_diagnostics(env.diagnostics)
@@ -408,6 +420,29 @@ def _cmd_test(args: argparse.Namespace) -> None:
             render_dry_run(commands, compact=not args.verbose)
         return
 
+    # --- Cache context ---
+    root = Path.cwd()
+
+    pkg_hashes: list[str] = []
+    if manifest.packages:
+        for pkg in manifest.packages:
+            pkg_hashes.append(hash_directory_tree(root / pkg))
+    project_hash = hashlib.sha256("".join(pkg_hashes).encode()).hexdigest()
+
+    test_hashes: list[str] = []
+    for test_root in manifest.test_roots:
+        test_hashes.append(hash_directory_tree(root / test_root))
+    tests_tree_hash = hashlib.sha256("".join(test_hashes).encode()).hexdigest()
+
+    no_cache = getattr(args, "no_cache", False)
+    cache_ctx = CacheContext(
+        project_hash=project_hash,
+        tests_tree_hash=tests_tree_hash,
+        compiler_version=toolchain.version,
+        meta_dir=root / ".mojox" / "cache" / "meta",
+        enabled=not no_cache,
+    )
+
     # --- Build callbacks ---
     on_start = None
     on_complete = None
@@ -440,6 +475,7 @@ def _cmd_test(args: argparse.Namespace) -> None:
             on_start=on_start,
             on_complete=on_complete,
             fail_fast=fail_fast,
+            cache_context=cache_ctx,
         )
     except KeyboardInterrupt:
         print(f"\n{_interrupted_summary(commands)}", file=sys.stderr)
@@ -765,6 +801,26 @@ def _cmd_metadata(args: argparse.Namespace) -> None:
     sys.stdout.write("\n")
 
 
+def _cmd_cache_clean(args: argparse.Namespace) -> None:
+    """Remove all cached test binaries and metadata.
+
+    Deletes the ``.mojox/cache`` directory tree under the current
+    working directory.  Safe to call when no cache exists.
+
+    Args:
+        args: Parsed CLI arguments (unused but required by the
+            subcommand dispatch signature).
+    """
+    import shutil
+
+    cache_dir = Path.cwd() / ".mojox" / "cache"
+    if cache_dir.is_dir():
+        shutil.rmtree(cache_dir)
+        print(f"Removed {cache_dir}")
+    else:
+        print("Nothing to clean")
+
+
 def main() -> None:
     """CLI entry point."""
     parser = build_parser()
@@ -780,6 +836,8 @@ def main() -> None:
         _cmd_run(args)
     elif args.subcommand == "build":
         _cmd_build(args)
+    elif args.subcommand == "cache":
+        _cmd_cache_clean(args)
 
 
 if __name__ == "__main__":

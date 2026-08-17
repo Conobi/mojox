@@ -13,13 +13,38 @@ import sys
 import time
 from collections.abc import Callable
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 
 from mojox_core import Command, CommandKind
 
-from .cache import read_cache_meta, write_cache_meta
+from .cache import compute_cache_key, read_cache_meta, write_cache_meta
 from .diagnostics import parse_diagnostics
 from .types import Outcome, OutcomeKind
+
+
+@dataclass(frozen=True)
+class CacheContext:
+    """Context for binary cache lookups passed to the executor.
+
+    Groups the precomputed hashes and metadata directory needed to
+    evaluate cache keys for AOT-compiled test binaries.
+
+    Attributes:
+        project_hash: Hash of the project's library source trees.
+        tests_tree_hash: Hash of the test directory trees.
+        compiler_version: Mojo compiler version string.
+        meta_dir: Directory for per-target cache metadata JSON files.
+        enabled: Whether cache lookups are active. When ``False`` the
+            compound build-then-execute still runs, but every lookup
+            is a guaranteed miss.
+    """
+
+    project_hash: str
+    tests_tree_hash: str
+    compiler_version: str
+    meta_dir: Path
+    enabled: bool = True
 
 
 def _inject_native_lib_paths(
@@ -49,6 +74,103 @@ def _inject_native_lib_paths(
     parts = [existing] if existing else []
     parts.extend(lib_dirs)
     env[env_key] = os.pathsep.join(parts)
+
+
+def _extract_test_source_and_flags(
+    argv: tuple[str, ...],
+) -> tuple[str | None, tuple[str, ...]]:
+    """Extract the ``.mojo`` source path and compiler flags from a BUILD_TEST argv.
+
+    Parses the command argv to separate the test source file from
+    compiler flags, skipping the mojo binary (``argv[0]``), the
+    ``"build"`` subcommand (``argv[1]``), ``-o``, and the output path
+    that follows ``-o``.
+
+    Args:
+        argv: The full argv tuple from a ``BUILD_TEST`` :class:`Command`.
+
+    Returns:
+        A ``(source_path, flags)`` tuple.  ``source_path`` is ``None``
+        when no ``.mojo`` file was found in *argv*.
+    """
+    source: str | None = None
+    flags: list[str] = []
+    skip_next = False
+
+    for i, arg in enumerate(argv):
+        if skip_next:
+            skip_next = False
+            continue
+        if i == 0:  # mojo binary path
+            continue
+        if i == 1 and arg == "build":
+            continue
+        if arg == "-o":
+            skip_next = True
+            continue
+        if arg.endswith(".mojo"):
+            source = arg
+            continue
+        flags.append(arg)
+
+    return source, tuple(flags)
+
+
+def _resolve_cache_for_build_test(
+    cmd: Command,
+    cache_context: CacheContext,
+    extra_env: dict[str, str] | None,
+    include_paths: tuple[str, ...],
+) -> Outcome:
+    """Route a BUILD_TEST command through the cached test runner.
+
+    Computes the cache key from the command's argv and the shared
+    :class:`CacheContext`, then delegates to :func:`run_cached_test`.
+
+    When caching is disabled (``cache_context.enabled is False``), a
+    unique throwaway key is generated so the compound build-then-execute
+    workflow always runs without stale cache hits.
+
+    Args:
+        cmd: A ``BUILD_TEST`` :class:`Command`.
+        cache_context: Shared cache context from the CLI layer.
+        extra_env: Additional environment variables.
+        include_paths: Dependency include directories.
+
+    Returns:
+        An :class:`Outcome` from the compound build+execute operation.
+    """
+    import uuid
+
+    if cache_context.enabled:
+        source_str, flags = _extract_test_source_and_flags(cmd.argv)
+        if source_str is not None:
+            source_path = Path(source_str)
+            if not source_path.is_absolute():
+                source_path = Path(cmd.cwd) / source_path
+            cache_key = compute_cache_key(
+                test_source=source_path,
+                project_hash=cache_context.project_hash,
+                tests_tree_hash=cache_context.tests_tree_hash,
+                compiler_version=cache_context.compiler_version,
+                flags=flags,
+            )
+        else:
+            # Cannot determine source file — use a unique key to skip
+            # cache but still run the compound workflow.
+            cache_key = uuid.uuid4().hex
+    else:
+        # Caching disabled: unique key guarantees a miss every time.
+        cache_key = uuid.uuid4().hex
+
+    return run_cached_test(
+        cmd,
+        cache_key=cache_key,
+        meta_dir=cache_context.meta_dir,
+        compiler_version=cache_context.compiler_version,
+        extra_env=extra_env,
+        include_paths=include_paths,
+    )
 
 
 def run_command(
@@ -164,20 +286,28 @@ def _run_with_start(
     extra_env: dict[str, str] | None,
     include_paths: tuple[str, ...],
     on_start: Callable[[Command], None] | None,
+    cache_context: CacheContext | None = None,
 ) -> Outcome:
     """Run a command, calling on_start from the worker thread first.
+
+    When *cache_context* is provided and the command is a ``BUILD_TEST``,
+    the execution is routed through the cached test runner instead of
+    the plain :func:`run_command` path.
 
     Args:
         cmd: The command to execute.
         extra_env: Additional environment variables to merge.
         include_paths: Dependency include directories.
         on_start: Optional callback invoked before execution.
+        cache_context: Optional cache context for AOT test binaries.
 
     Returns:
         An Outcome describing the result.
     """
     if on_start is not None:
         on_start(cmd)
+    if cache_context is not None and cmd.kind == CommandKind.BUILD_TEST:
+        return _resolve_cache_for_build_test(cmd, cache_context, extra_env, include_paths)
     return run_command(cmd, extra_env=extra_env, include_paths=include_paths)
 
 
@@ -190,6 +320,7 @@ def run_commands(
     on_start: Callable[[Command], None] | None = None,
     on_complete: Callable[[Outcome], None] | None = None,
     fail_fast: bool = False,
+    cache_context: CacheContext | None = None,
 ) -> tuple[Outcome, ...]:
     """Run a sequence of Commands with concurrency and dependency ordering.
 
@@ -199,6 +330,10 @@ def run_commands(
 
     When ``fail_fast`` is True, the first non-PASS outcome cancels
     queued commands and skips remaining phases.
+
+    When *cache_context* is provided, ``BUILD_TEST`` commands are routed
+    through the cached test runner for compound build-then-execute with
+    optional cache lookups.
 
     The current two-phase implementation supports commands with at most
     one level of dependencies (e.g., precompile -> test). Deeper
@@ -218,6 +353,9 @@ def run_commands(
             completes. Called from the executor thread; must be thread-safe.
         fail_fast: If True, cancel remaining commands after the first
             non-PASS outcome.
+        cache_context: Optional cache context for AOT test binary
+            caching. When ``None``, ``BUILD_TEST`` commands run via the
+            plain :func:`run_command` path (build only, no execution).
 
     Returns:
         A tuple of Outcomes in the same order as the input commands.
@@ -249,6 +387,7 @@ def run_commands(
             on_start,
             on_complete,
             fail_fast,
+            cache_context,
         )
 
     if has_deps:
@@ -278,6 +417,7 @@ def run_commands(
                 on_start,
                 on_complete,
                 fail_fast,
+                cache_context,
             )
 
     assert all(r is not None for r in results), "unfilled result slots"
@@ -294,6 +434,7 @@ def _run_phase(
     on_start: Callable[[Command], None] | None = None,
     on_complete: Callable[[Outcome], None] | None = None,
     fail_fast: bool = False,
+    cache_context: CacheContext | None = None,
 ) -> bool:
     """Run a batch of commands concurrently, checking deps before submission.
 
@@ -311,6 +452,7 @@ def _run_phase(
             execution begins.
         on_complete: Optional callback invoked with each Outcome.
         fail_fast: If True, cancel remaining futures after first non-PASS.
+        cache_context: Optional cache context for AOT test binary caching.
     """
 
     def _record(idx: int, outcome: Outcome) -> None:
@@ -321,7 +463,7 @@ def _run_phase(
 
     if len(phase) == 1:
         idx, cmd = phase[0]
-        outcome = _run_or_skip(cmd, completed, extra_env, include_paths, on_start)
+        outcome = _run_or_skip(cmd, completed, extra_env, include_paths, on_start, cache_context)
         _record(idx, outcome)
         return fail_fast and outcome.kind != OutcomeKind.PASS
 
@@ -341,6 +483,7 @@ def _run_phase(
                 extra_env,
                 include_paths,
                 on_start,
+                cache_context,
             )
             future_to_idx[future] = (idx, cmd)
 
@@ -379,8 +522,12 @@ def _run_or_skip(
     extra_env: dict[str, str] | None,
     include_paths: tuple[str, ...] = (),
     on_start: Callable[[Command], None] | None = None,
+    cache_context: CacheContext | None = None,
 ) -> Outcome:
     """Run a command or skip it if dependencies failed.
+
+    When *cache_context* is provided and the command is a ``BUILD_TEST``,
+    execution is routed through the cached test runner.
 
     Args:
         cmd: The command to execute.
@@ -389,12 +536,15 @@ def _run_or_skip(
         include_paths: Dependency include directories whose ``lib/``
             subdirectories are added to the dynamic linker search path.
         on_start: Optional callback invoked before execution begins.
+        cache_context: Optional cache context for AOT test binary caching.
     """
     skip = _check_dependencies(cmd, completed)
     if skip is not None:
         return skip
     if on_start is not None:
         on_start(cmd)
+    if cache_context is not None and cmd.kind == CommandKind.BUILD_TEST:
+        return _resolve_cache_for_build_test(cmd, cache_context, extra_env, include_paths)
     return run_command(cmd, extra_env=extra_env, include_paths=include_paths)
 
 

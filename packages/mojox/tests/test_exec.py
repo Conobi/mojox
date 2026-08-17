@@ -7,7 +7,13 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 from mojox.cache import write_cache_meta
-from mojox.exec import run_cached_test, run_command, run_commands
+from mojox.exec import (
+    CacheContext,
+    _extract_test_source_and_flags,
+    run_cached_test,
+    run_command,
+    run_commands,
+)
 from mojox.types import OutcomeKind
 from mojox_core import Command, CommandKind
 
@@ -559,3 +565,245 @@ class TestRunCachedTest:
         build_pos = outcome.stderr.index("BUILD-WARNING")
         exec_pos = outcome.stderr.index("EXEC-STDERR")
         assert build_pos < exec_pos
+
+
+class TestCacheContext:
+    """Tests for the CacheContext dataclass."""
+
+    def test_construction_with_defaults(self, tmp_path: Path):
+        """CacheContext can be constructed; enabled defaults to True."""
+        ctx = CacheContext(
+            project_hash="abc",
+            tests_tree_hash="def",
+            compiler_version="25.4.0",
+            meta_dir=tmp_path / "meta",
+        )
+        assert ctx.project_hash == "abc"
+        assert ctx.tests_tree_hash == "def"
+        assert ctx.compiler_version == "25.4.0"
+        assert ctx.meta_dir == tmp_path / "meta"
+        assert ctx.enabled is True
+
+    def test_construction_disabled(self, tmp_path: Path):
+        """CacheContext can be constructed with enabled=False."""
+        ctx = CacheContext(
+            project_hash="abc",
+            tests_tree_hash="def",
+            compiler_version="25.4.0",
+            meta_dir=tmp_path / "meta",
+            enabled=False,
+        )
+        assert ctx.enabled is False
+
+    def test_frozen(self, tmp_path: Path):
+        """CacheContext is immutable."""
+        ctx = CacheContext(
+            project_hash="abc",
+            tests_tree_hash="def",
+            compiler_version="25.4.0",
+            meta_dir=tmp_path / "meta",
+        )
+        with pytest.raises(AttributeError):
+            ctx.project_hash = "new"  # type: ignore[misc]
+
+
+class TestExtractTestSourceAndFlags:
+    """Tests for _extract_test_source_and_flags."""
+
+    def test_typical_build_command(self):
+        """Standard mojo build argv extracts source and flags."""
+        argv = ("/usr/bin/mojo", "build", "-O0", "tests/test_hello.mojo", "-o", ".mojox/cache/bin/test_hello")
+        source, flags = _extract_test_source_and_flags(argv)
+        assert source == "tests/test_hello.mojo"
+        assert flags == ("-O0",)
+
+    def test_multiple_flags(self):
+        """Multiple compiler flags are all captured."""
+        argv = ("/usr/bin/mojo", "build", "-O0", "-I", "/include", "t.mojo", "-o", "out")
+        source, flags = _extract_test_source_and_flags(argv)
+        assert source == "t.mojo"
+        assert flags == ("-O0", "-I", "/include")
+
+    def test_no_mojo_source(self):
+        """Missing .mojo file returns None source."""
+        argv = ("/usr/bin/mojo", "build", "-O0", "-o", "out")
+        source, flags = _extract_test_source_and_flags(argv)
+        assert source is None
+        assert flags == ("-O0",)
+
+    def test_no_flags(self):
+        """No extra flags yields empty tuple."""
+        argv = ("/usr/bin/mojo", "build", "test.mojo", "-o", "out")
+        source, flags = _extract_test_source_and_flags(argv)
+        assert source == "test.mojo"
+        assert flags == ()
+
+    def test_flag_after_output(self):
+        """Flags after -o <path> are still captured (unusual but handled)."""
+        argv = ("/usr/bin/mojo", "build", "test.mojo", "-o", "out", "--debug")
+        source, flags = _extract_test_source_and_flags(argv)
+        assert source == "test.mojo"
+        assert "--debug" in flags
+
+
+class TestRunCommandsWithCache:
+    """Tests for run_commands routing BUILD_TEST through cached path."""
+
+    def test_build_test_with_cache_context_builds_and_executes(self, tmp_path: Path):
+        """BUILD_TEST commands with cache_context do compound build+execute."""
+        binary = tmp_path / "test_hello"
+        meta_dir = tmp_path / "meta"
+        test_source = tmp_path / "test_hello.mojo"
+        test_source.write_text("fn main(): pass")
+
+        build_script = (
+            "import stat, pathlib, sys\n"
+            "idx = sys.argv.index('-o')\n"
+            "p = pathlib.Path(sys.argv[idx + 1])\n"
+            "p.parent.mkdir(parents=True, exist_ok=True)\n"
+            "p.write_text('#!/bin/sh\\necho cached-build-test\\n')\n"
+            "p.chmod(p.stat().st_mode | stat.S_IEXEC)\n"
+        )
+
+        cmd = Command(
+            argv=(sys.executable, "-c", build_script, str(test_source), "-o", str(binary)),
+            cwd=PurePosixPath(str(tmp_path)),
+            env={"PATH": f"{sys.prefix}/bin:/usr/bin:/bin", "HOME": ""},
+            kind=CommandKind.BUILD_TEST,
+            target_id="test_hello",
+            timeout_s=30,
+            outputs=(str(binary),),
+            depends_on=(),
+        )
+
+        ctx = CacheContext(
+            project_hash="aaa",
+            tests_tree_hash="bbb",
+            compiler_version="25.4.0",
+            meta_dir=meta_dir,
+        )
+
+        results = run_commands((cmd,), cache_context=ctx)
+        assert len(results) == 1
+        assert results[0].kind == OutcomeKind.PASS
+        assert "cached-build-test" in results[0].stdout
+
+    def test_build_test_without_cache_context_runs_build_only(self, tmp_path: Path):
+        """BUILD_TEST without cache_context runs via run_command (build only)."""
+        binary = tmp_path / "test_hello"
+
+        cmd = Command(
+            argv=(sys.executable, "-c", "print('built-ok')"),
+            cwd=PurePosixPath(str(tmp_path)),
+            env={"PATH": f"{sys.prefix}/bin:/usr/bin:/bin", "HOME": ""},
+            kind=CommandKind.BUILD_TEST,
+            target_id="test_hello",
+            timeout_s=30,
+            outputs=(str(binary),),
+            depends_on=(),
+        )
+
+        results = run_commands((cmd,))
+        assert len(results) == 1
+        # Without cache_context, runs as a normal command (just the build)
+        assert results[0].kind == OutcomeKind.PASS
+        assert "built-ok" in results[0].stdout
+
+    def test_build_test_with_cache_disabled_always_rebuilds(self, tmp_path: Path):
+        """With enabled=False, BUILD_TEST always rebuilds (no cache hits)."""
+        binary = tmp_path / "test_hello"
+        meta_dir = tmp_path / "meta"
+        test_source = tmp_path / "test_hello.mojo"
+        test_source.write_text("fn main(): pass")
+
+        build_script = (
+            "import stat, pathlib, sys\n"
+            "idx = sys.argv.index('-o')\n"
+            "p = pathlib.Path(sys.argv[idx + 1])\n"
+            "p.parent.mkdir(parents=True, exist_ok=True)\n"
+            "p.write_text('#!/bin/sh\\necho no-cache-run\\n')\n"
+            "p.chmod(p.stat().st_mode | stat.S_IEXEC)\n"
+        )
+
+        cmd = Command(
+            argv=(sys.executable, "-c", build_script, str(test_source), "-o", str(binary)),
+            cwd=PurePosixPath(str(tmp_path)),
+            env={"PATH": f"{sys.prefix}/bin:/usr/bin:/bin", "HOME": ""},
+            kind=CommandKind.BUILD_TEST,
+            target_id="test_hello",
+            timeout_s=30,
+            outputs=(str(binary),),
+            depends_on=(),
+        )
+
+        ctx = CacheContext(
+            project_hash="aaa",
+            tests_tree_hash="bbb",
+            compiler_version="25.4.0",
+            meta_dir=meta_dir,
+            enabled=False,
+        )
+
+        results = run_commands((cmd,), cache_context=ctx)
+        assert len(results) == 1
+        assert results[0].kind == OutcomeKind.PASS
+        assert "no-cache-run" in results[0].stdout
+
+    def test_on_start_fires_for_cached_build_test(self, tmp_path: Path):
+        """on_start callback fires before the build step for cached BUILD_TEST."""
+        binary = tmp_path / "test_hello"
+        meta_dir = tmp_path / "meta"
+        test_source = tmp_path / "test_hello.mojo"
+        test_source.write_text("fn main(): pass")
+
+        build_script = (
+            "import stat, pathlib, sys\n"
+            "idx = sys.argv.index('-o')\n"
+            "p = pathlib.Path(sys.argv[idx + 1])\n"
+            "p.parent.mkdir(parents=True, exist_ok=True)\n"
+            "p.write_text('#!/bin/sh\\necho ok\\n')\n"
+            "p.chmod(p.stat().st_mode | stat.S_IEXEC)\n"
+        )
+
+        cmd = Command(
+            argv=(sys.executable, "-c", build_script, str(test_source), "-o", str(binary)),
+            cwd=PurePosixPath(str(tmp_path)),
+            env={"PATH": f"{sys.prefix}/bin:/usr/bin:/bin", "HOME": ""},
+            kind=CommandKind.BUILD_TEST,
+            target_id="test_hello",
+            timeout_s=30,
+            outputs=(str(binary),),
+            depends_on=(),
+        )
+
+        ctx = CacheContext(
+            project_hash="aaa",
+            tests_tree_hash="bbb",
+            compiler_version="25.4.0",
+            meta_dir=meta_dir,
+        )
+
+        started: list[str] = []
+        run_commands(
+            (cmd,),
+            cache_context=ctx,
+            on_start=lambda c: started.append(c.target_id),
+        )
+        assert "test_hello" in started
+
+    def test_non_build_test_ignores_cache_context(self):
+        """Non-BUILD_TEST commands are unaffected by cache_context."""
+        cmd = _cmd(
+            (sys.executable, "-c", "print('normal')"),
+            kind=CommandKind.RUN_TEST,
+            target_id="t.mojo",
+        )
+        ctx = CacheContext(
+            project_hash="aaa",
+            tests_tree_hash="bbb",
+            compiler_version="25.4.0",
+            meta_dir=Path("/tmp/meta"),
+        )
+        results = run_commands((cmd,), cache_context=ctx)
+        assert results[0].kind == OutcomeKind.PASS
+        assert "normal" in results[0].stdout
