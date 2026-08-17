@@ -38,6 +38,9 @@ class CacheContext:
         enabled: Whether cache lookups are active. When ``False`` the
             compound build-then-execute still runs, but every lookup
             is a guaranteed miss.
+        runtime_args: Extra command-line arguments appended to the
+            compiled binary's argv at execution time. Used by bundle
+            mode to pass a ``-k`` filter pattern to the test binary.
     """
 
     project_hash: str
@@ -45,6 +48,7 @@ class CacheContext:
     compiler_version: str
     meta_dir: Path
     enabled: bool = True
+    runtime_args: tuple[str, ...] = ()
 
 
 def _inject_native_lib_paths(
@@ -168,6 +172,7 @@ def _resolve_cache_for_build_test(
         extra_env=extra_env,
         include_paths=include_paths,
         skip_cache_write=not cache_context.enabled,
+        runtime_args=cache_context.runtime_args,
     )
 
 
@@ -596,6 +601,7 @@ def _execute_binary(
     extra_env: dict[str, str] | None = None,
     include_paths: tuple[str, ...] = (),
     remaining_timeout: int | None = None,
+    runtime_args: tuple[str, ...] = (),
 ) -> Outcome:
     """Execute a compiled test binary by constructing a new Command for it.
 
@@ -614,12 +620,14 @@ def _execute_binary(
             subdirectories are added to the dynamic linker search path.
         remaining_timeout: Timeout budget for execution, or ``None``
             for unlimited.
+        runtime_args: Extra arguments appended to the binary's argv.
+            Used by bundle mode to pass ``-k`` filter patterns.
 
     Returns:
         An :class:`Outcome` from running the binary.
     """
     exec_cmd = Command(
-        argv=(binary_path,),
+        argv=(binary_path, *runtime_args),
         cwd=cmd.cwd,
         env=cmd.env,
         kind=CommandKind.RUN_TEST,
@@ -640,6 +648,7 @@ def run_cached_test(
     extra_env: dict[str, str] | None = None,
     include_paths: tuple[str, ...] = (),
     skip_cache_write: bool = False,
+    runtime_args: tuple[str, ...] = (),
 ) -> Outcome:
     """Build and execute a test binary with cache support.
 
@@ -670,6 +679,9 @@ def run_cached_test(
             subdirectories are added to the dynamic linker search path.
         skip_cache_write: If True, build to a temp path, skip metadata
             writes, and clean up the binary after execution.
+        runtime_args: Extra arguments appended to the binary's argv
+            at execution time. Used by bundle mode to pass ``-k``
+            filter patterns to the compiled test binary.
 
     Returns:
         An :class:`Outcome` for the test execution (or a
@@ -691,6 +703,7 @@ def run_cached_test(
                 extra_env=extra_env,
                 include_paths=include_paths,
                 remaining_timeout=cmd.timeout_s,
+                runtime_args=runtime_args,
             )
 
     # --- cache miss: build to temp path ---
@@ -766,6 +779,7 @@ def run_cached_test(
         extra_env=extra_env,
         include_paths=include_paths,
         remaining_timeout=timeout_left,
+        runtime_args=runtime_args,
     )
 
     if skip_cache_write and tmp_dir is not None:

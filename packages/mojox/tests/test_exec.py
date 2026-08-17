@@ -807,3 +807,160 @@ class TestRunCommandsWithCache:
         results = run_commands((cmd,), cache_context=ctx)
         assert results[0].kind == OutcomeKind.PASS
         assert "normal" in results[0].stdout
+
+
+class TestRuntimeArgs:
+    """Tests for runtime_args threading through the exec layer."""
+
+    def test_cache_context_default_runtime_args(self):
+        """CacheContext.runtime_args defaults to empty tuple."""
+        ctx = CacheContext(
+            project_hash="abc",
+            tests_tree_hash="def",
+            compiler_version="1.0.0",
+            meta_dir=Path("/meta"),
+        )
+        assert ctx.runtime_args == ()
+
+    def test_cache_context_with_runtime_args(self):
+        """CacheContext accepts runtime_args."""
+        ctx = CacheContext(
+            project_hash="abc",
+            tests_tree_hash="def",
+            compiler_version="1.0.0",
+            meta_dir=Path("/meta"),
+            runtime_args=("--filter", "test_foo"),
+        )
+        assert ctx.runtime_args == ("--filter", "test_foo")
+
+    def test_runtime_args_reach_binary(self, tmp_path: Path):
+        """runtime_args are appended to the binary's argv at execution time."""
+        binary = tmp_path / "test_hello"
+        meta_dir = tmp_path / "meta"
+
+        # Build script that creates a shell script printing its arguments
+        build_script = (
+            "import stat, pathlib, sys\n"
+            "idx = sys.argv.index('-o')\n"
+            "p = pathlib.Path(sys.argv[idx + 1])\n"
+            "p.parent.mkdir(parents=True, exist_ok=True)\n"
+            "p.write_text('#!/bin/sh\\necho \"ARGS:$@\"\\n')\n"
+            "p.chmod(p.stat().st_mode | stat.S_IEXEC)\n"
+        )
+
+        cmd = _build_test_cmd(
+            (sys.executable, "-c", build_script),
+            str(binary),
+        )
+        outcome = run_cached_test(
+            cmd,
+            cache_key="abc123",
+            meta_dir=meta_dir,
+            compiler_version="mojo-test-1.0",
+            runtime_args=("--filter", "test_foo"),
+        )
+
+        assert outcome.kind == OutcomeKind.PASS
+        assert "--filter" in outcome.stdout
+        assert "test_foo" in outcome.stdout
+
+    def test_runtime_args_reach_binary_on_cache_hit(self, tmp_path: Path):
+        """runtime_args are passed to the binary even on a cache hit."""
+        binary = tmp_path / "test_hello"
+        meta_dir = tmp_path / "meta"
+
+        # Pre-create binary that prints its arguments
+        binary.write_text('#!/bin/sh\necho "ARGS:$@"\n')
+        binary.chmod(0o755)
+
+        # Pre-create matching cache metadata
+        write_cache_meta(
+            meta_dir / "test_hello.json",
+            cache_key="match-key",
+            compiler_version="mojo-test-1.0",
+        )
+
+        cmd = _build_test_cmd(
+            ("/nonexistent/should-not-run",),
+            str(binary),
+        )
+        outcome = run_cached_test(
+            cmd,
+            cache_key="match-key",
+            meta_dir=meta_dir,
+            compiler_version="mojo-test-1.0",
+            runtime_args=("-k", "test_bar"),
+        )
+
+        assert outcome.kind == OutcomeKind.PASS
+        assert "-k" in outcome.stdout
+        assert "test_bar" in outcome.stdout
+
+    def test_runtime_args_threaded_through_cache_context(self, tmp_path: Path):
+        """runtime_args from CacheContext reach the binary via run_commands."""
+        binary = tmp_path / "test_hello"
+        meta_dir = tmp_path / "meta"
+        test_source = tmp_path / "test_hello.mojo"
+        test_source.write_text("fn main(): pass")
+
+        build_script = (
+            "import stat, pathlib, sys\n"
+            "idx = sys.argv.index('-o')\n"
+            "p = pathlib.Path(sys.argv[idx + 1])\n"
+            "p.parent.mkdir(parents=True, exist_ok=True)\n"
+            "p.write_text('#!/bin/sh\\necho \"ARGS:$@\"\\n')\n"
+            "p.chmod(p.stat().st_mode | stat.S_IEXEC)\n"
+        )
+
+        cmd = Command(
+            argv=(sys.executable, "-c", build_script, str(test_source), "-o", str(binary)),
+            cwd=PurePosixPath(str(tmp_path)),
+            env={"PATH": f"{sys.prefix}/bin:/usr/bin:/bin", "HOME": ""},
+            kind=CommandKind.BUILD_TEST,
+            target_id="test_hello",
+            timeout_s=30,
+            outputs=(str(binary),),
+            depends_on=(),
+        )
+
+        ctx = CacheContext(
+            project_hash="aaa",
+            tests_tree_hash="bbb",
+            compiler_version="25.4.0",
+            meta_dir=meta_dir,
+            runtime_args=("-k", "test_something"),
+        )
+
+        results = run_commands((cmd,), cache_context=ctx)
+        assert len(results) == 1
+        assert results[0].kind == OutcomeKind.PASS
+        assert "-k" in results[0].stdout
+        assert "test_something" in results[0].stdout
+
+    def test_empty_runtime_args_no_extra_argv(self, tmp_path: Path):
+        """Empty runtime_args (default) adds nothing to the binary's argv."""
+        binary = tmp_path / "test_hello"
+        meta_dir = tmp_path / "meta"
+
+        build_script = (
+            "import stat, pathlib, sys\n"
+            "idx = sys.argv.index('-o')\n"
+            "p = pathlib.Path(sys.argv[idx + 1])\n"
+            "p.parent.mkdir(parents=True, exist_ok=True)\n"
+            "p.write_text('#!/bin/sh\\necho \"ARGS:$@\"\\n')\n"
+            "p.chmod(p.stat().st_mode | stat.S_IEXEC)\n"
+        )
+
+        cmd = _build_test_cmd(
+            (sys.executable, "-c", build_script),
+            str(binary),
+        )
+        outcome = run_cached_test(
+            cmd,
+            cache_key="abc123",
+            meta_dir=meta_dir,
+            compiler_version="mojo-test-1.0",
+        )
+
+        assert outcome.kind == OutcomeKind.PASS
+        assert outcome.stdout.strip() == "ARGS:"
