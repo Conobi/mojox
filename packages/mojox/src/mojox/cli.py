@@ -628,13 +628,23 @@ def _run_bundle_test(
             edges=(),
         )
 
-        # Prepend staging include path for __init__.mojo resolution
+        # Add lib source parent dirs so Mojo finds project packages
+        # even when precompilation is skipped (bundle has 1 test target,
+        # below _PRECOMPILE_THRESHOLD).
+        source_dirs: list[str] = []
+        for lt in lib_targets:
+            pkg_path = root / lt.path
+            if pkg_path.is_dir():
+                parent = str(pkg_path.parent)
+                if parent not in source_dirs:
+                    source_dirs.append(parent)
+
         bundle_policy = PolicyT(
             optimize=policy.optimize,
             debug_level=policy.debug_level,
             defines=policy.defines,
             flags=policy.flags,
-            include_paths=(staging_result.include_path, *policy.include_paths),
+            include_paths=(staging_result.include_path, *source_dirs, *policy.include_paths),
             lints=policy.lints,
             jobs=policy.jobs,
             jobs_compile=policy.jobs_compile,
