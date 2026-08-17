@@ -127,7 +127,7 @@ def generate_harness(modules: Sequence[TestModule]) -> str:
             f' or String("{func_name}").lower().find(filter_pattern) != -1:'
         )
         lines.append("        try:")
-        lines.append(f"            {alias}()")
+        lines.append(f"            _ = {alias}()")
         lines.append("            passed += 1")
         lines.append("        except e:")
         lines.append("            failed += 1")

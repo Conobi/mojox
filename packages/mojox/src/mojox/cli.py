@@ -639,13 +639,24 @@ def _run_bundle_test(
                 if parent not in source_dirs:
                     source_dirs.append(parent)
 
+        # Disable --Werror for the generated harness: try/except around
+        # non-raising functions triggers "unreachable except" warnings.
+        from mojox_core.types import LintConfig as LintConfigT
+
+        bundle_lints = LintConfigT(
+            warnings_as_errors=False,
+            check_doc_strings=policy.lints.check_doc_strings,
+            missing_doc_strings=policy.lints.missing_doc_strings,
+            unstable_apis=policy.lints.unstable_apis,
+        )
+
         bundle_policy = PolicyT(
             optimize=policy.optimize,
             debug_level=policy.debug_level,
             defines=policy.defines,
             flags=policy.flags,
             include_paths=(staging_result.include_path, *source_dirs, *policy.include_paths),
-            lints=policy.lints,
+            lints=bundle_lints,
             jobs=policy.jobs,
             jobs_compile=policy.jobs_compile,
             jobs_tests=policy.jobs_tests,
