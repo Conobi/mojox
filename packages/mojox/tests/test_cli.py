@@ -387,3 +387,31 @@ class TestCacheSubcommand:
         )
         assert result.returncode == 0
         assert "Nothing to clean" in result.stdout
+
+
+class TestBundleFlag:
+    def test_bundle_flag_accepted(self):
+        """--bundle is accepted by the test subparser."""
+        parser = build_parser()
+        args = parser.parse_args(["test", "--bundle"])
+        assert args.bundle is True
+
+    def test_bundle_flag_default_false(self):
+        """--bundle defaults to False."""
+        parser = build_parser()
+        args = parser.parse_args(["test"])
+        assert args.bundle is False
+
+    def test_bundle_with_no_cache(self):
+        """--bundle --no-cache is accepted."""
+        parser = build_parser()
+        args = parser.parse_args(["test", "--bundle", "--no-cache"])
+        assert args.bundle is True
+        assert args.no_cache is True
+
+    def test_bundle_with_filter(self):
+        """--bundle -k pattern is accepted."""
+        parser = build_parser()
+        args = parser.parse_args(["test", "--bundle", "-k", "test_foo"])
+        assert args.bundle is True
+        assert args.filter == "test_foo"

@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     )
 
     from .lints import LintFinding
-    from .types import Outcome
+    from .types import Outcome, OutputFormat, OutputMode
 
 _TEST_KINDS = frozenset({CommandKind.RUN_TEST, CommandKind.BUILD_TEST})
 
@@ -128,6 +128,12 @@ def _add_test_flags(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         default=False,
         help="Disable binary cache for AOT test compilation",
+    )
+    parser.add_argument(
+        "--bundle",
+        action="store_true",
+        default=False,
+        help="Compile all tests into a single binary",
     )
     parser.add_argument(
         "-k",
@@ -445,6 +451,29 @@ def _cmd_test(args: argparse.Namespace) -> None:
         enabled=not no_cache,
     )
 
+    # --- Bundle mode ---
+    if getattr(args, "bundle", False):
+        _run_bundle_test(
+            args=args,
+            graph=graph,
+            env=env,
+            policy=policy,
+            toolchain=toolchain,
+            host=_host,
+            settings=settings,
+            commands=commands,
+            include_paths=include_paths,
+            project_hash=project_hash,
+            tests_tree_hash=tests_tree_hash,
+            output_format=output_format,
+            filter_pattern=filter_pattern,
+            no_cache=no_cache,
+            fail_fast=fail_fast,
+            success_output=success_output,
+            failure_output=failure_output,
+        )
+        return
+
     # --- Build callbacks ---
     on_start = None
     on_complete = None
@@ -496,6 +525,196 @@ def _cmd_test(args: argparse.Namespace) -> None:
         render_summary(outcomes)
 
     sys.exit(determine_exit_code(outcomes))
+
+
+def _run_bundle_test(
+    *,
+    args: argparse.Namespace,
+    graph: TargetGraph,
+    env: ResolvedEnv,
+    policy: Policy,
+    toolchain: Toolchain,
+    host: HostFacts,
+    settings: LocalSettings,
+    commands: tuple[Command, ...],
+    include_paths: tuple[str, ...],
+    project_hash: str,
+    tests_tree_hash: str,
+    output_format: OutputFormat,
+    filter_pattern: str | None,
+    no_cache: bool,
+    fail_fast: bool,
+    success_output: OutputMode,
+    failure_output: OutputMode,
+) -> None:
+    """Execute tests in bundle mode: single binary, all test functions.
+
+    Discovers ``def test_*`` functions from test targets, generates a
+    Mojo harness with aliased imports, creates a staging area with
+    ``__init__.mojo`` stubs, and compiles+executes the harness as a
+    single ``BUILD_TEST`` command through the existing cache pipeline.
+
+    Pattern A test files (no ``test_*`` functions) are excluded with
+    a diagnostic printed to stderr.
+    """
+    import time
+
+    from mojox_core import TargetKind, plan as plan_fn
+    from mojox_core.bundle import (
+        TestModule,
+        discover_test_functions,
+        file_path_to_module_path,
+        generate_harness,
+    )
+    from mojox_core.types import Target, TargetGraph as TG
+
+    from .exec import CacheContext, run_commands
+    from .output import (
+        make_progress_callback,
+        render_final_output,
+        render_starting,
+        render_summary,
+    )
+    from .staging import cleanup_staging, create_bundle_staging
+
+    root = Path.cwd()
+
+    # --- Discover test functions from target files ---
+    test_cmds = [c for c in commands if c.kind in _TEST_KINDS]
+    bundle_modules: list[TestModule] = []
+    diagnostics: list[str] = []
+
+    for cmd in test_cmds:
+        source_path = root / cmd.target_id
+        try:
+            source_content = source_path.read_text()
+        except OSError:
+            diagnostics.append(f"cannot read {cmd.target_id}, excluding from bundle")
+            continue
+
+        funcs = discover_test_functions(source_content)
+        if not funcs:
+            diagnostics.append(
+                f"{cmd.target_id}: no test_* functions found, excluding from bundle"
+            )
+            continue
+
+        module_path = file_path_to_module_path(cmd.target_id)
+        bundle_modules.append(TestModule(module_path, cmd.target_id, funcs))
+
+    if not bundle_modules:
+        print("No test functions found for bundling", file=sys.stderr)
+        return
+
+    for diag in diagnostics:
+        print(f"bundle: {diag}", file=sys.stderr)
+
+    # --- Generate harness and staging area ---
+    harness_source = generate_harness(bundle_modules)
+    test_file_paths = [m.file_path for m in bundle_modules]
+    staging_result = create_bundle_staging(root, test_file_paths, harness_source)
+
+    try:
+        harness_rel = str(staging_result.harness_path.relative_to(root))
+
+        # Build a graph with lib targets + one bundle test target
+        lib_targets = tuple(t for t in graph.targets if t.kind == TargetKind.LIB)
+        bundle_target = Target(TargetKind.TEST, harness_rel, "bundle::harness")
+        bundle_graph = TG(
+            targets=lib_targets + (bundle_target,),
+            edges=(),
+        )
+
+        # Prepend staging include path for __init__.mojo resolution
+        bundle_policy = Policy(
+            optimize=policy.optimize,
+            debug_level=policy.debug_level,
+            defines=policy.defines,
+            flags=policy.flags,
+            include_paths=(staging_result.include_path, *policy.include_paths),
+            lints=policy.lints,
+            jobs=policy.jobs,
+            jobs_compile=policy.jobs_compile,
+            jobs_tests=policy.jobs_tests,
+            timeout_s=policy.timeout_s,
+        )
+
+        bundle_commands = plan_fn(bundle_graph, env, bundle_policy, toolchain, host)
+
+        # Runtime -k filter passed as argv to the binary
+        runtime_args: tuple[str, ...] = ()
+        if filter_pattern:
+            runtime_args = (filter_pattern,)
+
+        bundle_include = (staging_result.include_path, *include_paths)
+
+        cache_ctx = CacheContext(
+            project_hash=project_hash,
+            tests_tree_hash=tests_tree_hash,
+            compiler_version=toolchain.version,
+            meta_dir=root / ".mojox" / "cache" / "meta",
+            enabled=not no_cache,
+            runtime_args=runtime_args,
+        )
+
+        # --- Callbacks ---
+        on_start = None
+        on_complete = None
+
+        if output_format == OutputFormat.JSON:
+            from .json import (
+                JsonEventWriter,
+                make_json_callbacks,
+                serialize_suite_finished,
+                serialize_suite_started,
+            )
+
+            writer = JsonEventWriter(sys.stdout)
+            test_count = sum(1 for c in bundle_commands if c.kind in _TEST_KINDS)
+            writer.write_event(serialize_suite_started(test_count))
+            json_on_start, json_on_complete = make_json_callbacks(writer)
+            on_start = json_on_start
+            on_complete = json_on_complete
+        else:
+            render_starting(len(bundle_commands))
+            on_complete = make_progress_callback(
+                success_output=success_output,
+                failure_output=failure_output,
+            )
+
+        # --- Execute ---
+        wall_start = time.monotonic()
+        try:
+            outcomes = run_commands(
+                bundle_commands,
+                max_workers=1,
+                extra_env=settings.env if settings.env else None,
+                include_paths=bundle_include,
+                on_start=on_start,
+                on_complete=on_complete,
+                fail_fast=fail_fast,
+                cache_context=cache_ctx,
+            )
+        except KeyboardInterrupt:
+            print(f"\n{_interrupted_summary(bundle_commands)}", file=sys.stderr)
+            sys.exit(130)
+        wall_elapsed = time.monotonic() - wall_start
+
+        # --- Render ---
+        if output_format == OutputFormat.JSON:
+            writer.write_event(serialize_suite_finished(outcomes, elapsed_s=wall_elapsed))
+        else:
+            render_final_output(
+                outcomes,
+                success_output=success_output,
+                failure_output=failure_output,
+            )
+            render_summary(outcomes)
+
+        sys.exit(determine_exit_code(outcomes))
+
+    finally:
+        cleanup_staging(staging_result.staging_dir)
 
 
 def _cmd_run(args: argparse.Namespace) -> None:
