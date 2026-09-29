@@ -66,7 +66,7 @@ Five modules, roughly 1100 lines total:
 - `_metadata.py` renders PEP 621 / PEP 643 METADATA and PEP 427 WHEEL files.
 - `_preflight.py` validates the build environment before compilation starts.
 
-Config parsing, policy resolution, and toolchain detection live in `mojox-core`. The only runtime dependency beyond the stdlib is `packaging` (for platform tags).
+Config parsing, policy resolution, and toolchain detection live in `mojox-core` (0.6.x required, installed automatically). The only other runtime dependency beyond the stdlib is `packaging` (for platform tags).
 
 ## Features
 

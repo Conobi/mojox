@@ -12,7 +12,8 @@ uv add mojox-core
 ```
 
 Requires Python 3.10+. Only runtime dependency is `packaging>=23.0`
-(plus `tomli` on Python < 3.11).
+(plus `tomli` on Python < 3.11). `mojox` and `mojox-build` 0.6 require
+`mojox-core` 0.6.x.
 
 ## Pipeline
 

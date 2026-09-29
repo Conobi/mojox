@@ -16,7 +16,7 @@ Four commands. Pure uv. No `-I` flags, no `LD_LIBRARY_PATH` wrangling.
 
 | Package | PyPI | What it does |
 |---|---|---|
-| [`mojox`](./packages/mojox) | [![PyPI](https://img.shields.io/pypi/v/mojox)](https://pypi.org/project/mojox/) | CLI + execution layer. Subcommands: `test`, `run`, `build`, `check`, `metadata`. Reads `.mojox/config.toml` for local settings. Runs the planner's commands, handles ore acceleration in dev mode. |
+| [`mojox`](./packages/mojox) | [![PyPI](https://img.shields.io/pypi/v/mojox)](https://pypi.org/project/mojox/) | CLI + execution layer. Subcommands: `test`, `run`, `build`, `check`, `metadata`, `cache`. Reads `.mojox/config.toml` for local settings. Runs the planner's commands and caches compiled test and `run` binaries. |
 | [`mojox-build`](./packages/mojox-build) | [![PyPI](https://img.shields.io/pypi/v/mojox-build)](https://pypi.org/project/mojox-build/) | The build backend. Compiles `.mojo` into `.mojoc` and packages platform-tagged wheels. |
 | [`mojox-core`](./packages/mojox-core) | [![PyPI](https://img.shields.io/pypi/v/mojox-core)](https://pypi.org/project/mojox-core/) | Internal mojox features. A requirement for the other two packages to work properly. |
 
@@ -26,10 +26,11 @@ The Mojo compiler version is **not** pinned by any of these packages. Pin it in 
 
 ```
 mojox test       Run test targets (dev profile by default)
-mojox run        Run a single .mojo file (dev profile)
+mojox run        Build and execute a single .mojo file (dev profile)
 mojox build      Compile binary targets (release profile)
 mojox check      Validate manifest and run lints (no compiler needed)
 mojox metadata   Output the build plan as JSON
+mojox cache clean  Delete cached binaries (.mojox/cache/)
 ```
 
 ### `mojox test`
@@ -42,14 +43,22 @@ uv run mojox test --fail-fast                      # stop on first failure
 uv run mojox test --output-format json             # NDJSON event stream
 uv run mojox test --success-output immediate       # show passing output live
 uv run mojox test --failure-output final            # show failures after all tests
+uv run mojox test --bundle                         # all test_* functions in one binary
+uv run mojox test --examples                       # also compile-check examples/
+uv run mojox test --no-cache                       # rebuild every test binary
 ```
+
+Each test file is compiled to a binary under `.mojox/cache/` and reused until its sources, dependencies, flags, environment or compiler change. Examples are only checked with `--examples` or an `examples/` path. Add `.mojox/` to your `.gitignore`.
 
 ### `mojox run`
 
 ```bash
 uv run mojox run src/main.mojo
 uv run mojox run src/main.mojo --profile release
+uv run mojox run src/main.mojo --no-cache
 ```
+
+The file is built to a cached binary, which is then executed; mojox exits with the program's exit code (`128 + N` on signal `N`, `1` if the build fails or times out). Output is shown once the program exits.
 
 ### `mojox build`
 
