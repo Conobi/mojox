@@ -493,3 +493,78 @@ class TestBundleFlag:
         args = parser.parse_args(["test", "--bundle", "-k", "test_foo"])
         assert args.bundle is True
         assert args.filter == "test_foo"
+
+
+_FAKE_MOJO = """#!{python}
+import pathlib, stat, sys
+args = sys.argv[1:]
+assert args[0] == "build", args
+out = pathlib.Path(args[args.index("-o") + 1])
+out.parent.mkdir(parents=True, exist_ok=True)
+out.write_text("#!/bin/sh\\nexit 0\\n")
+out.chmod(out.stat().st_mode | stat.S_IEXEC)
+with open({log!r}, "a") as f:
+    f.write(args[1] + "\\n")
+"""
+
+
+class TestCacheInvalidatesOnDependencyChange:
+    """``mojox test`` end to end with a fake compiler: a dependency edit forces a rebuild."""
+
+    @pytest.fixture
+    def project(self, tmp_path, monkeypatch):
+        """Project with one test and one path dependency, wired to a fake ``mojo``."""
+        from mojox_core import DistKind, Toolchain
+
+        proj = tmp_path / "proj"
+        (proj / "tests").mkdir(parents=True)
+        (proj / "pyproject.toml").write_text('[project]\nname = "testlib"\nversion = "0.1.0"\n')
+        (proj / "tests" / "test_hello.mojo").write_text("def test_hello():\n    pass\n")
+
+        dep = tmp_path / "mojo_packages"
+        (dep / "navette").mkdir(parents=True)
+        (dep / "navette" / "__init__.mojo").write_text("fn f(): pass\n")
+
+        log = tmp_path / "builds.log"
+        log.touch()
+        fake = tmp_path / "bin" / "mojo"
+        fake.parent.mkdir()
+        fake.write_text(_FAKE_MOJO.format(python=sys.executable, log=str(log)))
+        fake.chmod(0o755)
+
+        toolchain = Toolchain(mojo_path=str(fake), version="1.0.0", subcommand="precompile", extension=".mojoc")
+        dist = {
+            "name": "navette",
+            "include_dir": str(dep),
+            "kind": DistKind.SOURCE,
+            "packages": ["navette"],
+            "provenance": "0.1.0",
+            "native_lib_dirs": (),
+        }
+        monkeypatch.setattr("mojox_core.io.toolchain.resolve", lambda: toolchain)
+        monkeypatch.setattr("mojox_core.io.environment.read_distributions", lambda: [dist])
+        monkeypatch.chdir(proj)
+        return dep, log
+
+    def _run(self, *extra: str) -> int:
+        from mojox.cli import _cmd_test
+
+        args = build_parser().parse_args(["test", "--no-config", *extra])
+        with pytest.raises(SystemExit) as exc:
+            _cmd_test(args)
+        return exc.value.code
+
+    @pytest.mark.parametrize("mode", [(), ("--bundle",)], ids=["per-file", "bundle"])
+    def test_unchanged_dependency_is_a_hit(self, project, mode):
+        _dep, log = project
+        assert self._run(*mode) == 0
+        assert self._run(*mode) == 0
+        assert len(log.read_text().splitlines()) == 1
+
+    @pytest.mark.parametrize("mode", [(), ("--bundle",)], ids=["per-file", "bundle"])
+    def test_dependency_edit_rebuilds(self, project, mode):
+        dep, log = project
+        assert self._run(*mode) == 0
+        (dep / "navette" / "__init__.mojo").write_text("fn f(): return\n")
+        assert self._run(*mode) == 0
+        assert len(log.read_text().splitlines()) == 2

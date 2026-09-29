@@ -7,9 +7,10 @@ import sys
 from pathlib import Path, PurePosixPath
 
 import pytest
-from mojox.cache import write_cache_meta
+from mojox.cache import stamp_include_dirs, write_cache_meta
 from mojox.exec import (
     CacheContext,
+    _build_test_cache_key,
     _extract_test_source_and_flags,
     run_cached_test,
     run_command,
@@ -576,6 +577,7 @@ class TestCacheContext:
         ctx = CacheContext(
             project_hash="abc",
             tests_tree_hash="def",
+            deps_stamp="ccc",
             compiler_version="25.4.0",
             meta_dir=tmp_path / "meta",
         )
@@ -590,6 +592,7 @@ class TestCacheContext:
         ctx = CacheContext(
             project_hash="abc",
             tests_tree_hash="def",
+            deps_stamp="ccc",
             compiler_version="25.4.0",
             meta_dir=tmp_path / "meta",
             enabled=False,
@@ -601,6 +604,7 @@ class TestCacheContext:
         ctx = CacheContext(
             project_hash="abc",
             tests_tree_hash="def",
+            deps_stamp="ccc",
             compiler_version="25.4.0",
             meta_dir=tmp_path / "meta",
         )
@@ -609,42 +613,155 @@ class TestCacheContext:
 
 
 class TestExtractTestSourceAndFlags:
-    """Tests for _extract_test_source_and_flags."""
+    """Tests for _extract_test_source_and_flags against the planner's argv layout."""
 
     def test_typical_build_command(self):
-        """Standard mojo build argv extracts source and flags."""
-        argv = ("/usr/bin/mojo", "build", "-O0", "tests/test_hello.mojo", "-o", ".mojox/cache/bin/test_hello")
+        """``<mojo> build <src> -o <out> <flags...>``: source is argv[2], flags follow -o."""
+        argv = ("/usr/bin/mojo", "build", "tests/test_hello.mojo", "-o", ".mojox/cache/bin/t", "-O0")
         source, flags = _extract_test_source_and_flags(argv)
         assert source == "tests/test_hello.mojo"
         assert flags == ("-O0",)
 
-    def test_multiple_flags(self):
-        """Multiple compiler flags are all captured."""
-        argv = ("/usr/bin/mojo", "build", "-O0", "-I", "/include", "t.mojo", "-o", "out")
-        source, flags = _extract_test_source_and_flags(argv)
-        assert source == "t.mojo"
-        assert flags == ("-O0", "-I", "/include")
-
-    def test_no_mojo_source(self):
-        """Missing .mojo file returns None source."""
-        argv = ("/usr/bin/mojo", "build", "-O0", "-o", "out")
-        source, flags = _extract_test_source_and_flags(argv)
-        assert source is None
-        assert flags == ("-O0",)
+    def test_flags_keep_order(self):
+        """-I order is first-match-wins, so flags are returned unsorted."""
+        argv = ("/usr/bin/mojo", "build", "t.mojo", "-o", "out", "-I", "/b", "-I", "/a")
+        _source, flags = _extract_test_source_and_flags(argv)
+        assert flags == ("-I", "/b", "-I", "/a")
 
     def test_no_flags(self):
-        """No extra flags yields empty tuple."""
         argv = ("/usr/bin/mojo", "build", "test.mojo", "-o", "out")
         source, flags = _extract_test_source_and_flags(argv)
         assert source == "test.mojo"
         assert flags == ()
 
-    def test_flag_after_output(self):
-        """Flags after -o <path> are still captured (unusual but handled)."""
-        argv = ("/usr/bin/mojo", "build", "test.mojo", "-o", "out", "--debug")
+    def test_define_ending_in_mojo_does_not_hijack_source(self):
+        argv = ("/usr/bin/mojo", "build", "tests/test_a.mojo", "-o", "out", "-D", "FOO=x.mojo")
         source, flags = _extract_test_source_and_flags(argv)
-        assert source == "test.mojo"
-        assert "--debug" in flags
+        assert source == "tests/test_a.mojo"
+        assert flags == ("-D", "FOO=x.mojo")
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ("/usr/bin/mojo", "build", "-O0", "t.mojo", "-o", "out"),
+            ("/usr/bin/mojo", "run", "t.mojo", "-o", "out"),
+            ("/usr/bin/mojo", "build", "t.mojo", "out"),
+            ("/usr/bin/mojo", "build", "t.txt", "-o", "out"),
+            ("/usr/bin/mojo", "build"),
+        ],
+    )
+    def test_malformed_argv_rejected(self, argv):
+        with pytest.raises(ValueError):
+            _extract_test_source_and_flags(argv)
+
+
+def _planner_cmd(tmp_path: Path, *flags: str, mojo: str = "/opt/mojo/bin/mojo") -> Command:
+    """A BUILD_TEST command shaped exactly like the planner's."""
+    src = tmp_path / "tests" / "test_a.mojo"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    if not src.exists():
+        src.write_text("def test_a(): pass")
+    return Command(
+        argv=(mojo, "build", "tests/test_a.mojo", "-o", ".mojox/cache/bin/test_a", *flags),
+        cwd=PurePosixPath(str(tmp_path)),
+        env={"PATH": "/opt/mojo/bin:/usr/bin", "HOME": ""},
+        kind=CommandKind.BUILD_TEST,
+        target_id="tests/test_a.mojo",
+        timeout_s=30,
+        outputs=(".mojox/cache/bin/test_a",),
+        depends_on=(),
+    )
+
+
+def _ctx(tmp_path: Path, include_dirs: tuple[str, ...]) -> CacheContext:
+    """A CacheContext whose dependency stamp is taken now, as the CLI does once per run."""
+    return CacheContext(
+        project_hash="aaa",
+        tests_tree_hash="bbb",
+        deps_stamp=stamp_include_dirs(include_dirs),
+        compiler_version="1.0.0",
+        meta_dir=tmp_path / "meta",
+    )
+
+
+class TestBuildTestCacheKey:
+    """What the executor feeds into the cache key for a BUILD_TEST command."""
+
+    def _dep(self, tmp_path: Path) -> Path:
+        dep = tmp_path / "dep"
+        (dep / "navette").mkdir(parents=True)
+        (dep / "navette" / "__init__.mojo").write_text("fn f(): pass")
+        return dep
+
+    def test_unchanged_env_gives_identical_key(self, tmp_path: Path):
+        dep = self._dep(tmp_path)
+        cmd = _planner_cmd(tmp_path, "-I", str(dep))
+        k1 = _build_test_cache_key(cmd, _ctx(tmp_path, (str(dep),)), {"X": "1"})
+        k2 = _build_test_cache_key(cmd, _ctx(tmp_path, (str(dep),)), {"X": "1"})
+        assert k1 is not None
+        assert k1 == k2
+
+    def test_dependency_edit_changes_key(self, tmp_path: Path):
+        dep = self._dep(tmp_path)
+        cmd = _planner_cmd(tmp_path, "-I", str(dep))
+        before = _build_test_cache_key(cmd, _ctx(tmp_path, (str(dep),)), None)
+        (dep / "navette" / "__init__.mojo").write_text("fn f(): return")
+        after = _build_test_cache_key(cmd, _ctx(tmp_path, (str(dep),)), None)
+        assert before != after
+
+    def test_include_reorder_changes_key(self, tmp_path: Path):
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        a.mkdir()
+        b.mkdir()
+        ab = _planner_cmd(tmp_path, "-I", str(a), "-I", str(b))
+        ba = _planner_cmd(tmp_path, "-I", str(b), "-I", str(a))
+        ctx = _ctx(tmp_path, (str(a), str(b)))
+        assert _build_test_cache_key(ab, ctx, None) != _build_test_cache_key(ba, ctx, None)
+
+    def test_missing_include_dir_gives_stable_key(self, tmp_path: Path):
+        missing = str(tmp_path / "not-there")
+        cmd = _planner_cmd(tmp_path, "-I", missing)
+        k1 = _build_test_cache_key(cmd, _ctx(tmp_path, (missing,)), None)
+        k2 = _build_test_cache_key(cmd, _ctx(tmp_path, (missing,)), None)
+        assert k1 is not None
+        assert k1 == k2
+
+    def test_settings_env_change_changes_key(self, tmp_path: Path):
+        cmd = _planner_cmd(tmp_path)
+        ctx = _ctx(tmp_path, ())
+        assert _build_test_cache_key(cmd, ctx, {"MODULAR_X": "1"}) != _build_test_cache_key(
+            cmd, ctx, {"MODULAR_X": "2"}
+        )
+        assert _build_test_cache_key(cmd, ctx, None) != _build_test_cache_key(cmd, ctx, {"MODULAR_X": "1"})
+
+    def test_mojo_path_change_changes_key(self, tmp_path: Path):
+        ctx = _ctx(tmp_path, ())
+        k1 = _build_test_cache_key(_planner_cmd(tmp_path, mojo="/opt/a/mojo"), ctx, None)
+        k2 = _build_test_cache_key(_planner_cmd(tmp_path, mojo="/opt/b/mojo"), ctx, None)
+        assert k1 != k2
+
+    def test_define_ending_in_mojo_keys_on_real_source(self, tmp_path: Path):
+        """The key must hash tests/test_a.mojo, not the file named by a -D value."""
+        cmd = _planner_cmd(tmp_path, "-D", "FOO=x.mojo")
+        ctx = _ctx(tmp_path, ())
+        before = _build_test_cache_key(cmd, ctx, None)
+        (tmp_path / "tests" / "test_a.mojo").write_text("def test_a(): return")
+        assert _build_test_cache_key(cmd, ctx, None) != before
+
+    def test_malformed_argv_is_uncacheable(self, tmp_path: Path):
+        cmd = _planner_cmd(tmp_path)
+        bad = Command(
+            argv=(cmd.argv[0], "build", "-O0", *cmd.argv[2:]),
+            cwd=cmd.cwd,
+            env=cmd.env,
+            kind=cmd.kind,
+            target_id=cmd.target_id,
+            timeout_s=cmd.timeout_s,
+            outputs=cmd.outputs,
+            depends_on=cmd.depends_on,
+        )
+        assert _build_test_cache_key(bad, _ctx(tmp_path, ()), None) is None
 
 
 class TestRunCommandsWithCache:
@@ -680,6 +797,7 @@ class TestRunCommandsWithCache:
         ctx = CacheContext(
             project_hash="aaa",
             tests_tree_hash="bbb",
+            deps_stamp="ccc",
             compiler_version="25.4.0",
             meta_dir=meta_dir,
         )
@@ -740,6 +858,7 @@ class TestRunCommandsWithCache:
         ctx = CacheContext(
             project_hash="aaa",
             tests_tree_hash="bbb",
+            deps_stamp="ccc",
             compiler_version="25.4.0",
             meta_dir=meta_dir,
             enabled=False,
@@ -780,6 +899,7 @@ class TestRunCommandsWithCache:
         ctx = CacheContext(
             project_hash="aaa",
             tests_tree_hash="bbb",
+            deps_stamp="ccc",
             compiler_version="25.4.0",
             meta_dir=meta_dir,
         )
@@ -802,6 +922,7 @@ class TestRunCommandsWithCache:
         ctx = CacheContext(
             project_hash="aaa",
             tests_tree_hash="bbb",
+            deps_stamp="ccc",
             compiler_version="25.4.0",
             meta_dir=Path("/tmp/meta"),
         )
@@ -818,6 +939,7 @@ class TestRuntimeArgs:
         ctx = CacheContext(
             project_hash="abc",
             tests_tree_hash="def",
+            deps_stamp="ccc",
             compiler_version="1.0.0",
             meta_dir=Path("/meta"),
         )
@@ -828,6 +950,7 @@ class TestRuntimeArgs:
         ctx = CacheContext(
             project_hash="abc",
             tests_tree_hash="def",
+            deps_stamp="ccc",
             compiler_version="1.0.0",
             meta_dir=Path("/meta"),
             runtime_args=("--filter", "test_foo"),
@@ -927,6 +1050,7 @@ class TestRuntimeArgs:
         ctx = CacheContext(
             project_hash="aaa",
             tests_tree_hash="bbb",
+            deps_stamp="ccc",
             compiler_version="25.4.0",
             meta_dir=meta_dir,
             runtime_args=("-k", "test_something"),

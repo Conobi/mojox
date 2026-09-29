@@ -29,12 +29,14 @@ from .types import Outcome, OutcomeKind
 class CacheContext:
     """Context for binary cache lookups passed to the executor.
 
-    Groups the precomputed hashes and metadata directory needed to
-    evaluate cache keys for AOT-compiled test binaries.
+    Groups the per-run inputs of the AOT test binary cache key. They are
+    computed once per ``mojox test`` invocation, not per test.
 
     Attributes:
         project_hash: Hash of the project's library source trees.
         tests_tree_hash: Hash of the test directory trees.
+        deps_stamp: :func:`~mojox.cache.stamp_include_dirs` of the
+            dependency include dirs, in ``-I`` order.
         compiler_version: Mojo compiler version string.
         meta_dir: Directory for per-target cache metadata JSON files.
         enabled: Whether cache lookups are active. When ``False`` the
@@ -47,6 +49,7 @@ class CacheContext:
 
     project_hash: str
     tests_tree_hash: str
+    deps_stamp: str
     compiler_version: str
     meta_dir: Path
     enabled: bool = True
@@ -84,42 +87,52 @@ def _inject_native_lib_paths(
 
 def _extract_test_source_and_flags(
     argv: tuple[str, ...],
-) -> tuple[str | None, tuple[str, ...]]:
-    """Extract the ``.mojo`` source path and compiler flags from a BUILD_TEST argv.
+) -> tuple[str, tuple[str, ...]]:
+    """Split a planner BUILD_TEST argv into its source path and trailing flags.
 
-    Parses the command argv to separate the test source file from
-    compiler flags, skipping the mojo binary (``argv[0]``), the
-    ``"build"`` subcommand (``argv[1]``), ``-o``, and the output path
-    that follows ``-o``.
+    Relies on the fixed layout emitted by ``mojox_core.plan``:
+    ``<mojo> build <source> -o <output> <flags...>``. Position, not suffix,
+    identifies the source, so a flag value such as ``-D FOO=x.mojo`` can
+    never be mistaken for it. Flags keep their argv order.
 
-    Args:
-        argv: The full argv tuple from a ``BUILD_TEST`` :class:`Command`.
-
-    Returns:
-        A ``(source_path, flags)`` tuple.  ``source_path`` is ``None``
-        when no ``.mojo`` file was found in *argv*.
+    Raises:
+        ValueError: *argv* does not have that layout.
     """
-    source: str | None = None
-    flags: list[str] = []
-    skip_next = False
+    if len(argv) < 5 or argv[1] != "build" or argv[3] != "-o" or not argv[2].endswith((".mojo", ".\U0001f525")):
+        raise ValueError(f"not a planner BUILD_TEST argv: {argv!r}")
+    return argv[2], argv[5:]
 
-    for i, arg in enumerate(argv):
-        if skip_next:
-            skip_next = False
-            continue
-        if i == 0:  # mojo binary path
-            continue
-        if i == 1 and arg == "build":
-            continue
-        if arg == "-o":
-            skip_next = True
-            continue
-        if arg.endswith(".mojo"):
-            source = arg
-            continue
-        flags.append(arg)
 
-    return source, tuple(flags)
+def _build_test_cache_key(
+    cmd: Command,
+    cache_context: CacheContext,
+    extra_env: dict[str, str] | None,
+) -> str | None:
+    """Return the cache key for a BUILD_TEST command, or ``None`` if uncacheable.
+
+    Beyond the per-run :class:`CacheContext` inputs, the key covers the
+    compiler binary (``argv[0]``), the flags in argv order, and the build
+    environment exactly as :func:`run_command` merges it (``extra_env``
+    overlaid by ``cmd.env``). An argv that does not match the planner's
+    layout is uncacheable rather than keyed on a guess.
+    """
+    try:
+        source_str, flags = _extract_test_source_and_flags(cmd.argv)
+    except ValueError:
+        return None
+    source_path = Path(source_str)
+    if not source_path.is_absolute():
+        source_path = Path(cmd.cwd) / source_path
+    return compute_cache_key(
+        test_source=source_path,
+        project_hash=cache_context.project_hash,
+        tests_tree_hash=cache_context.tests_tree_hash,
+        deps_stamp=cache_context.deps_stamp,
+        compiler_version=cache_context.compiler_version,
+        mojo_path=cmd.argv[0],
+        flags=flags,
+        env={**(extra_env or {}), **cmd.env},
+    )
 
 
 def _resolve_cache_for_build_test(
@@ -130,8 +143,9 @@ def _resolve_cache_for_build_test(
 ) -> Outcome:
     """Route a BUILD_TEST command through the cached test runner.
 
-    Computes the cache key from the command's argv and the shared
-    :class:`CacheContext`, then delegates to :func:`run_cached_test`.
+    Keys the command with :func:`_build_test_cache_key`, then delegates to
+    :func:`run_cached_test`. An uncacheable command gets a random key, so
+    it always rebuilds.
 
     When caching is disabled (``cache_context.enabled is False``), the
     binary is built to a temporary directory and cache metadata is not
@@ -148,27 +162,11 @@ def _resolve_cache_for_build_test(
     """
     import uuid
 
-    if cache_context.enabled:
-        source_str, flags = _extract_test_source_and_flags(cmd.argv)
-        if source_str is not None:
-            source_path = Path(source_str)
-            if not source_path.is_absolute():
-                source_path = Path(cmd.cwd) / source_path
-            cache_key = compute_cache_key(
-                test_source=source_path,
-                project_hash=cache_context.project_hash,
-                tests_tree_hash=cache_context.tests_tree_hash,
-                compiler_version=cache_context.compiler_version,
-                flags=flags,
-            )
-        else:
-            cache_key = uuid.uuid4().hex
-    else:
-        cache_key = uuid.uuid4().hex
+    cache_key = _build_test_cache_key(cmd, cache_context, extra_env) if cache_context.enabled else None
 
     return run_cached_test(
         cmd,
-        cache_key=cache_key,
+        cache_key=cache_key or uuid.uuid4().hex,
         meta_dir=cache_context.meta_dir,
         compiler_version=cache_context.compiler_version,
         extra_env=extra_env,

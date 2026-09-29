@@ -395,7 +395,7 @@ def _cmd_test(args: argparse.Namespace) -> None:
     import hashlib
     import time
 
-    from .cache import hash_directory_tree
+    from .cache import hash_directory_tree, stamp_include_dirs
     from .exec import CacheContext, run_commands
     from .output import (
         make_progress_callback,
@@ -491,10 +491,17 @@ def _cmd_test(args: argparse.Namespace) -> None:
         test_hashes.append(hash_directory_tree(root / test_root))
     tests_tree_hash = hashlib.sha256("".join(test_hashes).encode()).hexdigest()
 
+    # Dependency dirs, in the planner's -I order. The precompile output dir
+    # (.mojox/build/pkg) is deliberately absent: it is rewritten every run,
+    # and its content is a function of the lib sources (project_hash), these
+    # dirs and the compiler.
+    deps_stamp = stamp_include_dirs(include_paths)
+
     no_cache = getattr(args, "no_cache", False)
     cache_ctx = CacheContext(
         project_hash=project_hash,
         tests_tree_hash=tests_tree_hash,
+        deps_stamp=deps_stamp,
         compiler_version=toolchain.version,
         meta_dir=root / ".mojox" / "cache" / "meta",
         enabled=not no_cache,
@@ -513,6 +520,7 @@ def _cmd_test(args: argparse.Namespace) -> None:
             include_paths=include_paths,
             project_hash=project_hash,
             tests_tree_hash=tests_tree_hash,
+            deps_stamp=deps_stamp,
             output_format=output_format,
             filter_pattern=filter_pattern,
             no_cache=no_cache,
@@ -587,6 +595,7 @@ def _run_bundle_test(
     include_paths: tuple[str, ...],
     project_hash: str,
     tests_tree_hash: str,
+    deps_stamp: str,
     output_format: OutputFormat,
     filter_pattern: str | None,
     no_cache: bool,
@@ -603,6 +612,12 @@ def _run_bundle_test(
 
     Pattern A test files (no ``test_*`` functions) are excluded with
     a diagnostic printed to stderr.
+
+    The cache key reuses the per-file mode's *deps_stamp*: the extra
+    include dirs bundle mode adds are the staging tree (regenerated each
+    run from the test files, which ``tests_tree_hash`` covers) and the
+    parents of lib targets, which are there to expose the lib packages
+    that ``project_hash`` covers.
     """
     import time
 
@@ -720,6 +735,7 @@ def _run_bundle_test(
         cache_ctx = CacheContext(
             project_hash=project_hash,
             tests_tree_hash=tests_tree_hash,
+            deps_stamp=deps_stamp,
             compiler_version=toolchain.version,
             meta_dir=root / ".mojox" / "cache" / "meta",
             enabled=not no_cache,

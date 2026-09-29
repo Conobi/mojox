@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from mojox.cache import (
     compute_cache_key,
     hash_directory_tree,
     read_cache_meta,
+    stamp_include_dirs,
     write_cache_meta,
 )
 
@@ -85,14 +87,20 @@ class TestComputeCacheKey:
             test_source=src,
             project_hash="aaa",
             tests_tree_hash="bbb",
+            deps_stamp="ddd",
             compiler_version="25.4.0",
+            mojo_path="/usr/bin/mojo",
+            env={},
             flags=("-O2",),
         )
         k2 = compute_cache_key(
             test_source=src,
             project_hash="aaa",
             tests_tree_hash="bbb",
+            deps_stamp="ddd",
             compiler_version="25.4.0",
+            mojo_path="/usr/bin/mojo",
+            env={},
             flags=("-O2",),
         )
         assert k1 == k2
@@ -105,7 +113,10 @@ class TestComputeCacheKey:
             test_source=src,
             project_hash="aaa",
             tests_tree_hash="bbb",
+            deps_stamp="ddd",
             compiler_version="25.4.0",
+            mojo_path="/usr/bin/mojo",
+            env={},
             flags=(),
         )
 
@@ -114,7 +125,10 @@ class TestComputeCacheKey:
             test_source=src,
             project_hash="aaa",
             tests_tree_hash="bbb",
+            deps_stamp="ddd",
             compiler_version="25.4.0",
+            mojo_path="/usr/bin/mojo",
+            env={},
             flags=(),
         )
         assert k1 != k2
@@ -128,14 +142,20 @@ class TestComputeCacheKey:
             test_source=src,
             project_hash="aaa",
             tests_tree_hash="bbb",
+            deps_stamp="ddd",
             compiler_version="25.4.0",
+            mojo_path="/usr/bin/mojo",
+            env={},
             flags=(),
         )
         k2 = compute_cache_key(
             test_source=src,
             project_hash="zzz",
             tests_tree_hash="bbb",
+            deps_stamp="ddd",
             compiler_version="25.4.0",
+            mojo_path="/usr/bin/mojo",
+            env={},
             flags=(),
         )
         assert k1 != k2
@@ -149,17 +169,179 @@ class TestComputeCacheKey:
             test_source=src,
             project_hash="aaa",
             tests_tree_hash="bbb",
+            deps_stamp="ddd",
             compiler_version="25.4.0",
+            mojo_path="/usr/bin/mojo",
+            env={},
             flags=("-O2",),
         )
         k2 = compute_cache_key(
             test_source=src,
             project_hash="aaa",
             tests_tree_hash="bbb",
+            deps_stamp="ddd",
             compiler_version="25.4.0",
+            mojo_path="/usr/bin/mojo",
+            env={},
             flags=("-O0",),
         )
         assert k1 != k2
+
+
+def _key(src: Path, **overrides) -> str:
+    """Cache key over fixed baseline inputs, with *overrides* replacing any of them."""
+    inputs = {
+        "test_source": src,
+        "project_hash": "aaa",
+        "tests_tree_hash": "bbb",
+        "deps_stamp": "ddd",
+        "compiler_version": "25.4.0",
+        "mojo_path": "/usr/bin/mojo",
+        "env": {"A": "1"},
+        "flags": ("-I", "/x", "-I", "/y"),
+    }
+    inputs.update(overrides)
+    return compute_cache_key(**inputs)
+
+
+class TestCacheKeyInputs:
+    """The inputs added so stale binaries are never reused."""
+
+    def test_deps_stamp_change_different_key(self, tmp_path: Path):
+        src = tmp_path / "t.mojo"
+        src.write_text("fn main(): pass")
+        assert _key(src) != _key(src, deps_stamp="other")
+
+    def test_env_change_different_key(self, tmp_path: Path):
+        src = tmp_path / "t.mojo"
+        src.write_text("fn main(): pass")
+        assert _key(src) != _key(src, env={"A": "2"})
+        assert _key(src) != _key(src, env={"A": "1", "B": "1"})
+
+    def test_env_order_irrelevant(self, tmp_path: Path):
+        src = tmp_path / "t.mojo"
+        src.write_text("fn main(): pass")
+        a = _key(src, env={"A": "1", "B": "2"})
+        b = _key(src, env={"B": "2", "A": "1"})
+        assert a == b
+
+    def test_mojo_path_change_different_key(self, tmp_path: Path):
+        src = tmp_path / "t.mojo"
+        src.write_text("fn main(): pass")
+        assert _key(src) != _key(src, mojo_path="/opt/other/mojo")
+
+    def test_include_order_changes_key(self, tmp_path: Path):
+        """First -I match wins in Mojo, so flag order is part of the key."""
+        src = tmp_path / "t.mojo"
+        src.write_text("fn main(): pass")
+        assert _key(src) != _key(src, flags=("-I", "/y", "-I", "/x"))
+
+    def test_flag_boundaries_unambiguous(self, tmp_path: Path):
+        """Concatenation must not let ("ab", "c") collide with ("a", "bc")."""
+        src = tmp_path / "t.mojo"
+        src.write_text("fn main(): pass")
+        assert _key(src, flags=("ab", "c")) != _key(src, flags=("a", "bc"))
+
+
+class TestStampIncludeDirs:
+    """Stat-based fingerprint of dependency include dirs."""
+
+    def _dep(self, root: Path) -> Path:
+        """A fake include dir holding one source package and one precompiled one."""
+        pkg = root / "dep" / "navette"
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.mojo").write_text("")
+        (pkg / "core.mojo").write_text("fn f(): pass")
+        (root / "dep" / "wire.mojoc").write_bytes(b"\x00" * 16)
+        return root / "dep"
+
+    def test_unchanged_tree_is_stable(self, tmp_path: Path):
+        dep = self._dep(tmp_path)
+        assert stamp_include_dirs((str(dep),)) == stamp_include_dirs((str(dep),))
+
+    def test_size_change_changes_stamp(self, tmp_path: Path):
+        dep = self._dep(tmp_path)
+        target = dep / "navette" / "core.mojo"
+        st = target.stat()
+        before = stamp_include_dirs((str(dep),))
+        target.write_text("fn f(): pass  # longer")
+        os.utime(target, ns=(st.st_atime_ns, st.st_mtime_ns))
+        assert stamp_include_dirs((str(dep),)) != before
+
+    def test_mtime_change_changes_stamp(self, tmp_path: Path):
+        dep = self._dep(tmp_path)
+        target = dep / "wire.mojoc"
+        before = stamp_include_dirs((str(dep),))
+        st = target.stat()
+        os.utime(target, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+        assert stamp_include_dirs((str(dep),)) != before
+
+    def test_added_file_changes_stamp(self, tmp_path: Path):
+        dep = self._dep(tmp_path)
+        before = stamp_include_dirs((str(dep),))
+        (dep / "navette" / "extra.mojo").write_text("")
+        assert stamp_include_dirs((str(dep),)) != before
+
+    def test_irrelevant_files_ignored(self, tmp_path: Path):
+        dep = self._dep(tmp_path)
+        before = stamp_include_dirs((str(dep),))
+        (dep / "README.md").write_text("docs")
+        (dep / "navette" / "notes.txt").write_text("x")
+        assert stamp_include_dirs((str(dep),)) == before
+
+    def test_all_mojo_artifact_suffixes_stamped(self, tmp_path: Path):
+        dep = tmp_path / "dep"
+        dep.mkdir()
+        before = stamp_include_dirs((str(dep),))
+        for name in ("a.mojo", "b.\U0001f525", "c.mojopkg", "d.mojoc"):
+            (dep / name).write_text("")
+            after = stamp_include_dirs((str(dep),))
+            assert after != before, name
+            before = after
+
+    def test_dir_order_changes_stamp(self, tmp_path: Path):
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        for d in (a, b):
+            d.mkdir()
+            (d / "m.mojo").write_text(d.name)
+        assert stamp_include_dirs((str(a), str(b))) != stamp_include_dirs((str(b), str(a)))
+
+    def test_missing_dir_is_stable(self, tmp_path: Path):
+        missing = str(tmp_path / "nope")
+        s1 = stamp_include_dirs((missing,))
+        s2 = stamp_include_dirs((missing,))
+        assert s1 == s2
+        assert s1 != stamp_include_dirs(())
+
+    def test_missing_dir_appearing_changes_stamp(self, tmp_path: Path):
+        path = tmp_path / "later"
+        before = stamp_include_dirs((str(path),))
+        path.mkdir()
+        assert stamp_include_dirs((str(path),)) != before
+
+    def test_symlinked_package_is_followed(self, tmp_path: Path):
+        """Editable installs symlink mojo_packages/<pkg> to the project source."""
+        src = tmp_path / "project" / "src" / "navette"
+        src.mkdir(parents=True)
+        (src / "__init__.mojo").write_text("")
+        inc = tmp_path / "mojo_packages"
+        inc.mkdir()
+        (inc / "navette").symlink_to(src, target_is_directory=True)
+        before = stamp_include_dirs((str(inc),))
+        (src / "__init__.mojo").write_text("fn g(): pass")
+        assert stamp_include_dirs((str(inc),)) != before
+
+    def test_symlink_loop_terminates(self, tmp_path: Path):
+        dep = self._dep(tmp_path)
+        (dep / "navette" / "loop").symlink_to(dep, target_is_directory=True)
+        (dep / "self").symlink_to(".", target_is_directory=True)
+        assert stamp_include_dirs((str(dep),)) == stamp_include_dirs((str(dep),))
+
+    def test_dangling_symlink_is_stable(self, tmp_path: Path):
+        dep = self._dep(tmp_path)
+        (dep / "gone.mojo").symlink_to(tmp_path / "does-not-exist.mojo")
+        assert stamp_include_dirs((str(dep),)) == stamp_include_dirs((str(dep),))
 
 
 class TestCacheMetaRoundtrip:
