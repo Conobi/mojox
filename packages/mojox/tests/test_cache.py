@@ -96,6 +96,29 @@ class TestHashDirectoryTree:
             assert after != before, suffix
             before = after
 
+    def test_dot_directories_ignored(self, tmp_path: Path):
+        """Dot-prefixed paths (``.mojox`` staging, precompile output) never feed the hash."""
+        (tmp_path / "a.mojo").write_text("fn a(): pass")
+        h1 = hash_directory_tree(tmp_path)
+        (tmp_path / ".mojox").mkdir()
+        (tmp_path / ".mojox" / "x.mojoc").write_bytes(b"one")
+        (tmp_path / ".hidden").mkdir()
+        (tmp_path / ".hidden" / "y.mojo").write_text("fn y(): pass")
+        assert hash_directory_tree(tmp_path) == h1
+        (tmp_path / ".mojox" / "x.mojoc").write_bytes(b"two")
+        (tmp_path / ".hidden" / "y.mojo").write_text("fn y(): return")
+        assert hash_directory_tree(tmp_path) == h1
+        (tmp_path / "a.mojo").write_text("fn a(): return")
+        assert hash_directory_tree(tmp_path) != h1
+
+    def test_dot_ancestor_of_root_still_hashed(self, tmp_path: Path):
+        """Only components below the root count; a dot-named root is scanned."""
+        root = tmp_path / ".proj"
+        root.mkdir()
+        (root / "a.mojo").write_text("x")
+        assert hash_directory_tree(root) != hash_directory_tree(tmp_path / "missing")
+
+
 class TestComputeCacheKey:
     def test_same_inputs_same_key(self, tmp_path: Path):
         """Identical inputs produce identical cache keys."""

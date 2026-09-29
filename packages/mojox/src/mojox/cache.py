@@ -27,7 +27,9 @@ def hash_directory_tree(directory: Path) -> str:
 
     Covers every suffix in :data:`MOJO_IMPORT_SUFFIXES`, sorted by relative
     path so the result is independent of filesystem enumeration order.
-    Other files are ignored.
+    Other files are ignored, as is anything below a dot-prefixed path
+    component (``.mojox`` staging, precompile output): the compiler cannot
+    import it, and hashing it would make the key differ between runs.
 
     Args:
         directory: Root directory to scan.  If it does not exist, the
@@ -40,7 +42,11 @@ def hash_directory_tree(directory: Path) -> str:
 
     if directory.is_dir():
         mojo_files = sorted(
-            p for p in directory.rglob("*") if p.name.endswith(MOJO_IMPORT_SUFFIXES) and p.is_file()
+            p
+            for p in directory.rglob("*")
+            if p.name.endswith(MOJO_IMPORT_SUFFIXES)
+            and not any(part.startswith(".") for part in p.relative_to(directory).parts)
+            and p.is_file()
         )
         for path in mojo_files:
             rel = path.relative_to(directory)
