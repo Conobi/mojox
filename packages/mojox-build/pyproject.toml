@@ -34,6 +34,12 @@ tag_format = "mojox-build-v{version}"
 version_toml = ["pyproject.toml:project.version"]
 commit_message = "chore: release mojox-build {version}"
 allow_zero_version = true
+# uv.lock records every workspace member's version, so re-lock after the bump
+# and ship the lock in the release commit. `uv lock` resolves the workspace
+# root from this package dir; `assets` paths are relative to the repo root.
+# Distributions are built by the deploy job, not here.
+build_command = "uv lock"
+assets = ["uv.lock"]
 
 [tool.semantic_release.commit_parser_options]
 path_filters = ["."]

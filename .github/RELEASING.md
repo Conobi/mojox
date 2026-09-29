@@ -28,10 +28,11 @@ PSR will:
 1. Analyze commits since the last tag for that package
 2. Determine the bump level from commit messages
 3. Update `version` in `pyproject.toml`
-4. Generate/update `CHANGELOG.md` in the package directory
-5. Commit, tag, and push
-6. Create a GitHub Release
-7. Build and publish to PyPI via trusted publishing (OIDC)
+4. Run `uv lock` so the root `uv.lock` records the new version
+5. Generate/update `CHANGELOG.md` in the package directory
+6. Commit (including `uv.lock`), tag, and push
+7. Create a GitHub Release (with `uv.lock` attached as an asset)
+8. Build and publish to PyPI via trusted publishing (OIDC)
 
 If no bump-worthy commits exist, the workflow exits cleanly without releasing.
 
@@ -44,8 +45,11 @@ method for mojox-core, and a fallback for mojox and mojox-build.
 # 1. Bump version in pyproject.toml
 $EDITOR packages/<package>/pyproject.toml
 
-# 2. Commit + tag + push
-git commit -am "chore: release <package> <version>" -- packages/<package>/pyproject.toml
+# 2. Refresh the lock so it records the new version
+uv lock
+
+# 3. Commit + tag + push
+git commit -m "chore: release <package> <version>" -- packages/<package>/pyproject.toml uv.lock
 git tag <package>-v<version>
 git push origin main --tags
 ```
