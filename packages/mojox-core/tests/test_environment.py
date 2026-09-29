@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
+from mojox_core.environment import build_env
 from mojox_core.errors import ConfigError
 from mojox_core.types import DistKind
-from mojox_core.environment import build_env
 
 
 def _dist(name, include_dir, kind=DistKind.PRECOMPILED, packages=None, provenance="unknown"):
@@ -71,3 +73,50 @@ class TestBuildEnv:
         ]
         with pytest.raises(ConfigError, match="source-shadows-precompiled"):
             build_env(dists, None, "/venv/bin/mojo", "1.0.0b2")
+
+
+class TestReadLocaleEnv:
+    """Only locale variables of the host environment ever reach HostFacts."""
+
+    def test_keeps_lang_and_lc_names(self):
+        from mojox_core.plan import select_locale_env
+
+        environ = {
+            "LANG": "fr_FR.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "LC_CTYPE": "en_US.UTF-8",
+            "LC_MEASUREMENT": "fr_FR.UTF-8",
+            "SECRET": "hunter2",
+            "AWS_SECRET_ACCESS_KEY": "x",
+            "PATH": "/usr/bin",
+            "LANGX": "x",
+            "LC_": "x",
+            "lc_all": "x",
+            "LC_ALL ": "x",
+        }
+        assert select_locale_env(environ) == {
+            "LANG": "fr_FR.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "LC_CTYPE": "en_US.UTF-8",
+            "LC_MEASUREMENT": "fr_FR.UTF-8",
+        }
+
+    def test_empty_values_count_as_unset(self):
+        from mojox_core.plan import select_locale_env
+
+        assert select_locale_env({"LANG": "", "LC_ALL": ""}) == {}
+
+    def test_read_host_facts_uses_given_environ(self, tmp_path):
+        from mojox_core.io.environment import read_host_facts
+
+        host = read_host_facts(tmp_path, environ={"LANG": "fr_FR.UTF-8", "SECRET": "x"})
+        assert host.locale_env == {"LANG": "fr_FR.UTF-8"}
+
+    def test_read_host_facts_defaults_to_process_environ(self, tmp_path, monkeypatch):
+        from mojox_core.io.environment import read_host_facts
+
+        for name in [n for n in os.environ if n == "LANG" or n.startswith("LC_")]:
+            monkeypatch.delenv(name)
+        monkeypatch.setenv("LC_CTYPE", "en_US.UTF-8")
+        monkeypatch.setenv("SECRET", "x")
+        assert read_host_facts(tmp_path).locale_env == {"LC_CTYPE": "en_US.UTF-8"}

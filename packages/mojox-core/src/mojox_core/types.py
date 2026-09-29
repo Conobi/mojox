@@ -183,11 +183,18 @@ class Toolchain:
 
 @dataclass(frozen=True)
 class HostFacts:
-    """Machine-specific facts injected into the planner for determinism."""
+    """Machine-specific facts injected into the planner for determinism.
+
+    ``locale_env`` holds the host's ``LANG`` and ``LC_*`` variables and
+    nothing else: it is the only slice of the host environment that reaches
+    a planned command, because embedded CPython takes its stdio encoding
+    from the locale. Empty means the host set no locale.
+    """
 
     cpu_count: int
     available_memory_mb: int
     manifest_dir: PurePosixPath
+    locale_env: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

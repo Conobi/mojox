@@ -339,11 +339,57 @@ class TestCommandEnv:
         cmds = plan(graph, _make_env(), _make_policy(), _make_toolchain(), _make_host())
         for c in cmds:
             assert isinstance(c.env, dict)
-            assert set(c.env.keys()) == {"PATH", "HOME", "MODULAR_DEBUG"}, (
-                f"env should contain PATH, HOME, and MODULAR_DEBUG, got {set(c.env.keys())}"
+            assert set(c.env.keys()) == {"PATH", "HOME", "MODULAR_DEBUG", "LC_ALL"}, (
+                f"env should contain PATH, HOME, MODULAR_DEBUG and LC_ALL, got {set(c.env.keys())}"
             )
             assert c.env["PATH"] == "/venv/bin:/usr/local/bin:/usr/bin:/bin"
             assert c.env["MODULAR_DEBUG"] == "stack-trace-on-error"
+
+
+class TestCommandLocale:
+    """Embedded CPython takes its stdio encoding from the locale, so it must reach mojo."""
+
+    @staticmethod
+    def _env_for(locale_env: dict[str, str]) -> dict[str, str]:
+        graph = TargetGraph(
+            targets=(Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),),
+            edges=(),
+        )
+        host = HostFacts(
+            cpu_count=8,
+            available_memory_mb=16384,
+            manifest_dir=PurePosixPath("/project"),
+            locale_env=locale_env,
+        )
+        (cmd,) = plan(graph, _make_env(), _make_policy(), _make_toolchain(), host)
+        return cmd.env
+
+    def test_no_host_locale_defaults_to_c_utf8(self):
+        assert self._env_for({})["LC_ALL"] == "C.UTF-8"
+
+    def test_host_lang_is_forwarded_without_lc_all(self):
+        env = self._env_for({"LANG": "fr_FR.UTF-8"})
+        assert env["LANG"] == "fr_FR.UTF-8"
+        assert "LC_ALL" not in env
+
+    def test_host_lc_all_is_forwarded(self):
+        assert self._env_for({"LC_ALL": "de_DE.UTF-8"})["LC_ALL"] == "de_DE.UTF-8"
+
+    def test_host_lc_category_is_forwarded_without_lc_all(self):
+        env = self._env_for({"LC_CTYPE": "en_US.UTF-8"})
+        assert env["LC_CTYPE"] == "en_US.UTF-8"
+        assert "LC_ALL" not in env
+
+    def test_non_locale_names_are_never_forwarded(self):
+        env = self._env_for({"SECRET": "hunter2", "LC_ALL": "C.UTF-8", "LANGX": "x", "lc_all": "x"})
+        assert "SECRET" not in env
+        assert "LANGX" not in env
+        assert "lc_all" not in env
+
+    def test_locale_cannot_override_fixed_vars(self):
+        env = self._env_for({"PATH": "/evil", "HOME": "/root", "LANG": "C.UTF-8"})
+        assert env["PATH"] == "/venv/bin:/usr/local/bin:/usr/bin:/bin"
+        assert env["HOME"] == ""
 
 
 class TestBuildTestArgvOrdering:

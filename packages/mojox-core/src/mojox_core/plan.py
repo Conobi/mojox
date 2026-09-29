@@ -8,6 +8,8 @@ pass the right flag in situation X" is a pure unit test over data structures.
 from __future__ import annotations
 
 import hashlib
+import re
+from collections.abc import Mapping
 from pathlib import PurePosixPath
 
 from .types import (
@@ -24,6 +26,17 @@ from .types import (
 )
 
 _PRECOMPILE_THRESHOLD = 2
+
+_LOCALE_NAME = re.compile(r"LANG|LC_[A-Z_]+")
+_DEFAULT_LOCALE = {"LC_ALL": "C.UTF-8"}
+
+
+def select_locale_env(environ: Mapping[str, str]) -> dict[str, str]:
+    """Keep only the non-empty ``LANG`` and ``LC_*`` entries of *environ*.
+
+    Empty values are dropped because the C library treats them as unset.
+    """
+    return {name: value for name, value in environ.items() if value and _LOCALE_NAME.fullmatch(name)}
 
 
 def _append_lint_flags(argv: list[str], lints: LintConfig) -> None:
@@ -145,7 +158,7 @@ def _build_precompile_command(
     return Command(
         argv=tuple(argv),
         cwd=host.manifest_dir,
-        env=_construct_env(toolchain),
+        env=_construct_env(toolchain, host),
         kind=CommandKind.COMPILE_PACKAGE,
         target_id=target.target_id,
         timeout_s=None,
@@ -203,7 +216,7 @@ def _build_test_command(
     return Command(
         argv=tuple(argv),
         cwd=host.manifest_dir,
-        env=_construct_env(toolchain),
+        env=_construct_env(toolchain, host),
         kind=CommandKind.BUILD_TEST,
         target_id=target.target_id,
         timeout_s=policy.timeout_s,
@@ -254,7 +267,7 @@ def _build_check_example_command(
     return Command(
         argv=tuple(argv),
         cwd=host.manifest_dir,
-        env=_construct_env(toolchain),
+        env=_construct_env(toolchain, host),
         kind=CommandKind.CHECK_EXAMPLE,
         target_id=target.target_id,
         timeout_s=policy.timeout_s,
@@ -296,7 +309,7 @@ def _build_compile_binary_command(
     return Command(
         argv=tuple(argv),
         cwd=host.manifest_dir,
-        env=_construct_env(toolchain),
+        env=_construct_env(toolchain, host),
         kind=CommandKind.COMPILE_BINARY,
         target_id=target.target_id,
         timeout_s=None,
@@ -335,7 +348,7 @@ def _build_include_sequence(
     return tuple(result)
 
 
-def _construct_env(toolchain: Toolchain) -> dict[str, str]:
+def _construct_env(toolchain: Toolchain, host: HostFacts) -> dict[str, str]:
     """Construct a minimal, safe environment for mojo invocations.
 
     The environment is explicitly constructed rather than inherited from the
@@ -344,9 +357,20 @@ def _construct_env(toolchain: Toolchain) -> dict[str, str]:
 
     PATH includes the Mojo binary's directory plus standard system
     directories so that the C compiler (cc/clang) is available for linking.
+
+    The host locale is the one exception, and the executor runs test
+    binaries with this same env. A binary that embeds CPython gets ASCII stdio
+    without a UTF-8 locale, and ``PYTHONUTF8`` does not help there. So the
+    host's ``LANG``/``LC_*`` are forwarded as-is. They are re-filtered here
+    so that a hand-built HostFacts cannot smuggle other variables in. When
+    the host sets none, ``LC_ALL=C.UTF-8`` is the default. It is never added
+    next to a host locale, because ``LC_ALL`` would override the user's
+    choice.
     """
     mojo_dir = str(PurePosixPath(toolchain.mojo_path).parent)
+    locale_env = select_locale_env(host.locale_env) or _DEFAULT_LOCALE
     return {
+        **locale_env,
         "PATH": f"{mojo_dir}:/usr/local/bin:/usr/bin:/bin",
         "HOME": "",
         "MODULAR_DEBUG": "stack-trace-on-error",

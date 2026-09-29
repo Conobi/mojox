@@ -9,9 +9,11 @@ from __future__ import annotations
 import importlib.metadata
 import os
 import sysconfig
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from ..plan import select_locale_env
 from ..types import DistKind, HostFacts
 
 
@@ -85,8 +87,13 @@ def read_lockfile(project_root: Path) -> dict[str, Any] | None:
         return None
 
 
-def read_host_facts(manifest_dir: Path) -> HostFacts:
-    """Gather machine-specific facts for the planner."""
+def read_host_facts(manifest_dir: Path, environ: Mapping[str, str] | None = None) -> HostFacts:
+    """Gather machine-specific facts for the planner.
+
+    Args:
+        environ: Host environment to take the locale from; defaults to
+            ``os.environ``. Only ``LANG`` and ``LC_*`` are kept.
+    """
     from pathlib import PurePosixPath
 
     cpu_count = os.cpu_count() or 1
@@ -96,6 +103,7 @@ def read_host_facts(manifest_dir: Path) -> HostFacts:
         cpu_count=cpu_count,
         available_memory_mb=mem_mb,
         manifest_dir=PurePosixPath(str(manifest_dir.resolve())),
+        locale_env=select_locale_env(os.environ if environ is None else environ),
     )
 
 
