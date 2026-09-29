@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
 import time
 from pathlib import Path
 
@@ -76,20 +77,14 @@ def compute_cache_key(
 
 
 def read_cache_meta(meta_path: Path) -> str | None:
-    """Read cache metadata and return the stored cache key.
+    """Return the stored cache key, or ``None`` to signal a cache miss.
 
-    Returns ``None`` when the file is missing, contains invalid JSON,
-    or has an unexpected ``schema_version``.
-
-    Args:
-        meta_path: Path to the JSON metadata file.
-
-    Returns:
-        The ``cache_key`` string, or ``None`` if unavailable.
+    Any unreadable, non-UTF-8, truncated or schema-mismatched file is a
+    miss rather than an error: a damaged meta only costs a rebuild.
     """
     try:
-        data = json.loads(meta_path.read_text())
-    except (OSError, json.JSONDecodeError):
+        data = json.loads(meta_path.read_bytes())
+    except (OSError, ValueError):
         return None
 
     if not isinstance(data, dict):
@@ -111,8 +106,9 @@ def write_cache_meta(
 ) -> None:
     """Write cache metadata atomically.
 
-    The file is first written to a temporary sibling (``.<pid>.tmp``),
-    then renamed into place so readers never see a partial write.
+    The payload goes to a unique ``mkstemp`` sibling, then ``os.replace``
+    moves it into place, so readers never see a partial write and
+    concurrent writers (threads share a pid) never share a temp file.
     Parent directories are created if needed.
 
     Args:
@@ -129,10 +125,11 @@ def write_cache_meta(
         "built_at_epoch": time.time(),
     }
 
-    tmp_path = meta_path.parent / f".{meta_path.name}.{os.getpid()}.tmp"
+    fd, tmp_name = tempfile.mkstemp(dir=meta_path.parent, prefix=f".{meta_path.name}.", suffix=".tmp")
     try:
-        tmp_path.write_text(json.dumps(payload))
-        os.rename(tmp_path, meta_path)
+        with os.fdopen(fd, "w") as f:
+            json.dump(payload, f)
+        os.replace(tmp_name, meta_path)
     except BaseException:
-        tmp_path.unlink(missing_ok=True)
+        Path(tmp_name).unlink(missing_ok=True)
         raise

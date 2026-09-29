@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 
+from mojox_core.plan import _binary_cache_name, plan
 from mojox_core.types import (
     CommandKind,
     DistEntry,
@@ -17,7 +18,6 @@ from mojox_core.types import (
     TargetKind,
     Toolchain,
 )
-from mojox_core.plan import plan
 
 
 def _make_env(**overrides) -> ResolvedEnv:
@@ -397,7 +397,7 @@ class TestBuildTestCommand:
         assert "run" not in cmds[0].argv
 
     def test_output_flag_with_cache_path(self):
-        """-o flag points to .mojox/cache/bin/<safe_name> derived from full path."""
+        """-o flag points to .mojox/cache/bin/<stem>-<path hash>."""
         graph = TargetGraph(
             targets=(Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),),
             edges=(),
@@ -406,7 +406,7 @@ class TestBuildTestCommand:
         argv = list(cmds[0].argv)
         o_idx = argv.index("-o")
         output = argv[o_idx + 1]
-        assert output == ".mojox/cache/bin/tests_test_a"
+        assert output == ".mojox/cache/bin/test_a-a1019cd4"
 
     def test_outputs_tuple_is_populated(self):
         """The outputs tuple contains the cache binary path."""
@@ -415,7 +415,7 @@ class TestBuildTestCommand:
             edges=(),
         )
         cmds = plan(graph, _make_env(), _make_policy(), _make_toolchain(), _make_host())
-        assert cmds[0].outputs == (".mojox/cache/bin/tests_test_a",)
+        assert cmds[0].outputs == (".mojox/cache/bin/test_a-a1019cd4",)
 
     def test_source_file_before_output_flag(self):
         """Source file appears in argv before the -o flag."""
@@ -465,7 +465,10 @@ class TestBuildTestCommand:
         )
         cmds = plan(graph, _make_env(), _make_policy(), _make_toolchain(), _make_host())
         outputs = [c.outputs[0] for c in cmds]
-        assert outputs == [".mojox/cache/bin/tests_test_a", ".mojox/cache/bin/tests_test_b"]
+        assert outputs == [
+            ".mojox/cache/bin/test_a-a1019cd4",
+            ".mojox/cache/bin/test_b-690b692d",
+        ]
 
     def test_same_basename_in_different_dirs_no_collision(self):
         """Two test files with the same basename in different dirs get distinct paths."""
@@ -479,8 +482,54 @@ class TestBuildTestCommand:
         cmds = plan(graph, _make_env(), _make_policy(), _make_toolchain(), _make_host())
         outputs = [c.outputs[0] for c in cmds]
         assert outputs[0] != outputs[1]
-        assert outputs[0] == ".mojox/cache/bin/tests_http_test_method"
-        assert outputs[1] == ".mojox/cache/bin/tests_dns_test_method"
+        assert outputs[0] == ".mojox/cache/bin/test_method-aefbb006"
+        assert outputs[1] == ".mojox/cache/bin/test_method-ca4d85d7"
+
+    def test_underscore_and_slash_paths_no_collision(self):
+        """``a_b.mojo`` and ``a/b.mojo`` flattened to the same name under the old scheme."""
+        graph = TargetGraph(
+            targets=(
+                Target(TargetKind.TEST, "tests/a_b.mojo", "tests/a_b.mojo"),
+                Target(TargetKind.TEST, "tests/a/b.mojo", "tests/a/b.mojo"),
+            ),
+            edges=(),
+        )
+        cmds = plan(graph, _make_env(), _make_policy(), _make_toolchain(), _make_host())
+        outputs = [c.outputs[0] for c in cmds]
+        assert outputs[0] != outputs[1]
+
+    def test_output_name_is_stable_across_plans(self):
+        """Names must be deterministic so cache hits survive across runs."""
+        graph = TargetGraph(
+            targets=(Target(TargetKind.TEST, "tests/a/b.mojo", "tests/a/b.mojo"),),
+            edges=(),
+        )
+        first = plan(graph, _make_env(), _make_policy(), _make_toolchain(), _make_host())
+        second = plan(graph, _make_env(), _make_policy(), _make_toolchain(), _make_host())
+        assert first[0].outputs == second[0].outputs
+
+
+class TestBinaryCacheName:
+    """The cache binary name is ``<stem>-<sha256(posix path)[:8]>``."""
+
+    def test_format(self):
+        name = _binary_cache_name("tests/a/b.mojo")
+        stem, digest = name.rsplit("-", 1)
+        assert stem == "b"
+        assert len(digest) == 8
+        assert all(c in "0123456789abcdef" for c in digest)
+
+    def test_hash_covers_full_path(self):
+        assert _binary_cache_name("tests/a_b.mojo") != _binary_cache_name("tests/a/b.mojo")
+        assert _binary_cache_name("x/test.mojo") != _binary_cache_name("y/test.mojo")
+
+    def test_deterministic(self):
+        assert _binary_cache_name("tests/a/b.mojo") == _binary_cache_name("tests/a/b.mojo")
+        assert _binary_cache_name("tests/a/b.mojo") == "b-7d232644"
+
+    def test_equivalent_posix_spellings_agree(self):
+        """Redundant ``./`` and ``//`` do not change the name."""
+        assert _binary_cache_name("./tests//a/b.mojo") == _binary_cache_name("tests/a/b.mojo")
 
 
 class TestLintFlagTranslation:

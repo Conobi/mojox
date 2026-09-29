@@ -234,3 +234,73 @@ class TestCacheMetaRoundtrip:
 
         assert read_cache_meta(meta_a) == "key_a"
         assert read_cache_meta(meta_b) == "key_b"
+
+    def test_concurrent_writes_same_target_do_not_crash(self, tmp_path: Path):
+        """Threads share a pid, so a pid-based temp name would collide and raise."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        meta = tmp_path / "test_same.json"
+
+        def write(i: int) -> None:
+            for _ in range(50):
+                write_cache_meta(meta, cache_key=f"key_{i}", compiler_version="1.0.0b2")
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for future in [pool.submit(write, i) for i in range(8)]:
+                future.result()
+
+        assert read_cache_meta(meta) in {f"key_{i}" for i in range(8)}
+        assert [p.name for p in tmp_path.iterdir()] == ["test_same.json"]
+
+    def test_write_uses_unique_temp_names(self, tmp_path: Path, monkeypatch):
+        """Each write stages through its own mkstemp file, never a pid-derived name."""
+        import os
+
+        staged: list[str] = []
+        real_replace = os.replace
+
+        def spy(src, dst):
+            staged.append(os.fspath(src))
+            real_replace(src, dst)
+
+        monkeypatch.setattr("mojox.cache.os.replace", spy)
+        meta = tmp_path / "m.json"
+        write_cache_meta(meta, cache_key="a", compiler_version="1")
+        write_cache_meta(meta, cache_key="b", compiler_version="1")
+        assert len(staged) == 2
+        assert staged[0] != staged[1]
+        assert all(str(os.getpid()) not in Path(s).name for s in staged)
+
+
+class TestCorruptMeta:
+    """A damaged meta file must read as a cache miss, never raise."""
+
+    def test_truncated_json(self, tmp_path: Path):
+        meta = tmp_path / "m.json"
+        meta.write_text('{"schema_version": 1, "cache_key": "ab')
+        assert read_cache_meta(meta) is None
+
+    def test_empty_file(self, tmp_path: Path):
+        meta = tmp_path / "m.json"
+        meta.write_bytes(b"")
+        assert read_cache_meta(meta) is None
+
+    def test_non_utf8_bytes(self, tmp_path: Path):
+        meta = tmp_path / "m.json"
+        meta.write_bytes(b"\xff\xfe\x00garbage")
+        assert read_cache_meta(meta) is None
+
+    def test_non_object_json(self, tmp_path: Path):
+        meta = tmp_path / "m.json"
+        meta.write_text("[1, 2, 3]")
+        assert read_cache_meta(meta) is None
+
+    def test_non_string_key(self, tmp_path: Path):
+        meta = tmp_path / "m.json"
+        meta.write_text(json.dumps({"schema_version": 1, "cache_key": 42}))
+        assert read_cache_meta(meta) is None
+
+    def test_meta_path_is_directory(self, tmp_path: Path):
+        meta = tmp_path / "m.json"
+        meta.mkdir()
+        assert read_cache_meta(meta) is None

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path, PurePosixPath
 
@@ -964,3 +965,214 @@ class TestRuntimeArgs:
 
         assert outcome.kind == OutcomeKind.PASS
         assert outcome.stdout.strip() == "ARGS:"
+
+
+_RECORDING_BUILD = (
+    "import stat, pathlib, sys, time\n"
+    "idx = sys.argv.index('-o')\n"
+    "p = pathlib.Path(sys.argv[idx + 1])\n"
+    "with open(sys.argv[1], 'a') as log:\n"
+    "    log.write(str(p) + '\\n')\n"
+    "time.sleep(0.2)\n"
+    "p.parent.mkdir(parents=True, exist_ok=True)\n"
+    "p.write_text('#!/bin/sh\\necho built-' + sys.argv[2] + '\\n')\n"
+    "p.chmod(p.stat().st_mode | stat.S_IEXEC)\n"
+)
+"""Fake ``mojo build``: logs its ``-o`` path to argv[1], then writes a
+binary echoing ``built-<argv[2]>``. The sleep widens the race window."""
+
+
+def _recording_cmd(log: Path, tag: str, binary: Path) -> Command:
+    """A BUILD_TEST command running :data:`_RECORDING_BUILD`."""
+    return _build_test_cmd(
+        (sys.executable, "-c", _RECORDING_BUILD, str(log), tag),
+        str(binary),
+    )
+
+
+class TestTempPathIsolation:
+    """Concurrent builds in one process must never share a temp output."""
+
+    def test_concurrent_builds_use_distinct_temp_paths(self, tmp_path: Path):
+        from concurrent.futures import ThreadPoolExecutor
+
+        binary = tmp_path / "bin" / "test_x-deadbeef"
+        meta_dir = tmp_path / "meta"
+        log = tmp_path / "log"
+
+        def build(i: int):
+            return run_cached_test(
+                _recording_cmd(log, str(i), binary),
+                cache_key=f"key-{i}",
+                meta_dir=meta_dir,
+                compiler_version="v",
+            )
+
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            outcomes = list(pool.map(build, range(6)))
+
+        assert all(o.kind == OutcomeKind.PASS for o in outcomes), [o.stderr for o in outcomes]
+        temps = log.read_text().split()
+        assert len(temps) == 6
+        assert len(set(temps)) == 6
+        for t in temps:
+            assert Path(t).parent == binary.parent
+            assert not Path(t).exists()
+        assert sorted(p.name for p in binary.parent.iterdir()) == [binary.name]
+
+    def test_no_cache_concurrent_builds_use_distinct_temp_paths(self, tmp_path: Path):
+        from concurrent.futures import ThreadPoolExecutor
+
+        binary = tmp_path / "bin" / "test_x-deadbeef"
+        log = tmp_path / "log"
+
+        def build(i: int):
+            return run_cached_test(
+                _recording_cmd(log, str(i), binary),
+                cache_key=f"key-{i}",
+                meta_dir=tmp_path / "meta",
+                compiler_version="v",
+                skip_cache_write=True,
+            )
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            outcomes = list(pool.map(build, range(4)))
+
+        assert [o.stdout.strip() for o in outcomes] == [f"built-{i}" for i in range(4)]
+        temps = log.read_text().split()
+        assert len(set(temps)) == 4
+        assert not any(Path(t).exists() for t in temps)
+        assert not binary.exists()
+        assert not (tmp_path / "meta").exists()
+
+    def test_temp_removed_on_build_failure(self, tmp_path: Path):
+        binary = tmp_path / "bin" / "test_x-deadbeef"
+        script = (
+            "import sys\n"
+            "idx = sys.argv.index('-o')\n"
+            "open(sys.argv[1], 'w').write(sys.argv[idx + 1])\n"
+            "sys.exit(1)\n"
+        )
+        log = tmp_path / "log"
+        cmd = _build_test_cmd((sys.executable, "-c", script, str(log)), str(binary))
+        outcome = run_cached_test(cmd, cache_key="k", meta_dir=tmp_path / "meta", compiler_version="v")
+        assert outcome.kind == OutcomeKind.COMPILE_ERROR
+        assert not Path(log.read_text()).exists()
+        assert list(binary.parent.iterdir()) == []
+
+    def test_temp_removed_when_build_produces_nothing(self, tmp_path: Path):
+        binary = tmp_path / "bin" / "test_x-deadbeef"
+        cmd = _build_test_cmd((sys.executable, "-c", "pass"), str(binary))
+        outcome = run_cached_test(cmd, cache_key="k", meta_dir=tmp_path / "meta", compiler_version="v")
+        assert outcome.kind == OutcomeKind.COMPILE_ERROR
+        assert "binary not found" in outcome.stderr.lower()
+        assert list(binary.parent.iterdir()) == []
+
+    def test_no_cache_temp_dir_removed_on_build_failure(self, tmp_path: Path):
+        binary = tmp_path / "bin" / "test_x-deadbeef"
+        script = (
+            "import sys\n"
+            "idx = sys.argv.index('-o')\n"
+            "open(sys.argv[1], 'w').write(sys.argv[idx + 1])\n"
+            "sys.exit(1)\n"
+        )
+        log = tmp_path / "log"
+        cmd = _build_test_cmd((sys.executable, "-c", script, str(log)), str(binary))
+        outcome = run_cached_test(
+            cmd, cache_key="k", meta_dir=tmp_path / "meta", compiler_version="v", skip_cache_write=True
+        )
+        assert outcome.kind == OutcomeKind.COMPILE_ERROR
+        assert not Path(log.read_text()).parent.exists()
+
+
+class TestAtomicPublish:
+    """A binary must never be observable next to a meta describing another build."""
+
+    def _stale_cache(self, tmp_path: Path) -> tuple[Path, Path, Path]:
+        """Seed a binary + matching meta under key ``old``."""
+        binary = tmp_path / "bin" / "test_x-deadbeef"
+        binary.parent.mkdir(parents=True)
+        binary.write_text("#!/bin/sh\necho stale\n")
+        binary.chmod(0o755)
+        meta_dir = tmp_path / "meta"
+        write_cache_meta(meta_dir / f"{binary.name}.json", cache_key="old", compiler_version="v")
+        return binary, meta_dir, meta_dir / f"{binary.name}.json"
+
+    def test_meta_absent_while_binary_is_renamed(self, tmp_path: Path, monkeypatch):
+        import os
+
+        binary, meta_dir, meta = self._stale_cache(tmp_path)
+        seen: list[bool] = []
+
+        def spy(real):
+            def wrapper(src, dst):
+                if Path(dst) == binary:
+                    seen.append(meta.exists())
+                return real(src, dst)
+
+            return wrapper
+
+        monkeypatch.setattr(os, "rename", spy(os.rename))
+        monkeypatch.setattr(os, "replace", spy(os.replace))
+
+        outcome = run_cached_test(
+            _recording_cmd(tmp_path / "log", "new", binary),
+            cache_key="new",
+            meta_dir=meta_dir,
+            compiler_version="v",
+        )
+        assert outcome.kind == OutcomeKind.PASS
+        assert seen == [False]
+        assert json.loads(meta.read_text())["cache_key"] == "new"
+
+    def test_interrupt_between_rename_and_meta_write_leaves_miss(self, tmp_path: Path, monkeypatch):
+        binary, meta_dir, meta = self._stale_cache(tmp_path)
+
+        def boom(*_args, **_kwargs):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr("mojox.exec.write_cache_meta", boom)
+        with pytest.raises(KeyboardInterrupt):
+            run_cached_test(
+                _recording_cmd(tmp_path / "log", "new", binary),
+                cache_key="new",
+                meta_dir=meta_dir,
+                compiler_version="v",
+            )
+        monkeypatch.undo()
+
+        # The stale key must not validate the freshly renamed binary.
+        assert not meta.exists()
+        outcome = run_cached_test(
+            _recording_cmd(tmp_path / "log2", "rebuilt", binary),
+            cache_key="old",
+            meta_dir=meta_dir,
+            compiler_version="v",
+        )
+        assert outcome.stdout.strip() == "built-rebuilt"
+
+
+class TestCorruptMetaIsMiss:
+    """A damaged meta file falls back to a rebuild rather than crashing."""
+
+    @pytest.mark.parametrize(
+        "payload",
+        [b"", b"{\"schema_version\": 1, \"cache_k", b"\xff\xfe\x00", b"null", b"[\"k\"]"],
+    )
+    def test_corrupt_meta_rebuilds(self, tmp_path: Path, payload: bytes):
+        binary = tmp_path / "bin" / "test_x-deadbeef"
+        binary.parent.mkdir(parents=True)
+        binary.write_text("#!/bin/sh\necho stale\n")
+        binary.chmod(0o755)
+        meta = tmp_path / "meta" / f"{binary.name}.json"
+        meta.parent.mkdir()
+        meta.write_bytes(payload)
+
+        outcome = run_cached_test(
+            _recording_cmd(tmp_path / "log", "fresh", binary),
+            cache_key="k",
+            meta_dir=meta.parent,
+            compiler_version="v",
+        )
+        assert outcome.stdout.strip() == "built-fresh"
+        assert json.loads(meta.read_text())["cache_key"] == "k"

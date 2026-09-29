@@ -8,8 +8,10 @@ from Command.env, never inherited from the host process.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor, as_completed
@@ -662,9 +664,14 @@ def run_cached_test(
     the build step may consume part of it, and the remainder (minimum
     1 s) is given to the execution step.
 
+    On a miss the binary is built to a unique ``mkstemp`` sibling, the
+    old meta is deleted, the binary is renamed into place, and only then
+    is the new meta written; a missing or unreadable meta is a miss.
+    Temp files are removed on every failure path.
+
     When *skip_cache_write* is True (``--no-cache``), the binary is
-    built to a temporary location and removed after execution. No cache
-    metadata is written, preserving existing cache state.
+    built into a private ``mkdtemp`` directory removed after execution.
+    No cache metadata is written, preserving existing cache state.
 
     Args:
         cmd: A ``BUILD_TEST`` :class:`Command` produced by the planner.
@@ -687,105 +694,114 @@ def run_cached_test(
         An :class:`Outcome` for the test execution (or a
         ``COMPILE_ERROR`` outcome if the build fails).
     """
-    import tempfile
-
-    binary_path = cmd.outputs[0]
-    target_name = Path(binary_path).name
-    meta_path = meta_dir / f"{target_name}.json"
+    binary_path = Path(cmd.cwd) / cmd.outputs[0]
+    meta_path = meta_dir / f"{binary_path.name}.json"
 
     # --- cache hit path (skipped when cache writes are disabled) ---
     if not skip_cache_write:
         stored_key = read_cache_meta(meta_path)
-        if stored_key == cache_key and Path(binary_path).exists():
+        if stored_key == cache_key and binary_path.is_file():
             return _execute_binary(
                 cmd,
-                binary_path,
+                str(binary_path),
                 extra_env=extra_env,
                 include_paths=include_paths,
                 remaining_timeout=cmd.timeout_s,
                 runtime_args=runtime_args,
             )
 
-    # --- cache miss: build to temp path ---
+    # --- cache miss: build to a unique temp path ---
+    # Worker threads share a pid, so temp names must come from mkstemp /
+    # mkdtemp. The cache temp lives next to the binary so the publishing
+    # rename stays on one filesystem and is atomic.
+    tmp_dir: Path | None = None
     if skip_cache_write:
-        tmp_dir = tempfile.mkdtemp(prefix="mojox_nocache_")
-        tmp_binary = str(Path(tmp_dir) / target_name)
+        tmp_dir = Path(tempfile.mkdtemp(prefix="mojox_nocache_"))
+        tmp_binary = tmp_dir / binary_path.name
     else:
-        tmp_dir = None
-        tmp_binary = f"{binary_path}.tmp.{os.getpid()}"
-        Path(binary_path).parent.mkdir(parents=True, exist_ok=True)
+        binary_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(dir=binary_path.parent, prefix=f".{binary_path.name}.", suffix=".tmp")
+        os.close(fd)
+        tmp_binary = Path(tmp_name)
 
-    build_argv = list(cmd.argv)
+    published = False
     try:
-        o_idx = build_argv.index("-o")
-        build_argv[o_idx + 1] = tmp_binary
-    except (ValueError, IndexError):
-        build_argv.extend(["-o", tmp_binary])
+        build_argv = list(cmd.argv)
+        try:
+            o_idx = build_argv.index("-o")
+            build_argv[o_idx + 1] = str(tmp_binary)
+        except (ValueError, IndexError):
+            build_argv.extend(["-o", str(tmp_binary)])
 
-    build_cmd = Command(
-        argv=tuple(build_argv),
-        cwd=cmd.cwd,
-        env=cmd.env,
-        kind=cmd.kind,
-        target_id=cmd.target_id,
-        timeout_s=cmd.timeout_s,
-        outputs=(tmp_binary,),
-        depends_on=cmd.depends_on,
-    )
-    build_outcome = run_command(build_cmd, extra_env=extra_env, include_paths=include_paths)
-
-    if build_outcome.kind != OutcomeKind.PASS:
-        Path(tmp_binary).unlink(missing_ok=True)
-        return Outcome(
-            command=cmd,
-            kind=OutcomeKind.COMPILE_ERROR,
-            exit_code=build_outcome.exit_code,
-            stdout=build_outcome.stdout,
-            stderr=build_outcome.stderr,
-            diagnostics=build_outcome.diagnostics,
-            elapsed_s=build_outcome.elapsed_s,
+        build_cmd = Command(
+            argv=tuple(build_argv),
+            cwd=cmd.cwd,
+            env=cmd.env,
+            kind=cmd.kind,
+            target_id=cmd.target_id,
+            timeout_s=cmd.timeout_s,
+            outputs=(str(tmp_binary),),
+            depends_on=cmd.depends_on,
         )
+        build_outcome = run_command(build_cmd, extra_env=extra_env, include_paths=include_paths)
 
-    if not Path(tmp_binary).exists():
-        return Outcome(
-            command=cmd,
-            kind=OutcomeKind.COMPILE_ERROR,
-            exit_code=0,
-            stdout=build_outcome.stdout,
-            stderr=(
-                f"Build succeeded but binary not found: {binary_path}\n"
-                + build_outcome.stderr
-            ),
-            diagnostics=build_outcome.diagnostics,
-            elapsed_s=build_outcome.elapsed_s,
+        if build_outcome.kind != OutcomeKind.PASS:
+            return Outcome(
+                command=cmd,
+                kind=OutcomeKind.COMPILE_ERROR,
+                exit_code=build_outcome.exit_code,
+                stdout=build_outcome.stdout,
+                stderr=build_outcome.stderr,
+                diagnostics=build_outcome.diagnostics,
+                elapsed_s=build_outcome.elapsed_s,
+            )
+
+        # mkstemp pre-creates an empty file, so "empty" also means "not built".
+        if not tmp_binary.is_file() or tmp_binary.stat().st_size == 0:
+            return Outcome(
+                command=cmd,
+                kind=OutcomeKind.COMPILE_ERROR,
+                exit_code=0,
+                stdout=build_outcome.stdout,
+                stderr=(
+                    f"Build succeeded but binary not found: {binary_path}\n"
+                    + build_outcome.stderr
+                ),
+                diagnostics=build_outcome.diagnostics,
+                elapsed_s=build_outcome.elapsed_s,
+            )
+
+        if skip_cache_write:
+            exec_binary = tmp_binary
+        else:
+            # Drop the old key before the binary changes: an interrupt
+            # between rename and meta write then reads as a miss, never
+            # as the old key vouching for the new binary.
+            meta_path.unlink(missing_ok=True)
+            os.replace(tmp_binary, binary_path)
+            published = True
+            write_cache_meta(
+                meta_path,
+                cache_key=cache_key,
+                compiler_version=compiler_version,
+            )
+            exec_binary = binary_path
+
+        # --- execute ---
+        timeout_left = _remaining_timeout(cmd.timeout_s, build_outcome.elapsed_s)
+        exec_outcome = _execute_binary(
+            cmd,
+            str(exec_binary),
+            extra_env=extra_env,
+            include_paths=include_paths,
+            remaining_timeout=timeout_left,
+            runtime_args=runtime_args,
         )
-
-    if skip_cache_write:
-        exec_binary = tmp_binary
-    else:
-        os.rename(tmp_binary, binary_path)
-        write_cache_meta(
-            meta_path,
-            cache_key=cache_key,
-            compiler_version=compiler_version,
-        )
-        exec_binary = binary_path
-
-    # --- execute ---
-    timeout_left = _remaining_timeout(cmd.timeout_s, build_outcome.elapsed_s)
-    exec_outcome = _execute_binary(
-        cmd,
-        exec_binary,
-        extra_env=extra_env,
-        include_paths=include_paths,
-        remaining_timeout=timeout_left,
-        runtime_args=runtime_args,
-    )
-
-    if skip_cache_write and tmp_dir is not None:
-        import shutil
-
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+    finally:
+        if tmp_dir is not None:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        elif not published:
+            tmp_binary.unlink(missing_ok=True)
 
     # combine: prepend build warnings to execution stderr
     combined_stderr = exec_outcome.stderr

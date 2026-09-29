@@ -7,6 +7,7 @@ pass the right flag in situation X" is a pure unit test over data structures.
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import PurePosixPath
 
 from .types import (
@@ -153,6 +154,18 @@ def _build_precompile_command(
     )
 
 
+def _binary_cache_name(target_path: str) -> str:
+    """Return ``<stem>-<sha256(posix path)[:8]>`` for a test's cached binary.
+
+    The stem keeps the name readable; the hash of the normalised full path
+    keeps it unique, so ``tests/a_b.mojo`` and ``tests/a/b.mojo`` never share
+    a binary or a meta file. Deterministic so cache hits survive across runs.
+    """
+    path = PurePosixPath(target_path)
+    digest = hashlib.sha256(path.as_posix().encode()).hexdigest()[:8]
+    return f"{path.stem}-{digest}"
+
+
 def _build_test_command(
     target: Target,
     toolchain: Toolchain,
@@ -164,12 +177,9 @@ def _build_test_command(
     """Build a build-test command with optimization, defines, and thread count.
 
     Uses ``mojo build`` to compile the test file into a cached binary at
-    ``.mojox/cache/bin/<safe_name>``.  The binary name is derived from the
-    full target path (not just the stem) to avoid collisions when different
-    test directories contain files with the same basename.
+    ``.mojox/cache/bin/<name>``, named by :func:`_binary_cache_name`.
     """
-    safe_name = PurePosixPath(target.path).with_suffix("").as_posix().replace("/", "_")
-    output_path = str(PurePosixPath(".mojox/cache/bin") / safe_name)
+    output_path = str(PurePosixPath(".mojox/cache/bin") / _binary_cache_name(target.path))
     argv: list[str] = [toolchain.mojo_path, "build", target.path, "-o", output_path]
 
     if policy.optimize is not None:
