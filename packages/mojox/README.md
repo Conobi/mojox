@@ -74,7 +74,7 @@ mojox build
 
 ### `check`
 
-Validate the manifest and run lints. No compiler needed.
+Validate the manifest, run lints, and compile library packages when a compiler is available (manifest-only otherwise). Exits 1 on a compile failure, 2 on an invalid manifest.
 
 ```bash
 mojox check

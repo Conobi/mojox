@@ -28,7 +28,7 @@ The Mojo compiler version is **not** pinned by any of these packages. Pin it in 
 mojox test       Run test targets (dev profile by default)
 mojox run        Build and execute a single .mojo file (dev profile)
 mojox build      Compile binary targets (release profile)
-mojox check      Validate manifest and run lints (no compiler needed)
+mojox check      Validate manifest, run lints, compile libs if a compiler is available
 mojox metadata   Output the build plan as JSON
 mojox cache clean  Delete cached binaries (.mojox/cache/)
 ```

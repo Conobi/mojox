@@ -4,7 +4,7 @@ Subcommands:
   test      Run test targets (dev profile by default)
   run       Run a single Mojo file (dev profile by default)
   build     Compile binary targets (release profile by default)
-  check     Validate manifest and run lints (no compiler needed)
+  check     Validate manifest and run lints (compiles libs if a compiler is available)
   metadata  Output the build plan as JSON
 """
 
