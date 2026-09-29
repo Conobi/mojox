@@ -7,6 +7,7 @@ from Command.env, never inherited from the host process.
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import subprocess
@@ -173,6 +174,28 @@ def _resolve_cache_for_build_test(
     )
 
 
+_ETXTBSY_ATTEMPTS = 5
+
+
+def _spawn(argv: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+    """``subprocess.run`` that retries a transient ``ETXTBSY`` from execve.
+
+    Binaries are written and executed from worker threads of one process.
+    A child forked by another thread inherits any write fd open at that
+    moment until its own exec, and while it holds one, execve of that
+    file fails with ETXTBSY. The window is brief, so retry with a short
+    growing backoff, as Go's os/exec does; any other errno propagates.
+    """
+    for attempt in range(1, _ETXTBSY_ATTEMPTS):
+        try:
+            return subprocess.run(argv, **kwargs)
+        except OSError as e:
+            if e.errno != errno.ETXTBSY:
+                raise
+        time.sleep(0.01 * attempt)
+    return subprocess.run(argv, **kwargs)
+
+
 def run_command(
     cmd: Command,
     *,
@@ -185,6 +208,7 @@ def run_command(
     ``extra_env`` (LocalSettings.env). The host environment is never
     inherited. Parent directories of ``cmd.outputs`` are created first,
     resolving relative outputs against ``cmd.cwd`` as the child will.
+    A transient ETXTBSY from execve is retried (see :func:`_spawn`).
 
     Args:
         cmd: The command to execute.
@@ -211,7 +235,7 @@ def run_command(
 
     start = time.monotonic()
     try:
-        result = subprocess.run(
+        result = _spawn(
             list(cmd.argv),
             cwd=str(cmd.cwd),
             env=env,
@@ -249,12 +273,13 @@ def run_command(
         )
     except OSError as e:
         elapsed = time.monotonic() - start
+        retried = f" (after {_ETXTBSY_ATTEMPTS} attempts)" if e.errno == errno.ETXTBSY else ""
         return Outcome(
             command=cmd,
             kind=OutcomeKind.COMPILE_ERROR,
             exit_code=None,
             stdout="",
-            stderr=f"OS error running {cmd.argv[0]}: {e}",
+            stderr=f"OS error running {cmd.argv[0]}{retried}: {e}",
             diagnostics=(),
             elapsed_s=elapsed,
         )

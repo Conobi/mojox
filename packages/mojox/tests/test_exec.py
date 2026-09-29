@@ -1112,6 +1112,65 @@ class TestRuntimeArgs:
         assert outcome.stdout.strip() == "ARGS:"
 
 
+class TestTextFileBusyRetry:
+    """A freshly written binary can transiently fail execve with ETXTBSY."""
+
+    @staticmethod
+    def _flaky_run(monkeypatch, failures: int | None) -> list[list[str]]:
+        """Make subprocess.run raise ETXTBSY *failures* times (None: always)."""
+        import errno
+        import subprocess
+
+        import mojox.exec as exec_mod
+
+        calls: list[list[str]] = []
+        real_run = subprocess.run
+
+        def flaky(argv, **kwargs):
+            calls.append(list(argv))
+            if failures is None or len(calls) <= failures:
+                raise OSError(errno.ETXTBSY, "Text file busy", argv[0])
+            return real_run(argv, **kwargs)
+
+        monkeypatch.setattr(exec_mod.subprocess, "run", flaky)
+        monkeypatch.setattr(exec_mod.time, "sleep", lambda _s: None)
+        return calls
+
+    def test_transient_etxtbsy_is_retried(self, monkeypatch):
+        calls = self._flaky_run(monkeypatch, failures=2)
+        outcome = run_command(_cmd((sys.executable, "-c", "print('ok')")))
+        assert outcome.kind == OutcomeKind.PASS, outcome.stderr
+        assert outcome.stdout.strip() == "ok"
+        assert len(calls) == 3
+
+    def test_persistent_etxtbsy_gives_up(self, monkeypatch):
+        import mojox.exec as exec_mod
+
+        calls = self._flaky_run(monkeypatch, failures=None)
+        outcome = run_command(_cmd((sys.executable, "-c", "pass")))
+        assert outcome.kind == OutcomeKind.COMPILE_ERROR
+        assert "Text file busy" in outcome.stderr
+        assert f"after {exec_mod._ETXTBSY_ATTEMPTS} attempts" in outcome.stderr
+        assert len(calls) == exec_mod._ETXTBSY_ATTEMPTS
+
+    def test_other_oserror_is_not_retried(self, monkeypatch):
+        import errno
+
+        import mojox.exec as exec_mod
+
+        calls: list[object] = []
+
+        def denied(argv, **kwargs):
+            calls.append(argv)
+            raise OSError(errno.EACCES, "Permission denied", argv[0])
+
+        monkeypatch.setattr(exec_mod.subprocess, "run", denied)
+        outcome = run_command(_cmd((sys.executable, "-c", "pass")))
+        assert outcome.kind == OutcomeKind.COMPILE_ERROR
+        assert "Permission denied" in outcome.stderr
+        assert len(calls) == 1
+
+
 _RECORDING_BUILD = (
     "import stat, pathlib, sys, time\n"
     "idx = sys.argv.index('-o')\n"
@@ -1157,11 +1216,14 @@ class TestTempPathIsolation:
             if cmd.kind != CommandKind.BUILD_TEST:
                 return real_run_command(cmd, **kwargs)
             out = Path(cmd.argv[cmd.argv.index("-o") + 1])
-            with lock:
-                temps.append(str(out))
-            barrier.wait()
             out.write_text(f"#!/bin/sh\necho built-{cmd.target_id}\n")
             out.chmod(0o755)
+            with lock:
+                temps.append(str(out))
+            # Write before the barrier: no thread forks for its exec while
+            # another still holds a write fd, mirroring the real compiler,
+            # which writes from its own process.
+            barrier.wait()
             return Outcome(cmd, OutcomeKind.PASS, 0, "", "", (), 0.0)
 
         monkeypatch.setattr(exec_mod, "run_command", fake_run_command)
