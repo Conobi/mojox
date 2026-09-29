@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -1654,3 +1655,65 @@ class TestRunCachedPrecompile:
         run_commands((cmd,), cache_context=ctx)
         assert len(log.read_text().splitlines()) == 2
         assert not (meta_dir / "precompile-mylib.mojoc.json").exists()
+
+
+_ENV_DUMP = "import json, os; print(json.dumps(dict(os.environ)))"
+
+
+def _child_env(cmd_env: dict[str, str], extra_env: dict[str, str] | None) -> dict[str, str]:
+    """Run a Python child with *cmd_env* and *extra_env*; return the env it actually saw."""
+    cmd = _cmd((sys.executable, "-c", _ENV_DUMP), env={"PATH": f"{sys.prefix}/bin:/usr/bin:/bin", **cmd_env})
+    outcome = run_command(cmd, extra_env=extra_env)
+    assert outcome.kind == OutcomeKind.PASS, outcome.stderr
+    return json.loads(outcome.stdout)
+
+
+class TestSettingsLocalePrecedence:
+    """A locale in the settings env replaces the whole planner locale; other vars keep cmd.env precedence."""
+
+    def test_settings_lang_replaces_defaulted_lc_all(self):
+        env = _child_env({"LC_ALL": "C.UTF-8"}, {"LANG": "fr_FR.UTF-8"})
+        assert env["LANG"] == "fr_FR.UTF-8"
+        assert "LC_ALL" not in env
+
+    def test_settings_lc_all_overrides_host_lang(self):
+        env = _child_env({"LANG": "fr_FR.UTF-8"}, {"LC_ALL": "de_DE.UTF-8"})
+        assert env["LC_ALL"] == "de_DE.UTF-8"
+        assert "LANG" not in env
+
+    def test_no_settings_locale_keeps_planner_locale(self):
+        env = _child_env({"LANG": "fr_FR.UTF-8"}, {"EXTRA": "1"})
+        assert env["LANG"] == "fr_FR.UTF-8"
+        assert env["EXTRA"] == "1"
+
+    def test_non_locale_vars_keep_cmd_env_precedence(self):
+        env = _child_env({"HOME": ""}, {"HOME": "/settings-home", "LANG": "fr_FR.UTF-8"})
+        assert env["HOME"] == ""
+
+    def test_build_test_key_uses_effective_env(self, tmp_path: Path, monkeypatch):
+        import mojox.exec as exec_mod
+
+        seen: dict[str, dict] = {}
+        monkeypatch.setattr(exec_mod, "compute_cache_key", lambda **kw: seen.setdefault("env", dict(kw["env"])) and "k")
+        cmd = replace(_planner_cmd(tmp_path), env={"PATH": "/usr/bin", "HOME": "", "LC_ALL": "C.UTF-8"})
+        extra = {"LANG": "fr_FR.UTF-8"}
+        _build_test_cache_key(cmd, _ctx(tmp_path, ()), extra)
+        assert seen["env"] == exec_mod._merge_env(cmd.env, extra)
+        assert seen["env"] == {"PATH": "/usr/bin", "HOME": "", "LANG": "fr_FR.UTF-8"}
+
+    def test_precompile_key_uses_effective_env(self, tmp_path: Path, monkeypatch):
+        import mojox.exec as exec_mod
+
+        seen: dict[str, dict] = {}
+        monkeypatch.setattr(
+            exec_mod, "compute_precompile_key", lambda **kw: seen.setdefault("env", dict(kw["env"])) and "k"
+        )
+        cmd = _precompile_cmd(tmp_path, env={"PATH": "/usr/bin", "HOME": "", "LC_ALL": "C.UTF-8"})
+        extra = {"LANG": "fr_FR.UTF-8"}
+        _precompile_cache_key(cmd, extra, "1.0.0")
+        assert seen["env"] == {"PATH": "/usr/bin", "HOME": "", "LANG": "fr_FR.UTF-8"}
+
+    def test_settings_locale_change_changes_key(self, tmp_path: Path):
+        cmd = replace(_planner_cmd(tmp_path), env={"PATH": "/usr/bin", "HOME": "", "LC_ALL": "C.UTF-8"})
+        ctx = _ctx(tmp_path, ())
+        assert _build_test_cache_key(cmd, ctx, None) != _build_test_cache_key(cmd, ctx, {"LANG": "fr_FR.UTF-8"})

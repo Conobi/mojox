@@ -14,13 +14,14 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from itertools import pairwise
 from pathlib import Path
 
 from mojox_core import Command, CommandKind
+from mojox_core.plan import select_locale_env
 
 from .cache import (
     compute_cache_key,
@@ -114,6 +115,22 @@ def _extract_test_source_and_flags(
     return argv[2], argv[5:]
 
 
+def _merge_env(cmd_env: Mapping[str, str], extra_env: Mapping[str, str] | None) -> dict[str, str]:
+    """Overlay *cmd_env* on the settings *extra_env*, except for the locale.
+
+    The planner's env wins on conflicts, but its locale is only a host
+    fallback. If the settings set any ``LANG``/``LC_*``, every planner
+    locale var is dropped, so that a defaulted ``LC_ALL`` cannot mask a
+    settings ``LANG``. The executor and both cache keys use this one merge,
+    so a key always describes the env the child actually gets.
+    """
+    extra = dict(extra_env or {})
+    if select_locale_env(extra):
+        planner_locale = select_locale_env(cmd_env)
+        cmd_env = {name: value for name, value in cmd_env.items() if name not in planner_locale}
+    return {**extra, **cmd_env}
+
+
 def _build_test_cache_key(
     cmd: Command,
     cache_context: CacheContext,
@@ -123,8 +140,7 @@ def _build_test_cache_key(
 
     Beyond the per-run :class:`CacheContext` inputs, the key covers the
     compiler binary (``argv[0]``), the flags in argv order, and the build
-    environment exactly as :func:`run_command` merges it (``extra_env``
-    overlaid by ``cmd.env``). An argv that does not match the planner's
+    environment as :func:`_merge_env` builds it for :func:`run_command`. An argv that does not match the planner's
     layout is uncacheable rather than keyed on a guess. So is a source that
     cannot be read (missing, a directory): the build then runs and the
     compiler reports it.
@@ -145,7 +161,7 @@ def _build_test_cache_key(
             compiler_version=cache_context.compiler_version,
             mojo_path=cmd.argv[0],
             flags=flags,
-            env={**(extra_env or {}), **cmd.env},
+            env=_merge_env(cmd.env, extra_env),
         )
     except OSError:
         return None
@@ -194,8 +210,8 @@ def _precompile_cache_key(
     <flags...>``. The key covers the lib's importable files, a stat stamp
     of each ``-I`` dir in argv order (relative ones resolved against
     ``cmd.cwd``, as the compiler resolves them), the whole argv, the
-    compiler binary and version, and the environment as
-    :func:`run_command` merges it. Another layout, or a lib that is not a
+    compiler binary and version, and the environment as :func:`_merge_env`
+    builds it. Another layout, or a lib that is not a
     readable directory, is uncacheable: it always precompiles.
     """
     argv = cmd.argv
@@ -217,7 +233,7 @@ def _precompile_cache_key(
         compiler_version=compiler_version,
         mojo_path=argv[0],
         args=argv[1:],
-        env={**(extra_env or {}), **cmd.env},
+        env=_merge_env(cmd.env, extra_env),
     )
 
 
@@ -284,17 +300,17 @@ def run_command(
 ) -> Outcome:
     """Run a single Command and return its Outcome.
 
-    The environment is constructed from ``cmd.env`` merged with
-    ``extra_env`` (LocalSettings.env). The host environment is never
+    The environment is ``cmd.env`` merged with ``extra_env``
+    (LocalSettings.env) by :func:`_merge_env`. The host environment is never
     inherited. Parent directories of ``cmd.outputs`` are created first,
     resolving relative outputs against ``cmd.cwd`` as the child will.
     A transient ETXTBSY from execve is retried (see :func:`_spawn`).
 
     Args:
         cmd: The command to execute.
-        extra_env: Additional environment variables to merge (from
-            LocalSettings.env). These are added under cmd.env, with
-            cmd.env values taking precedence for conflicts.
+        extra_env: Additional environment variables (LocalSettings.env).
+            cmd.env wins on conflicts, except that a settings locale
+            replaces the planner's (see :func:`_merge_env`).
         include_paths: Dependency include directories whose ``lib/``
             subdirectories are added to the dynamic linker search path.
 
@@ -304,11 +320,7 @@ def run_command(
     for output in cmd.outputs:
         (Path(cmd.cwd) / output).parent.mkdir(parents=True, exist_ok=True)
 
-    env = dict(cmd.env)
-    if extra_env:
-        merged = dict(extra_env)
-        merged.update(env)
-        env = merged
+    env = _merge_env(cmd.env, extra_env)
 
     if include_paths:
         _inject_native_lib_paths(env, include_paths)

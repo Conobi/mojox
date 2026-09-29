@@ -128,8 +128,13 @@ mojox_core.io.manifest.read(path: Path) -> dict                    # read & pars
 mojox_core.io.toolchain.resolve() -> Toolchain                     # detect installed Mojo compiler
 mojox_core.io.environment.read_distributions(platlib=None) -> list[dict]  # scan installed dists
 mojox_core.io.environment.read_lockfile(project_root: Path) -> dict | None
-mojox_core.io.environment.read_host_facts(manifest_dir: Path) -> HostFacts
+mojox_core.io.environment.read_host_facts(manifest_dir: Path, environ: Mapping[str, str] | None = None) -> HostFacts  # locale: LANG/LC_* of environ (default os.environ)
 ```
+
+`read_host_facts` keeps only the `LANG` and `LC_*` variables of `environ`, and
+the planner forwards them to every command, falling back to `LC_ALL=C.UTF-8`
+when there are none. As a result, each command's `env` in `mojox metadata`
+includes the host locale.
 
 ### Errors
 
