@@ -15,7 +15,7 @@ from mojox.exec import (
     run_command,
     run_commands,
 )
-from mojox.types import OutcomeKind
+from mojox.types import Outcome, OutcomeKind
 from mojox_core import Command, CommandKind
 
 
@@ -993,32 +993,74 @@ def _recording_cmd(log: Path, tag: str, binary: Path) -> Command:
 class TestTempPathIsolation:
     """Concurrent builds in one process must never share a temp output."""
 
-    def test_concurrent_builds_use_distinct_temp_paths(self, tmp_path: Path):
+    def test_concurrent_builds_use_distinct_temp_paths(self, tmp_path: Path, monkeypatch):
+        """All builders hold their temp output at once (barrier), so none may share it."""
+        import threading
         from concurrent.futures import ThreadPoolExecutor
 
+        import mojox.exec as exec_mod
+
+        workers = 6
         binary = tmp_path / "bin" / "test_x-deadbeef"
         meta_dir = tmp_path / "meta"
-        log = tmp_path / "log"
+        barrier = threading.Barrier(workers, timeout=10)
+        temps: list[str] = []
+        lock = threading.Lock()
+        real_run_command = exec_mod.run_command
+
+        def fake_run_command(cmd, **kwargs):
+            if cmd.kind != CommandKind.BUILD_TEST:
+                return real_run_command(cmd, **kwargs)
+            out = Path(cmd.argv[cmd.argv.index("-o") + 1])
+            with lock:
+                temps.append(str(out))
+            barrier.wait()
+            out.write_text(f"#!/bin/sh\necho built-{cmd.target_id}\n")
+            out.chmod(0o755)
+            return Outcome(cmd, OutcomeKind.PASS, 0, "", "", (), 0.0)
+
+        monkeypatch.setattr(exec_mod, "run_command", fake_run_command)
 
         def build(i: int):
             return run_cached_test(
-                _recording_cmd(log, str(i), binary),
+                _build_test_cmd(("fake-mojo",), str(binary), target_id=str(i)),
                 cache_key=f"key-{i}",
                 meta_dir=meta_dir,
                 compiler_version="v",
             )
 
-        with ThreadPoolExecutor(max_workers=6) as pool:
-            outcomes = list(pool.map(build, range(6)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            outcomes = list(pool.map(build, range(workers)))
 
         assert all(o.kind == OutcomeKind.PASS for o in outcomes), [o.stderr for o in outcomes]
-        temps = log.read_text().split()
-        assert len(temps) == 6
-        assert len(set(temps)) == 6
+        assert len(temps) == workers
+        assert len(set(temps)) == workers
         for t in temps:
             assert Path(t).parent == binary.parent
             assert not Path(t).exists()
         assert sorted(p.name for p in binary.parent.iterdir()) == [binary.name]
+
+    def test_published_binary_is_executable_without_builder_chmod(self, tmp_path: Path):
+        """Don't rely on the compiler resetting the 0600 mode mkstemp gives the temp."""
+        import os
+
+        binary = tmp_path / "bin" / "test_x-deadbeef"
+        script = (
+            "import sys\n"
+            "p = sys.argv[sys.argv.index('-o') + 1]\n"
+            "open(p, 'w').write('#!/bin/sh\\necho no-chmod\\n')\n"
+        )
+        cmd = _build_test_cmd((sys.executable, "-c", script), str(binary))
+        outcome = run_cached_test(cmd, cache_key="k", meta_dir=tmp_path / "meta", compiler_version="v")
+        assert outcome.kind == OutcomeKind.PASS, outcome.stderr
+        assert outcome.stdout.strip() == "no-chmod"
+        assert os.access(binary, os.X_OK)
+
+    def test_missing_binary_message_names_checked_temp(self, tmp_path: Path):
+        binary = tmp_path / "bin" / "test_x-deadbeef"
+        cmd = _build_test_cmd((sys.executable, "-c", "pass"), str(binary))
+        outcome = run_cached_test(cmd, cache_key="k", meta_dir=tmp_path / "meta", compiler_version="v")
+        assert f"{binary.parent}/.{binary.name}." in outcome.stderr
 
     def test_no_cache_concurrent_builds_use_distinct_temp_paths(self, tmp_path: Path):
         from concurrent.futures import ThreadPoolExecutor

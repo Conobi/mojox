@@ -764,12 +764,16 @@ def run_cached_test(
                 exit_code=0,
                 stdout=build_outcome.stdout,
                 stderr=(
-                    f"Build succeeded but binary not found: {binary_path}\n"
+                    f"Build succeeded but binary not found: {tmp_binary}\n"
                     + build_outcome.stderr
                 ),
                 diagnostics=build_outcome.diagnostics,
                 elapsed_s=build_outcome.elapsed_s,
             )
+
+        # mkstemp creates the temp as 0600; don't rely on the compiler
+        # resetting the mode of the file it writes into.
+        tmp_binary.chmod(tmp_binary.stat().st_mode | 0o700)
 
         if skip_cache_write:
             exec_binary = tmp_binary
