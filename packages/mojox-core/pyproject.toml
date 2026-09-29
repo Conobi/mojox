@@ -1,6 +1,6 @@
 [project]
 name = "mojox-core"
-version = "0.6.0"
+version = "0.6.1"
 description = "Pure model layer for mojox: manifest parsing, target discovery, policy resolution, and build planning."
 readme = "README.md"
 license = "MIT"
