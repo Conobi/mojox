@@ -39,8 +39,8 @@ _COMPILE_KINDS = frozenset(
 def _serialize_kind(kind: CommandKind) -> str:
     """Serialize CommandKind, mapping BUILD_TEST to run-test for backward compat."""
     if kind == CommandKind.BUILD_TEST:
-        return CommandKind.RUN_TEST.value
-    return kind.value
+        return str(CommandKind.RUN_TEST.value)
+    return str(kind.value)
 
 
 def serialize_suite_started(test_count: int) -> dict[str, Any]:

@@ -19,6 +19,7 @@ from concurrent.futures import CancelledError, Future, ThreadPoolExecutor, as_co
 from dataclasses import dataclass, replace
 from itertools import pairwise
 from pathlib import Path
+from typing import Any
 
 from mojox_core import Command, CommandKind
 from mojox_core.plan import select_locale_env
@@ -273,7 +274,7 @@ def _execute(
 _ETXTBSY_ATTEMPTS = 5
 
 
-def _spawn(argv: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+def _spawn(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
     """``subprocess.run`` that retries a transient ``ETXTBSY`` from execve.
 
     Binaries are written and executed from worker threads of one process.
