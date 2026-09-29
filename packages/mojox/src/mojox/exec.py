@@ -191,7 +191,8 @@ def run_command(
 
     The environment is constructed from ``cmd.env`` merged with
     ``extra_env`` (LocalSettings.env). The host environment is never
-    inherited.
+    inherited. Parent directories of ``cmd.outputs`` are created first,
+    resolving relative outputs against ``cmd.cwd`` as the child will.
 
     Args:
         cmd: The command to execute.
@@ -205,7 +206,7 @@ def run_command(
         An Outcome describing the result.
     """
     for output in cmd.outputs:
-        Path(output).parent.mkdir(parents=True, exist_ok=True)
+        (Path(cmd.cwd) / output).parent.mkdir(parents=True, exist_ok=True)
 
     env = dict(cmd.env)
     if extra_env:

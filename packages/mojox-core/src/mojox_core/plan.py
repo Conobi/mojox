@@ -155,7 +155,7 @@ def _build_precompile_command(
 
 
 def _binary_cache_name(target_path: str) -> str:
-    """Return ``<stem>-<sha256(posix path)[:8]>`` for a test's cached binary.
+    """Return ``<stem>-<sha256(posix path)[:8]>`` for a cached test or example binary.
 
     The stem keeps the name readable; the hash of the normalised full path
     keeps it unique, so ``tests/a_b.mojo`` and ``tests/a/b.mojo`` never share
@@ -220,8 +220,18 @@ def _build_check_example_command(
     host: HostFacts,
     precompiled_ids: list[str],
 ) -> Command:
-    """Build a check-example command with optimization, defines, and thread count."""
-    argv: list[str] = [toolchain.mojo_path, "build", target.path]
+    """Build a check-example command with optimization, defines, and thread count.
+
+    Examples are compile-checks, never executed, but ``mojo build`` always
+    links a binary. Without ``-o`` it lands in the project root as ``main``,
+    so it goes to ``.mojox/cache/examples/<name>`` instead, named by
+    :func:`_binary_cache_name` because every example is ``main.mojo``. A
+    stable path is preferred over a temp file: it needs no cleanup step in
+    the executor, parallel builds never share a path, and each rebuild
+    overwrites the previous binary, so the cache holds one per example.
+    """
+    output_path = str(PurePosixPath(".mojox/cache/examples") / _binary_cache_name(target.path))
+    argv: list[str] = [toolchain.mojo_path, "build", target.path, "-o", output_path]
 
     if policy.optimize is not None:
         argv.append(f"-O{policy.optimize}")
@@ -248,7 +258,7 @@ def _build_check_example_command(
         kind=CommandKind.CHECK_EXAMPLE,
         target_id=target.target_id,
         timeout_s=policy.timeout_s,
-        outputs=(),
+        outputs=(output_path,),
         depends_on=tuple(precompiled_ids),
     )
 

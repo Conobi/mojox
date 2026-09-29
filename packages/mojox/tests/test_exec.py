@@ -194,6 +194,18 @@ class TestOutputDirectoryCreation:
         assert outcome.kind == OutcomeKind.PASS
         assert out_file.parent.is_dir()
 
+    def test_relative_output_dir_created_under_command_cwd(self, tmp_path: Path):
+        """Relative outputs resolve against ``cmd.cwd``, not the process cwd,
+        and exist before the command runs."""
+        out_dir = tmp_path / ".mojox" / "cache" / "examples"
+        cmd = _cmd(
+            (sys.executable, "-c", f"import os, sys; sys.exit(0 if os.path.isdir({str(out_dir)!r}) else 1)"),
+            cwd=PurePosixPath(tmp_path),
+            outputs=(".mojox/cache/examples/main-0123abcd",),
+        )
+        outcome = run_command(cmd)
+        assert outcome.kind == OutcomeKind.PASS
+
 
 class TestFailFast:
     def test_fail_fast_cancels_remaining(self):

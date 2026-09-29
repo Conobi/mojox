@@ -248,6 +248,40 @@ class TestCheckExampleThreads:
                 assert threads == max(1, host.cpu_count // 4)
 
 
+class TestCheckExampleOutput:
+    """Examples are built into the mojox cache, never into the project root."""
+
+    @staticmethod
+    def _example_cmds(*paths: str):
+        graph = TargetGraph(targets=tuple(Target(TargetKind.EXAMPLE, p, p) for p in paths), edges=())
+        cmds = plan(graph, _make_env(), _make_policy(), _make_toolchain(), _make_host())
+        return [c for c in cmds if c.kind == CommandKind.CHECK_EXAMPLE]
+
+    @staticmethod
+    def _output_flag(cmd) -> str:
+        argv = list(cmd.argv)
+        return argv[argv.index("-o") + 1]
+
+    def test_output_flag_points_into_examples_cache(self):
+        (cmd,) = self._example_cmds("examples/hello/main.mojo")
+        output = self._output_flag(cmd)
+        assert output == f".mojox/cache/examples/{_binary_cache_name('examples/hello/main.mojo')}"
+
+    def test_outputs_tuple_matches_output_flag(self):
+        (cmd,) = self._example_cmds("examples/hello/main.mojo")
+        assert cmd.outputs == (self._output_flag(cmd),)
+
+    def test_same_named_examples_get_distinct_outputs(self):
+        """Every example is ``main.mojo``; the path hash keeps outputs apart."""
+        first, second = self._example_cmds("examples/a/main.mojo", "examples/b/main.mojo")
+        assert self._output_flag(first) != self._output_flag(second)
+
+    def test_source_file_before_output_flag(self):
+        (cmd,) = self._example_cmds("examples/hello/main.mojo")
+        argv = list(cmd.argv)
+        assert argv.index("examples/hello/main.mojo") < argv.index("-o")
+
+
 class TestFlagStripping:
     def test_optimize_never_reaches_lib_target(self):
         graph = TargetGraph(
