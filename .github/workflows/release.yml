@@ -63,7 +63,7 @@ jobs:
         run: |
           set -euo pipefail
           BEFORE=$(git describe --tags --abbrev=0 2>/dev/null || echo "none")
-          semantic-release version
+          semantic-release version --no-changelog
           AFTER=$(git describe --tags --abbrev=0 2>/dev/null || echo "none")
           if [ "$BEFORE" != "$AFTER" ]; then
             echo "released=true" >> "$GITHUB_OUTPUT"
