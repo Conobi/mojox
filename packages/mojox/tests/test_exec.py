@@ -749,6 +749,15 @@ class TestBuildTestCacheKey:
         (tmp_path / "tests" / "test_a.mojo").write_text("def test_a(): return")
         assert _build_test_cache_key(cmd, ctx, None) != before
 
+    def test_unreadable_source_is_uncacheable(self, tmp_path: Path):
+        """A vanished or directory source is left to the compiler to report."""
+        cmd = _planner_cmd(tmp_path)
+        src = tmp_path / "tests" / "test_a.mojo"
+        src.unlink()
+        assert _build_test_cache_key(cmd, _ctx(tmp_path, ()), None) is None
+        src.mkdir()
+        assert _build_test_cache_key(cmd, _ctx(tmp_path, ()), None) is None
+
     def test_malformed_argv_is_uncacheable(self, tmp_path: Path):
         cmd = _planner_cmd(tmp_path)
         bad = Command(

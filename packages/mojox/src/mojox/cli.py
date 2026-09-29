@@ -836,7 +836,8 @@ def _cmd_run(args: argparse.Namespace) -> None:
     Takes the ``mojox test`` build-then-execute path, so an unchanged file
     and unchanged imports reuse the binary. The program's captured stdout
     and stderr (build diagnostics first) are replayed once it exits. A
-    build failure exits non-zero even when the compiler itself exited 0.
+    build failure or a timeout exits 1, even when the compiler itself
+    exited 0; a signal death exits 128 + the signal number, as a shell does.
     """
     from mojox_core import (
         ConfigError,
@@ -963,6 +964,12 @@ def _cmd_run(args: argparse.Namespace) -> None:
     final = outcomes[-1]
     if final.kind == OutcomeKind.PASS:
         sys.exit(0)
+    if final.kind == OutcomeKind.TIMEOUT:
+        print(f"mojox: program timed out after {final.command.timeout_s}s", file=sys.stderr)
+        sys.exit(1)
+    if final.kind == OutcomeKind.CRASH and final.exit_code is not None:
+        # A signal death is a negative returncode; report it as a shell does.
+        sys.exit(128 - final.exit_code)
     sys.exit(final.exit_code or 1)
 
 

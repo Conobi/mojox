@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -584,26 +585,35 @@ class TestCacheInvalidatesOnDependencyChange:
 
 
 # Fake ``mojo build`` for ``mojox run``: fails with a diagnostic when the
-# source contains COMPILE_ERROR, else emits a program that prints the
-# source's ``# out:`` line, one stderr line, and exits with its ``# exit:``.
+# source is unreadable or contains COMPILE_ERROR, else emits a program that
+# prints the source's ``# out:`` line and one stderr line, optionally sleeps
+# (``# sleep:``) or kills itself (``# signal:``), then exits with ``# exit:``.
 _FAKE_MOJO_PROGRAM = """#!{python}
 import pathlib, re, stat, sys
 args = sys.argv[1:]
 assert args[0] == "build", args
-src = pathlib.Path(args[1]).read_text()
 with open({log!r}, "a") as f:
     f.write(args[1] + "\\n")
+try:
+    src = pathlib.Path(args[1]).read_text()
+except OSError:
+    print("mojo: error: unable to read " + args[1], file=sys.stderr)
+    sys.exit(1)
 if "COMPILE_ERROR" in src:
     print(args[1] + ":1:1: error: use of unknown declaration", file=sys.stderr)
     sys.exit(1)
 out_line = re.search(r"# out: (.*)", src).group(1)
 code = int(re.search(r"# exit: (\\d+)", src).group(1))
+sleep = re.search(r"# sleep: (\\d+)", src)
+sig = re.search(r"# signal: (\\d+)", src)
 out = pathlib.Path(args[args.index("-o") + 1])
 out.write_text(
-    "#!{python}\\nimport sys\\n"
-    f"print({{out_line!r}})\\n"
-    "print('program-stderr', file=sys.stderr)\\n"
-    f"sys.exit({{code}})\\n"
+    "#!{python}\\nimport os, sys, time\\n"
+    f"print({{out_line!r}}, flush=True)\\n"
+    "print('program-stderr', file=sys.stderr, flush=True)\\n"
+    + (f"time.sleep({{sleep.group(1)}})\\n" if sleep else "")
+    + (f"os.kill(os.getpid(), {{sig.group(1)}})\\n" if sig else "")
+    + f"sys.exit({{code}})\\n"
 )
 out.chmod(out.stat().st_mode | stat.S_IEXEC)
 """
@@ -656,8 +666,34 @@ class TestRunExecutesProgram:
     def test_build_failure_exits_nonzero_with_diagnostic(self, project, capsys):
         proj, _log = project
         (proj / "bad.mojo").write_text("COMPILE_ERROR\n")
-        assert self._run("bad.mojo") not in (0, None)
+        assert self._run("bad.mojo") == 1
         assert "error: use of unknown declaration" in capsys.readouterr().err
+
+    def test_missing_file_is_a_compiler_diagnostic(self, project, capsys):
+        assert self._run("typo.mojo") == 1
+        err = capsys.readouterr().err
+        assert "unable to read typo.mojo" in err
+        assert "Traceback" not in err
+
+    def test_directory_is_a_compiler_diagnostic(self, project, capsys):
+        proj, _log = project
+        (proj / "adir.mojo").mkdir()
+        assert self._run("adir.mojo") == 1
+        err = capsys.readouterr().err
+        assert "unable to read adir.mojo" in err
+        assert "Traceback" not in err
+
+    def test_signal_death_exits_128_plus_signal(self, project, capsys):
+        proj, _log = project
+        (proj / "boom.mojo").write_text(f"# out: boom\n# exit: 0\n# signal: {signal.SIGKILL}\n")
+        assert self._run("boom.mojo") == 128 + signal.SIGKILL
+        assert capsys.readouterr().out == "boom\n"
+
+    def test_timeout_reports_and_exits_1(self, project, capsys):
+        proj, _log = project
+        (proj / "slow.mojo").write_text("# out: slow\n# exit: 0\n# sleep: 30\n")
+        assert self._run("--timeout", "1", "slow.mojo") == 1
+        assert "mojox: program timed out after 1s" in capsys.readouterr().err
 
     def test_second_run_is_a_cache_hit(self, project, capsys):
         proj, log = project

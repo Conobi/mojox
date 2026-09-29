@@ -114,7 +114,9 @@ def _build_test_cache_key(
     compiler binary (``argv[0]``), the flags in argv order, and the build
     environment exactly as :func:`run_command` merges it (``extra_env``
     overlaid by ``cmd.env``). An argv that does not match the planner's
-    layout is uncacheable rather than keyed on a guess.
+    layout is uncacheable rather than keyed on a guess. So is a source that
+    cannot be read (missing, a directory): the build then runs and the
+    compiler reports it.
     """
     try:
         source_str, flags = _extract_test_source_and_flags(cmd.argv)
@@ -123,16 +125,19 @@ def _build_test_cache_key(
     source_path = Path(source_str)
     if not source_path.is_absolute():
         source_path = Path(cmd.cwd) / source_path
-    return compute_cache_key(
-        test_source=source_path,
-        project_hash=cache_context.project_hash,
-        tests_tree_hash=cache_context.tests_tree_hash,
-        deps_stamp=cache_context.deps_stamp,
-        compiler_version=cache_context.compiler_version,
-        mojo_path=cmd.argv[0],
-        flags=flags,
-        env={**(extra_env or {}), **cmd.env},
-    )
+    try:
+        return compute_cache_key(
+            test_source=source_path,
+            project_hash=cache_context.project_hash,
+            tests_tree_hash=cache_context.tests_tree_hash,
+            deps_stamp=cache_context.deps_stamp,
+            compiler_version=cache_context.compiler_version,
+            mojo_path=cmd.argv[0],
+            flags=flags,
+            env={**(extra_env or {}), **cmd.env},
+        )
+    except OSError:
+        return None
 
 
 def _resolve_cache_for_build_test(
