@@ -143,6 +143,12 @@ def _add_test_flags(parser: argparse.ArgumentParser) -> None:
         help="Filter tests by name pattern (case-insensitive substring)",
     )
     parser.add_argument(
+        "--examples",
+        action="store_true",
+        default=False,
+        help="Also compile-check examples/*/main.mojo (implied by an examples/ path)",
+    )
+    parser.add_argument(
         "paths",
         nargs="*",
         default=[],
@@ -219,15 +225,7 @@ def apply_filters(
     if not paths and pattern is None:
         return commands
 
-    normalized_paths: list[str] = []
-    root = project_root.resolve()
-    for p in paths:
-        resolved = Path(p).resolve()
-        try:
-            rel = str(resolved.relative_to(root))
-        except ValueError:
-            continue
-        normalized_paths.append(os.path.normpath(rel).rstrip(os.sep))
+    normalized_paths = _relativize_paths(paths, project_root)
 
     def _matches_test(cmd: Command) -> bool:
         if cmd.kind not in _TEST_KINDS:
@@ -248,6 +246,46 @@ def apply_filters(
         return not (pattern is not None and pattern.lower() not in tid.lower())
 
     return tuple(cmd for cmd in commands if _matches_test(cmd))
+
+
+def select_examples(
+    commands: tuple[Command, ...],
+    *,
+    examples: bool,
+    paths: tuple[str, ...],
+    project_root: Path,
+) -> tuple[Command, ...]:
+    """Drop CHECK_EXAMPLE commands unless examples were asked for.
+
+    Examples are opt-in for ``mojox test`` because compiling them can dwarf
+    the test run itself. They are kept when *examples* is set or when any
+    path in *paths* is the project's ``examples`` directory or inside it.
+    Other command kinds always pass through.
+    """
+    wanted = examples or any(
+        np == "examples" or np.startswith("examples/") for np in _relativize_paths(paths, project_root)
+    )
+    if wanted:
+        return commands
+    return tuple(cmd for cmd in commands if cmd.kind != CommandKind.CHECK_EXAMPLE)
+
+
+def _relativize_paths(paths: tuple[str, ...], project_root: Path) -> list[str]:
+    """Resolve *paths* against cwd and express them relative to *project_root*.
+
+    Paths outside the root are silently dropped; a trailing separator is
+    stripped so ``tests/unit/`` and ``tests/unit`` compare equal.
+    """
+    normalized: list[str] = []
+    root = project_root.resolve()
+    for p in paths:
+        resolved = Path(p).resolve()
+        try:
+            rel = str(resolved.relative_to(root))
+        except ValueError:
+            continue
+        normalized.append(os.path.normpath(rel).rstrip(os.sep))
+    return normalized
 
 
 def _interrupted_summary(commands: tuple[Command, ...]) -> str:
@@ -381,6 +419,12 @@ def _cmd_test(args: argparse.Namespace) -> None:
     filter_paths = tuple(getattr(args, "paths", []))
     filter_pattern = getattr(args, "filter", None)
     is_bundle = getattr(args, "bundle", False)
+    commands = select_examples(
+        commands,
+        examples=getattr(args, "examples", False),
+        paths=filter_paths,
+        project_root=Path.cwd(),
+    )
     # In bundle mode, -k filters at runtime inside the harness binary,
     # not at the file level. Path filters still apply to scope the bundle.
     effective_pattern = None if is_bundle else filter_pattern
@@ -392,7 +436,8 @@ def _cmd_test(args: argparse.Namespace) -> None:
             project_root=Path.cwd(),
         )
         test_count = sum(1 for c in commands if c.kind in _TEST_KINDS)
-        if test_count == 0:
+        example_count = sum(1 for c in commands if c.kind == CommandKind.CHECK_EXAMPLE)
+        if test_count == 0 and example_count == 0:
             print("No tests match the filter", file=sys.stderr)
             if output_format == OutputFormat.JSON:
                 from .json import JsonEventWriter, serialize_suite_finished, serialize_suite_started

@@ -162,6 +162,17 @@ class TestTestSubcommandFlags:
         args = parser.parse_args(["test", "--no-cache"])
         assert args.no_cache is True
 
+    def test_examples_flag_default_false(self):
+        """Example checking is opt-in."""
+        parser = build_parser()
+        args = parser.parse_args(["test"])
+        assert args.examples is False
+
+    def test_examples_flag(self):
+        parser = build_parser()
+        args = parser.parse_args(["test", "--examples"])
+        assert args.examples is True
+
     def test_build_does_not_have_filter(self):
         parser = build_parser()
         with pytest.raises(SystemExit):
@@ -340,6 +351,73 @@ class TestTestSubcommandIntegration:
         assert started["test_count"] == 0
         assert finished["type"] == "suite"
         assert finished["event"] == "ok"
+
+
+class TestExamplesOptIn:
+    """Examples are planned by ``mojox test`` only on request."""
+
+    def _make_project(self, tmp_path):
+        """Project with one test and one example."""
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            '[project]\nname = "testlib"\nversion = "0.1.0"\n'
+            '[build-system]\nrequires = ["hatchling"]\nbuild-backend = "hatchling.build"\n'
+        )
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "test_hello.mojo").write_text(
+            "from testing import assert_true\ndef test_hello():\n    assert_true(True)\n"
+        )
+        example_dir = tmp_path / "examples" / "hello"
+        example_dir.mkdir(parents=True)
+        (example_dir / "main.mojo").write_text("def main():\n    print('hi')\n")
+
+    def _dry_run_kinds(self, tmp_path, *extra_args):
+        import json
+
+        result = subprocess.run(
+            [sys.executable, "-m", "mojox", "test", "--output-format", "json", "--dry-run", *extra_args],
+            cwd=str(tmp_path),
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        return [c["kind"] for c in json.loads(result.stdout)["commands"]]
+
+    def test_default_excludes_examples(self, tmp_path):
+        self._make_project(tmp_path)
+        kinds = self._dry_run_kinds(tmp_path)
+        assert "check-example" not in kinds
+        assert "build-test" in kinds
+
+    def test_examples_flag_includes_examples(self, tmp_path):
+        self._make_project(tmp_path)
+        kinds = self._dry_run_kinds(tmp_path, "--examples")
+        assert "check-example" in kinds
+        assert "build-test" in kinds
+
+    def test_examples_path_includes_examples(self, tmp_path):
+        """A positional ``examples/...`` path opts in even though it matches no test."""
+        self._make_project(tmp_path)
+        kinds = self._dry_run_kinds(tmp_path, "examples/hello")
+        assert "check-example" in kinds
+        assert "build-test" not in kinds
+
+    def test_test_path_excludes_examples(self, tmp_path):
+        self._make_project(tmp_path)
+        kinds = self._dry_run_kinds(tmp_path, "tests/test_hello.mojo")
+        assert kinds == ["build-test"]
+
+    def test_human_dry_run_omits_check_example_group(self, tmp_path):
+        self._make_project(tmp_path)
+        result = subprocess.run(
+            [sys.executable, "-m", "mojox", "test", "--dry-run"],
+            cwd=str(tmp_path),
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "check-example" not in result.stdout + result.stderr
 
 
 class TestCacheSubcommand:

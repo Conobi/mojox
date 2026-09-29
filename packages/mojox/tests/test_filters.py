@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path, PurePosixPath
 
-from mojox.cli import apply_filters
+from mojox.cli import apply_filters, select_examples
 from mojox_core import Command, CommandKind
 
 
@@ -202,3 +202,79 @@ class TestBuildTestFiltering:
         result = apply_filters(cmds, paths=(), pattern="nonexistent", project_root=tmp_path)
         assert len(result) == 1
         assert result[0].kind == CommandKind.COMPILE_PACKAGE
+
+
+class TestSelectExamples:
+    """CHECK_EXAMPLE commands are opt-in; everything else passes through."""
+
+    _CMDS = (
+        _cmd("lib/mylib", CommandKind.COMPILE_PACKAGE),
+        _cmd("examples/ex/main.mojo", CommandKind.CHECK_EXAMPLE),
+        _cmd("tests/test_a.mojo", CommandKind.BUILD_TEST),
+    )
+
+    def test_default_drops_examples(self, tmp_path: Path):
+        result = select_examples(self._CMDS, examples=False, paths=(), project_root=tmp_path)
+        kinds = [c.kind for c in result]
+        assert CommandKind.CHECK_EXAMPLE not in kinds
+        assert kinds == [CommandKind.COMPILE_PACKAGE, CommandKind.BUILD_TEST]
+
+    def test_examples_flag_keeps_examples(self, tmp_path: Path):
+        result = select_examples(self._CMDS, examples=True, paths=(), project_root=tmp_path)
+        assert result == self._CMDS
+
+    def test_examples_path_keeps_examples(self, tmp_path: Path):
+        (tmp_path / "examples" / "ex").mkdir(parents=True)
+        result = select_examples(
+            self._CMDS,
+            examples=False,
+            paths=(str(tmp_path / "examples" / "ex"),),
+            project_root=tmp_path,
+        )
+        assert result == self._CMDS
+
+    def test_examples_dir_itself_keeps_examples(self, tmp_path: Path):
+        (tmp_path / "examples").mkdir()
+        result = select_examples(
+            self._CMDS,
+            examples=False,
+            paths=(str(tmp_path / "examples") + "/",),
+            project_root=tmp_path,
+        )
+        assert result == self._CMDS
+
+    def test_non_examples_path_drops_examples(self, tmp_path: Path):
+        (tmp_path / "tests").mkdir()
+        result = select_examples(
+            self._CMDS,
+            examples=False,
+            paths=(str(tmp_path / "tests"),),
+            project_root=tmp_path,
+        )
+        assert CommandKind.CHECK_EXAMPLE not in [c.kind for c in result]
+
+    def test_prefix_lookalike_drops_examples(self, tmp_path: Path):
+        """``examples_extra/`` is not ``examples/``."""
+        (tmp_path / "examples_extra").mkdir()
+        result = select_examples(
+            self._CMDS,
+            examples=False,
+            paths=(str(tmp_path / "examples_extra"),),
+            project_root=tmp_path,
+        )
+        assert CommandKind.CHECK_EXAMPLE not in [c.kind for c in result]
+
+    def test_relative_examples_path_resolved_against_cwd(self, tmp_path: Path):
+        (tmp_path / "examples" / "ex").mkdir(parents=True)
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            result = select_examples(
+                self._CMDS,
+                examples=False,
+                paths=("./examples/ex",),
+                project_root=tmp_path,
+            )
+        finally:
+            os.chdir(old_cwd)
+        assert result == self._CMDS
