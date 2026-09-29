@@ -589,7 +589,7 @@ class TestCacheInvalidatesOnDependencyChange:
 # prints the source's ``# out:`` line and one stderr line, optionally sleeps
 # (``# sleep:``) or kills itself (``# signal:``), then exits with ``# exit:``.
 _FAKE_MOJO_PROGRAM = """#!{python}
-import pathlib, re, stat, sys
+import os, pathlib, re, signal, stat, sys
 args = sys.argv[1:]
 assert args[0] == "build", args
 with open({log!r}, "a") as f:
@@ -602,6 +602,8 @@ except OSError:
 if "COMPILE_ERROR" in src:
     print(args[1] + ":1:1: error: use of unknown declaration", file=sys.stderr)
     sys.exit(1)
+if "COMPILER_CRASH" in src:
+    os.kill(os.getpid(), signal.SIGKILL)
 out_line = re.search(r"# out: (.*)", src).group(1)
 code = int(re.search(r"# exit: (\\d+)", src).group(1))
 sleep = re.search(r"# sleep: (\\d+)", src)
@@ -668,6 +670,11 @@ class TestRunExecutesProgram:
         (proj / "bad.mojo").write_text("COMPILE_ERROR\n")
         assert self._run("bad.mojo") == 1
         assert "error: use of unknown declaration" in capsys.readouterr().err
+
+    def test_compiler_signal_death_exits_1(self, project):
+        proj, _log = project
+        (proj / "crash.mojo").write_text("COMPILER_CRASH\n")
+        assert self._run("crash.mojo") == 1
 
     def test_missing_file_is_a_compiler_diagnostic(self, project, capsys):
         assert self._run("typo.mojo") == 1

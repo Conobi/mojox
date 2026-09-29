@@ -29,8 +29,9 @@ from .types import Outcome, OutcomeKind
 class CacheContext:
     """Context for binary cache lookups passed to the executor.
 
-    Groups the per-run inputs of the AOT test binary cache key. They are
-    computed once per ``mojox test`` invocation, not per test.
+    Groups the per-run inputs of the AOT binary cache key. They are
+    computed once per ``mojox test`` or ``mojox run`` invocation, not per
+    built file.
 
     Attributes:
         project_hash: Hash of the project's library source trees.
@@ -155,15 +156,6 @@ def _resolve_cache_for_build_test(
     When caching is disabled (``cache_context.enabled is False``), the
     binary is built to a temporary directory and cache metadata is not
     written, preserving any existing cache state for future runs.
-
-    Args:
-        cmd: A ``BUILD_TEST`` :class:`Command`.
-        cache_context: Shared cache context from the CLI layer.
-        extra_env: Additional environment variables.
-        include_paths: Dependency include directories.
-
-    Returns:
-        An :class:`Outcome` from the compound build+execute operation.
     """
     import uuid
 

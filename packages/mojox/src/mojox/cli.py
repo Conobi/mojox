@@ -964,6 +964,10 @@ def _cmd_run(args: argparse.Namespace) -> None:
     final = outcomes[-1]
     if final.kind == OutcomeKind.PASS:
         sys.exit(0)
+    if final.kind == OutcomeKind.COMPILE_ERROR:
+        # Even a compiler killed by a signal is a build failure, not the
+        # program's death: its negative returncode must not reach sys.exit.
+        sys.exit(1)
     if final.kind == OutcomeKind.TIMEOUT:
         print(f"mojox: program timed out after {final.command.timeout_s}s", file=sys.stderr)
         sys.exit(1)
