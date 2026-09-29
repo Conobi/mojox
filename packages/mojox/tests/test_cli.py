@@ -944,6 +944,30 @@ class TestPrecompileCache:
         assert self._run() == 0
         assert self._precompiles(log) == 2
 
+    @staticmethod
+    def _builds(log: Path) -> int:
+        return sum(1 for line in log.read_text().splitlines() if line.startswith("build "))
+
+    def test_warm_run_rebuilds_no_test_binary(self, project):
+        """The ``-I .mojox/build/pkg`` every test gets must not enter its key.
+
+        The package is rewritten between runs, as another precompile would,
+        so the stamp would change if the exclusion missed that dir.
+        """
+        proj, _dep, log = project
+        assert self._run() == 0
+        assert self._builds(log) == 2
+        self._package(proj).write_text("mojoc:rewritten by another precompile\n")
+        assert self._run() == 0
+        assert self._builds(log) == 2
+
+    def test_dependency_edit_rebuilds_every_test_binary(self, project):
+        _proj, dep, log = project
+        assert self._run() == 0
+        (dep / "navette" / "__init__.mojo").write_text("fn f(): return\n")
+        assert self._run() == 0
+        assert self._builds(log) == 4
+
     def test_include_dir_change_reprecompiles(self, project, tmp_path, monkeypatch):
         """A different ``-I`` list is a different precompile argv."""
         from mojox_core import DistKind
