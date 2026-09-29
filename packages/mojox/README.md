@@ -47,7 +47,7 @@ With `--bundle`, test files without `test_*` functions are left out of the bundl
 
 #### Binary cache
 
-Build outputs live under `.mojox/cache/`: test binaries in `bin/`, their cache keys in `meta/`, example builds in `examples/`. A test is rebuilt only when its key changes. The key covers the test source, the project's library and test trees, the dependency include dirs (file size and mtime, not content), the compiler flags, the build environment and the compiler. `mojox cache clean` deletes `.mojox/cache/`.
+Build outputs live under `.mojox/cache/`: test binaries in `bin/`, their cache keys in `meta/`, example builds in `examples/`. A test is rebuilt only when its key changes. The key covers the test source, the project's library and test trees, every include dir passed via `-I`, including dependency dirs and `-I` entries in manifest, profile or `--flag` flags (file size and mtime, not content), the compiler flags, the build environment and the compiler. `mojox cache clean` deletes `.mojox/cache/`.
 
 Precompiled library packages (`.mojox/build/pkg/`) are cached too, by `test`, `build` and `check` alike: a lib is precompiled again only when its sources, the dependency include dirs, the precompile arguments, the environment or the compiler change, or when its package is missing.
 

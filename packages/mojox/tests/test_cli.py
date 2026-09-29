@@ -584,6 +584,71 @@ class TestCacheInvalidatesOnDependencyChange:
         assert len(log.read_text().splitlines()) == 2
 
 
+# Where a ``-I extra`` flag can come from, as (pyproject [tool.mojox] body, CLI args).
+_INCLUDE_FLAG_SOURCES = {
+    "manifest": ('flags = ["-I", "extra"]\n', ()),
+    "manifest-joined": ('flags = ["-Iextra"]\n', ()),
+    "profile": ('[tool.mojox.profile.dev]\nflags = ["-I", "extra"]\n', ()),
+    "cli": ("", ("--flag=-I", "--flag=extra")),
+}
+
+
+class TestCacheCoversFlagIncludeDirs:
+    """A dir put on ``-I`` by a compiler flag is stamped like a dependency dir."""
+
+    @pytest.fixture(params=sorted(_INCLUDE_FLAG_SOURCES))
+    def project(self, request, tmp_path, monkeypatch):
+        """Project whose test imports ``extra/mod.mojo``, found through a flag-given ``-I``."""
+        from mojox_core import Toolchain
+
+        mojox_table, cli_args = _INCLUDE_FLAG_SOURCES[request.param]
+        proj = tmp_path / "proj"
+        (proj / "tests").mkdir(parents=True)
+        (proj / "extra").mkdir()
+        (proj / "pyproject.toml").write_text(
+            f'[project]\nname = "testlib"\nversion = "0.1.0"\n\n[tool.mojox]\n{mojox_table}'
+        )
+        (proj / "tests" / "test_hello.mojo").write_text("from mod import m\n\ndef test_hello():\n    m()\n")
+        (proj / "extra" / "mod.mojo").write_text("fn m(): pass\n")
+
+        log = tmp_path / "builds.log"
+        log.touch()
+        fake = tmp_path / "bin" / "mojo"
+        fake.parent.mkdir()
+        fake.write_text(_FAKE_MOJO.format(python=sys.executable, log=str(log)))
+        fake.chmod(0o755)
+
+        toolchain = Toolchain(mojo_path=str(fake), version="1.0.0", subcommand="precompile", extension=".mojoc")
+        monkeypatch.setattr("mojox_core.io.toolchain.resolve", lambda: toolchain)
+        monkeypatch.setattr("mojox_core.io.environment.read_distributions", list)
+        monkeypatch.chdir(proj)
+        return proj, log, cli_args
+
+    @staticmethod
+    def _run(*extra: str) -> int:
+        from mojox.cli import _cmd_test
+
+        args = build_parser().parse_args(["test", "--no-config", *extra])
+        with pytest.raises(SystemExit) as exc:
+            _cmd_test(args)
+        return exc.value.code
+
+    @pytest.mark.parametrize("mode", [(), ("--bundle",)], ids=["per-file", "bundle"])
+    def test_unchanged_flag_include_dir_is_a_hit(self, project, mode):
+        _proj, log, cli_args = project
+        assert self._run(*mode, *cli_args) == 0
+        assert self._run(*mode, *cli_args) == 0
+        assert len(log.read_text().splitlines()) == 1
+
+    @pytest.mark.parametrize("mode", [(), ("--bundle",)], ids=["per-file", "bundle"])
+    def test_flag_include_dir_edit_rebuilds(self, project, mode):
+        proj, log, cli_args = project
+        assert self._run(*mode, *cli_args) == 0
+        (proj / "extra" / "mod.mojo").write_text("fn m(): return\n")
+        assert self._run(*mode, *cli_args) == 0
+        assert len(log.read_text().splitlines()) == 2
+
+
 # Fake ``mojo build`` for ``mojox run``: fails with a diagnostic when the
 # source is unreadable or contains COMPILE_ERROR, else emits a program that
 # prints the source's ``# out:`` line and one stderr line, optionally sleeps
@@ -725,6 +790,25 @@ class TestRunExecutesProgram:
         assert self._run("hello.mojo") == 0
         (proj / "util.mojo").write_text("fn u(): return\n")
         assert self._run("hello.mojo") == 0
+        assert len(log.read_text().splitlines()) == 2
+
+    @pytest.mark.parametrize("source", sorted(_INCLUDE_FLAG_SOURCES))
+    def test_flag_include_dir_edit_rebuilds(self, project, source):
+        proj, log = project
+        mojox_table, cli_args = _INCLUDE_FLAG_SOURCES[source]
+        (proj / "pyproject.toml").write_text(
+            f'[project]\nname = "app"\nversion = "0.1.0"\n\n[tool.mojox]\n{mojox_table}'
+        )
+        (proj / "extra").mkdir()
+        (proj / "extra" / "mod.mojo").write_text("fn m(): pass\n")
+        # Outside extra/'s parent, so only the -I stamp can see the edit.
+        (proj / "app").mkdir()
+        (proj / "app" / "hello.mojo").write_text("# out: hi\n# exit: 0\n")
+        assert self._run(*cli_args, "app/hello.mojo") == 0
+        assert self._run(*cli_args, "app/hello.mojo") == 0
+        assert len(log.read_text().splitlines()) == 1
+        (proj / "extra" / "mod.mojo").write_text("fn m(): return\n")
+        assert self._run(*cli_args, "app/hello.mojo") == 0
         assert len(log.read_text().splitlines()) == 2
 
     def test_no_cache_always_rebuilds(self, project, capsys):

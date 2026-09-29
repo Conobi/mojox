@@ -13,12 +13,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, replace
-from itertools import pairwise
-from pathlib import Path
+from dataclasses import dataclass, field, replace
+from pathlib import Path, PurePath
 from typing import Any
 
 from mojox_core import Command, CommandKind
@@ -41,15 +41,21 @@ class CacheContext:
     """Context for cache lookups passed to the executor.
 
     Groups the per-run inputs of the AOT binary cache key. They are
-    computed once per invocation, not per built file. ``COMPILE_PACKAGE``
-    commands only use ``compiler_version``, ``meta_dir`` and ``enabled``:
-    their key is computed per command (see :func:`_precompile_cache_key`).
+    computed once per invocation, not per built file, except the stamp of
+    each command's own ``-I`` dirs: those are read from its argv, so the
+    key covers every include dir the compiler is given, whichever layer
+    (dependency, manifest or profile flags, CLI flags) put it there. That
+    stamp is memoised per dir list, since most commands share one.
+    ``COMPILE_PACKAGE`` commands only use ``compiler_version``, ``meta_dir``
+    and ``enabled``: their key is computed per command (see
+    :func:`_precompile_cache_key`).
 
     Attributes:
         project_hash: Hash of the project's library source trees.
         tests_tree_hash: Hash of the test directory trees.
-        deps_stamp: :func:`~mojox.cache.stamp_include_dirs` of the
-            dependency include dirs, in ``-I`` order.
+        deps_stamp: :func:`~mojox.cache.stamp_include_dirs` of the dirs
+            the compiler searches without an ``-I`` flag (``mojox run``:
+            the file's own directory).
         compiler_version: Mojo compiler version string.
         meta_dir: Directory for per-target cache metadata JSON files.
         enabled: Whether cache lookups are active. When ``False`` the
@@ -58,6 +64,10 @@ class CacheContext:
         runtime_args: Extra command-line arguments appended to the
             compiled binary's argv at execution time. Used by bundle
             mode to pass a ``-k`` filter pattern to the test binary.
+        unstamped_dirs: Normalised absolute ``-I`` dirs left out of the
+            stamp because other key inputs already determine their
+            content: the precompile output and the bundle staging tree,
+            both rewritten every run.
     """
 
     project_hash: str
@@ -67,6 +77,43 @@ class CacheContext:
     meta_dir: Path
     enabled: bool = True
     runtime_args: tuple[str, ...] = ()
+    unstamped_dirs: frozenset[str] = frozenset()
+    _stamps: dict[tuple[str, ...], str] = field(default_factory=dict, init=False, compare=False, repr=False)
+    _stamps_lock: threading.Lock = field(default_factory=threading.Lock, init=False, compare=False, repr=False)
+
+    def include_stamp(self, include_dirs: tuple[str, ...]) -> str:
+        """Stamp *include_dirs* minus :attr:`unstamped_dirs`, once per distinct list.
+
+        The lock is held while stamping, so parallel builds sharing a list
+        wait for one stamp instead of each walking the same trees.
+        """
+        dirs = tuple(d for d in include_dirs if d not in self.unstamped_dirs)
+        with self._stamps_lock:
+            stamp = self._stamps.get(dirs)
+            if stamp is None:
+                stamp = self._stamps[dirs] = stamp_include_dirs(dirs)
+        return stamp
+
+
+def _argv_include_dirs(flags: Sequence[str], cwd: PurePath) -> tuple[str, ...]:
+    """The ``-I`` dirs of *flags*, in argv order, as normalised paths resolved against *cwd*.
+
+    Covers both spellings ``mojo`` accepts, ``-I <dir>`` and ``-I<dir>``;
+    it has no long form. The order is kept because the compiler resolves
+    imports first-match-wins. A trailing ``-I`` without a value is ignored.
+    """
+    dirs: list[str] = []
+    it = iter(flags)
+    for flag in it:
+        if flag == "-I":
+            value = next(it, None)
+        elif flag.startswith("-I"):
+            value = flag[2:]
+        else:
+            continue
+        if value is not None:
+            dirs.append(os.path.normpath(os.path.join(cwd, value)))
+    return tuple(dirs)
 
 
 def _inject_native_lib_paths(
@@ -140,8 +187,10 @@ def _build_test_cache_key(
     """Return the cache key for a BUILD_TEST command, or ``None`` if uncacheable.
 
     Beyond the per-run :class:`CacheContext` inputs, the key covers the
-    compiler binary (``argv[0]``), the flags in argv order, and the build
-    environment as :func:`_merge_env` builds it for :func:`run_command`. An argv that does not match the planner's
+    compiler binary (``argv[0]``), the flags in argv order, a stat stamp of
+    every ``-I`` dir in them (:meth:`CacheContext.include_stamp`), and the
+    build environment as :func:`_merge_env` builds it for
+    :func:`run_command`. An argv that does not match the planner's
     layout is uncacheable rather than keyed on a guess. So is a source that
     cannot be read (missing, a directory): the build then runs and the
     compiler reports it.
@@ -153,12 +202,14 @@ def _build_test_cache_key(
     source_path = Path(source_str)
     if not source_path.is_absolute():
         source_path = Path(cmd.cwd) / source_path
+    include_stamp = cache_context.include_stamp(_argv_include_dirs(flags, Path(cmd.cwd)))
     try:
         return compute_cache_key(
             test_source=source_path,
             project_hash=cache_context.project_hash,
             tests_tree_hash=cache_context.tests_tree_hash,
-            deps_stamp=cache_context.deps_stamp,
+            # Two fixed-length digests: plain concatenation is unambiguous.
+            deps_stamp=cache_context.deps_stamp + include_stamp,
             compiler_version=cache_context.compiler_version,
             mojo_path=cmd.argv[0],
             flags=flags,
@@ -222,8 +273,7 @@ def _precompile_cache_key(
     lib_dir = cwd / argv[2]
     if not lib_dir.is_dir():
         return None
-    flags = argv[5:]
-    include_dirs = [str(cwd / value) for flag, value in pairwise(flags) if flag == "-I"]
+    include_dirs = _argv_include_dirs(argv[5:], cwd)
     try:
         lib_hash = hash_directory_tree(lib_dir)
     except OSError:

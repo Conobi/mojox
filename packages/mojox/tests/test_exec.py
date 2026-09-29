@@ -11,6 +11,7 @@ import pytest
 from mojox.cache import read_cache_meta, stamp_include_dirs, write_cache_meta
 from mojox.exec import (
     CacheContext,
+    _argv_include_dirs,
     _build_test_cache_key,
     _extract_test_source_and_flags,
     _precompile_cache_key,
@@ -689,7 +690,7 @@ def _planner_cmd(tmp_path: Path, *flags: str, mojo: str = "/opt/mojo/bin/mojo") 
 
 
 def _ctx(tmp_path: Path, include_dirs: tuple[str, ...]) -> CacheContext:
-    """A CacheContext whose dependency stamp is taken now, as the CLI does once per run."""
+    """A CacheContext whose implicit-dir stamp is taken now, as the CLI does once per run."""
     return CacheContext(
         project_hash="aaa",
         tests_tree_hash="bbb",
@@ -741,6 +742,60 @@ class TestBuildTestCacheKey:
         k2 = _build_test_cache_key(cmd, _ctx(tmp_path, (missing,)), None)
         assert k1 is not None
         assert k1 == k2
+
+    def test_flag_include_dir_edit_changes_key(self, tmp_path: Path):
+        """A relative ``-I`` from manifest flags is stamped even though the CLI stamped nothing."""
+        (tmp_path / "extra").mkdir()
+        (tmp_path / "extra" / "mod.mojo").write_text("fn m(): pass")
+        for flags in (("-I", "extra"), ("-Iextra",)):
+            cmd = _planner_cmd(tmp_path, "--num-threads", "4", *flags)
+            before = _build_test_cache_key(cmd, _ctx(tmp_path, ()), None)
+            (tmp_path / "extra" / "mod.mojo").write_text(f"fn m(): return  # {flags}")
+            assert _build_test_cache_key(cmd, _ctx(tmp_path, ()), None) != before
+
+    def test_manifest_include_reorder_changes_stamp(self, tmp_path: Path):
+        """Two manifest ``-I`` dirs are stamped in argv order: the compiler takes the first match."""
+        for name in ("a", "b"):
+            (tmp_path / name).mkdir()
+            (tmp_path / name / "mod.mojo").write_text(name)
+        ab = _planner_cmd(tmp_path, "--num-threads", "4", "-I", "a", "-Ib").argv[5:]
+        ba = _planner_cmd(tmp_path, "--num-threads", "4", "-I", "b", "-Ia").argv[5:]
+        cwd = PurePosixPath(str(tmp_path))
+        assert _argv_include_dirs(ab, cwd) == (str(tmp_path / "a"), str(tmp_path / "b"))
+        assert _argv_include_dirs(ba, cwd) == (str(tmp_path / "b"), str(tmp_path / "a"))
+        ctx = _ctx(tmp_path, ())
+        assert ctx.include_stamp(_argv_include_dirs(ab, cwd)) != ctx.include_stamp(_argv_include_dirs(ba, cwd))
+
+    def test_missing_flag_include_dir_gives_stable_key(self, tmp_path: Path):
+        cmd = _planner_cmd(tmp_path, "-I", "not-there", "-Ialso-not-there")
+        k1 = _build_test_cache_key(cmd, _ctx(tmp_path, ()), None)
+        k2 = _build_test_cache_key(cmd, _ctx(tmp_path, ()), None)
+        assert k1 is not None
+        assert k1 == k2
+
+    def test_unstamped_include_dir_is_ignored(self, tmp_path: Path):
+        """The precompile output dir is rewritten every precompile; the lib hash covers it."""
+        pkg = tmp_path / ".mojox" / "build" / "pkg"
+        pkg.mkdir(parents=True)
+        cmd = _planner_cmd(tmp_path, "-I", str(pkg))
+        ctx = replace(_ctx(tmp_path, ()), unstamped_dirs=frozenset({str(pkg)}))
+        before = _build_test_cache_key(cmd, ctx, None)
+        (pkg / "mylib.mojoc").write_text("rewritten")
+        assert _build_test_cache_key(cmd, ctx, None) == before
+
+    def test_identical_include_lists_are_stamped_once(self, tmp_path: Path, monkeypatch):
+        calls: list[tuple[str, ...]] = []
+
+        def counting(dirs):
+            calls.append(tuple(dirs))
+            return stamp_include_dirs(dirs)
+
+        monkeypatch.setattr("mojox.exec.stamp_include_dirs", counting)
+        cmd = _planner_cmd(tmp_path, "-I", "extra")
+        ctx = _ctx(tmp_path, ())
+        _build_test_cache_key(cmd, ctx, None)
+        _build_test_cache_key(cmd, ctx, None)
+        assert calls == [(str(tmp_path / "extra"),)]
 
     def test_settings_env_change_changes_key(self, tmp_path: Path):
         cmd = _planner_cmd(tmp_path)

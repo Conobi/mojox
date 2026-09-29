@@ -402,19 +402,20 @@ def _make_cache_context(
     *,
     lib_paths: Iterable[str],
     test_roots: Iterable[str],
-    stamped_dirs: Iterable[str],
+    implicit_dirs: Iterable[str],
     compiler_version: str,
     no_cache: bool,
 ) -> CacheContext:
     """Compute the per-invocation inputs of the AOT binary cache key.
 
     Paths are relative to the working directory, which is the project root.
-    Lib and test trees are content-hashed; *stamped_dirs* are stat-stamped
-    in order, so they must list the include dirs in the planner's ``-I``
-    order. The precompile output dir (``.mojox/build/pkg``) belongs in none
-    of them: its packages are a function of the lib sources, the include
-    dirs, the environment and the compiler, which this key covers too, and
-    each is only replaced under its own precompile cache key.
+    Lib and test trees are content-hashed; *implicit_dirs*, the dirs the
+    compiler searches without an ``-I`` flag, are stat-stamped in order.
+    Every ``-I`` dir is stamped per command from its argv instead (see
+    :class:`~mojox.exec.CacheContext`), except the precompile output dir
+    (``.mojox/build/pkg``): its packages are a function of the lib sources,
+    the include dirs, the environment and the compiler, which this key
+    covers too, and each is only replaced under its own precompile cache key.
     """
     import hashlib
 
@@ -427,10 +428,11 @@ def _make_cache_context(
     return CacheContext(
         project_hash=hashlib.sha256("".join(pkg_hashes).encode()).hexdigest(),
         tests_tree_hash=hashlib.sha256("".join(test_hashes).encode()).hexdigest(),
-        deps_stamp=stamp_include_dirs(stamped_dirs),
+        deps_stamp=stamp_include_dirs(implicit_dirs),
         compiler_version=compiler_version,
         meta_dir=root / ".mojox" / "cache" / "meta",
         enabled=not no_cache,
+        unstamped_dirs=frozenset({os.path.normpath(root / ".mojox" / "build" / "pkg")}),
     )
 
 
@@ -443,7 +445,7 @@ def _precompile_cache_context(compiler_version: str) -> CacheContext:
     Precompile keys are computed per command, so the tree hashes are skipped.
     """
     return _make_cache_context(
-        lib_paths=(), test_roots=(), stamped_dirs=(), compiler_version=compiler_version, no_cache=False
+        lib_paths=(), test_roots=(), implicit_dirs=(), compiler_version=compiler_version, no_cache=False
     )
 
 
@@ -537,7 +539,7 @@ def _cmd_test(args: argparse.Namespace) -> None:
     cache_ctx = _make_cache_context(
         lib_paths=[t.path for t in graph.targets if t.kind == TargetKind.LIB],
         test_roots=manifest.test_roots,
-        stamped_dirs=include_paths,
+        implicit_dirs=(),
         compiler_version=toolchain.version,
         no_cache=no_cache,
     )
@@ -553,12 +555,9 @@ def _cmd_test(args: argparse.Namespace) -> None:
             settings=settings,
             commands=commands,
             include_paths=include_paths,
-            project_hash=cache_ctx.project_hash,
-            tests_tree_hash=cache_ctx.tests_tree_hash,
-            deps_stamp=cache_ctx.deps_stamp,
+            cache_ctx=cache_ctx,
             output_format=output_format,
             filter_pattern=filter_pattern,
-            no_cache=no_cache,
             fail_fast=fail_fast,
             success_output=success_output,
             failure_output=failure_output,
@@ -628,12 +627,9 @@ def _run_bundle_test(
     settings: LocalSettings,
     commands: tuple[Command, ...],
     include_paths: tuple[str, ...],
-    project_hash: str,
-    tests_tree_hash: str,
-    deps_stamp: str,
+    cache_ctx: CacheContext,
     output_format: OutputFormat,
     filter_pattern: str | None,
-    no_cache: bool,
     fail_fast: bool,
     success_output: OutputMode,
     failure_output: OutputMode,
@@ -651,11 +647,12 @@ def _run_bundle_test(
     Bundle mode adds two kinds of include dirs ahead of the dependency
     dirs. The parents of lib targets expose more than the lib packages
     ``project_hash`` covers (sibling modules such as ``src/util.mojo``,
-    non-target packages), so they are stamped and prepended, in ``-I``
-    order, to *deps_stamp*. The staging tree is not stamped: it is
-    regenerated each run from the test files ``tests_tree_hash`` covers.
+    non-target packages); being on the harness's ``-I``, they are stamped
+    with the others. The staging tree is not stamped: it is regenerated
+    each run from the test files ``tests_tree_hash`` covers.
     """
     import time
+    from dataclasses import replace
 
     from mojox_core import TargetKind
     from mojox_core import plan as plan_fn
@@ -669,8 +666,7 @@ def _run_bundle_test(
     from mojox_core.types import Target
     from mojox_core.types import TargetGraph as TG
 
-    from .cache import stamp_include_dirs
-    from .exec import CacheContext, run_commands
+    from .exec import run_commands
     from .output import (
         make_progress_callback,
         render_final_output,
@@ -770,15 +766,10 @@ def _run_bundle_test(
 
         bundle_include = (staging_result.include_path, *include_paths)
 
-        cache_ctx = CacheContext(
-            project_hash=project_hash,
-            tests_tree_hash=tests_tree_hash,
-            # Two fixed-length digests: plain concatenation is unambiguous.
-            deps_stamp=stamp_include_dirs(source_dirs) + deps_stamp,
-            compiler_version=toolchain.version,
-            meta_dir=root / ".mojox" / "cache" / "meta",
-            enabled=not no_cache,
+        cache_ctx = replace(
+            cache_ctx,
             runtime_args=runtime_args,
+            unstamped_dirs=cache_ctx.unstamped_dirs | {os.path.normpath(staging_result.include_path)},
         )
 
         # --- Callbacks ---
@@ -953,11 +944,11 @@ def _cmd_run(args: argparse.Namespace) -> None:
     include_paths = tuple(dict.fromkeys(list(policy.include_paths) + [d.include_dir for d in env.include_sequence]))
 
     # The compiler resolves imports from the file's own directory too, so
-    # sibling modules are stamped ahead of the -I dirs.
+    # sibling modules are stamped along with the -I dirs.
     cache_ctx = _make_cache_context(
         lib_paths=(manifest.packages or ()) if manifest is not None else (),
         test_roots=(),
-        stamped_dirs=(str((root / args.file).parent), *include_paths),
+        implicit_dirs=(str((root / args.file).parent),),
         compiler_version=toolchain.version,
         no_cache=args.no_cache,
     )
