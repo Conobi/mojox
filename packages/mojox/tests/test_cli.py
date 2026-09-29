@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from mojox.cli import build_parser
@@ -520,6 +521,11 @@ class TestCacheInvalidatesOnDependencyChange:
         (proj / "tests").mkdir(parents=True)
         (proj / "pyproject.toml").write_text('[project]\nname = "testlib"\nversion = "0.1.0"\n')
         (proj / "tests" / "test_hello.mojo").write_text("def test_hello():\n    pass\n")
+        # A lib package plus a sibling module that is not a target: bundle
+        # mode puts src/ on -I, so util.mojo is importable yet in no target.
+        (proj / "src" / "mylib").mkdir(parents=True)
+        (proj / "src" / "mylib" / "__init__.mojo").write_text("")
+        (proj / "src" / "util.mojo").write_text("fn u(): pass\n")
 
         dep = tmp_path / "mojo_packages"
         (dep / "navette").mkdir(parents=True)
@@ -567,4 +573,11 @@ class TestCacheInvalidatesOnDependencyChange:
         assert self._run(*mode) == 0
         (dep / "navette" / "__init__.mojo").write_text("fn f(): return\n")
         assert self._run(*mode) == 0
+        assert len(log.read_text().splitlines()) == 2
+
+    def test_bundle_non_target_sibling_module_edit_rebuilds(self, project):
+        _dep, log = project
+        assert self._run("--bundle") == 0
+        (Path.cwd() / "src" / "util.mojo").write_text("fn u(): return\n")
+        assert self._run("--bundle") == 0
         assert len(log.read_text().splitlines()) == 2

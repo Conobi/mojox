@@ -23,11 +23,11 @@ MOJO_IMPORT_SUFFIXES = (".mojo", ".\U0001f525", ".mojopkg", ".mojoc")
 
 
 def hash_directory_tree(directory: Path) -> str:
-    """Compute a SHA-256 hash over all ``.mojo`` files in a directory tree.
+    """Compute a SHA-256 content hash over the importable Mojo files in a tree.
 
-    Files are sorted by their relative path to guarantee deterministic
-    output regardless of filesystem enumeration order.  Non-``.mojo``
-    files are silently ignored.
+    Covers every suffix in :data:`MOJO_IMPORT_SUFFIXES`, sorted by relative
+    path so the result is independent of filesystem enumeration order.
+    Other files are ignored.
 
     Args:
         directory: Root directory to scan.  If it does not exist, the
@@ -39,7 +39,9 @@ def hash_directory_tree(directory: Path) -> str:
     h = hashlib.sha256()
 
     if directory.is_dir():
-        mojo_files = sorted(directory.rglob("*.mojo"))
+        mojo_files = sorted(
+            p for p in directory.rglob("*") if p.name.endswith(MOJO_IMPORT_SUFFIXES) and p.is_file()
+        )
         for path in mojo_files:
             rel = path.relative_to(directory)
             h.update(str(rel).encode())
@@ -63,7 +65,8 @@ def stamp_include_dirs(include_dirs: Iterable[str]) -> str:
     source tree, and those sources are exactly the ones edited in place.
     Each directory is visited at most once (by device and inode), which cuts
     symlink loops. Dot-prefixed entries are skipped: they cannot be
-    imported.
+    imported. Dedup is per include dir, so a dir reachable under two alias
+    paths is stamped under the first only; an edit there still changes it.
 
     Limits: an edit that preserves both size and mtime (at the filesystem's
     timestamp granularity) is not detected.
@@ -86,6 +89,7 @@ def _stamp_tree(h: hashlib._Hash, root: str) -> None:
     visited: set[tuple[int, int]] = set()
 
     def walk(path: str, rel: str) -> None:
+        """Stamp *path* (shown as *rel*) unless its inode was already walked."""
         try:
             st = os.stat(path)
             ident = (st.st_dev, st.st_ino)

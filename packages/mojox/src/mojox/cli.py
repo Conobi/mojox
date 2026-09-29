@@ -613,11 +613,12 @@ def _run_bundle_test(
     Pattern A test files (no ``test_*`` functions) are excluded with
     a diagnostic printed to stderr.
 
-    The cache key reuses the per-file mode's *deps_stamp*: the extra
-    include dirs bundle mode adds are the staging tree (regenerated each
-    run from the test files, which ``tests_tree_hash`` covers) and the
-    parents of lib targets, which are there to expose the lib packages
-    that ``project_hash`` covers.
+    Bundle mode adds two kinds of include dirs ahead of the dependency
+    dirs. The parents of lib targets expose more than the lib packages
+    ``project_hash`` covers (sibling modules such as ``src/util.mojo``,
+    non-target packages), so they are stamped and prepended, in ``-I``
+    order, to *deps_stamp*. The staging tree is not stamped: it is
+    regenerated each run from the test files ``tests_tree_hash`` covers.
     """
     import time
 
@@ -630,6 +631,7 @@ def _run_bundle_test(
     )
     from mojox_core.types import Policy as PolicyT, Target, TargetGraph as TG
 
+    from .cache import stamp_include_dirs
     from .exec import CacheContext, run_commands
     from .output import (
         make_progress_callback,
@@ -735,7 +737,8 @@ def _run_bundle_test(
         cache_ctx = CacheContext(
             project_hash=project_hash,
             tests_tree_hash=tests_tree_hash,
-            deps_stamp=deps_stamp,
+            # Two fixed-length digests: plain concatenation is unambiguous.
+            deps_stamp=stamp_include_dirs(source_dirs) + deps_stamp,
             compiler_version=toolchain.version,
             meta_dir=root / ".mojox" / "cache" / "meta",
             enabled=not no_cache,

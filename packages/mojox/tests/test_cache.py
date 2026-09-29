@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 from mojox.cache import (
+    MOJO_IMPORT_SUFFIXES,
     compute_cache_key,
     hash_directory_tree,
     read_cache_meta,
@@ -76,6 +77,24 @@ class TestHashDirectoryTree:
         assert len(result) == 64
         assert all(c in "0123456789abcdef" for c in result)
 
+
+    def test_fire_extension_edit_changes_hash(self, tmp_path: Path):
+        """A lib written only in ``.\U0001f525`` files is still hashed."""
+        lib = tmp_path / "navette"
+        lib.mkdir()
+        (lib / "__init__.\U0001f525").write_text("fn f(): pass")
+        h1 = hash_directory_tree(lib)
+        (lib / "__init__.\U0001f525").write_text("fn f(): return")
+        assert hash_directory_tree(lib) != h1
+
+    def test_every_import_suffix_hashed(self, tmp_path: Path):
+        """Every suffix the dependency stamp watches also feeds the tree hash."""
+        before = hash_directory_tree(tmp_path)
+        for suffix in MOJO_IMPORT_SUFFIXES:
+            (tmp_path / f"m{suffix}").write_bytes(b"x")
+            after = hash_directory_tree(tmp_path)
+            assert after != before, suffix
+            before = after
 
 class TestComputeCacheKey:
     def test_same_inputs_same_key(self, tmp_path: Path):
