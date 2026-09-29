@@ -65,7 +65,7 @@ requires-dist = [
 
 [[package]]
 name = "mojox-core"
-version = "0.5.0"
+version = "0.6.0"
 source = { editable = "packages/mojox-core" }
 dependencies = [
     { name = "packaging" },
