@@ -12,7 +12,7 @@ authors = [{name = "Conobi"}]
 Repository = "https://github.com/Conobi/mojox"
 
 [project.scripts]
-mojox = "mojox._cli:main"
+mojox = "mojox.cli:main"
 
 [build-system]
 requires = ["hatchling"]
