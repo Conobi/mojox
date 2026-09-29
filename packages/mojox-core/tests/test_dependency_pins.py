@@ -1,4 +1,4 @@
-"""Guard the mojox-core version pin in sibling packages."""
+"""Guard the dependency pins that sibling packages must keep."""
 
 from __future__ import annotations
 
@@ -22,3 +22,10 @@ def test_mojox_core_pinned_to_matching_minor(package: str) -> None:
     data = tomllib.loads((PACKAGES / package / "pyproject.toml").read_text())
     deps = [d.replace(" ", "") for d in data["project"]["dependencies"] if d.startswith("mojox-core")]
     assert deps == [PIN]
+
+
+def test_mojox_requires_compiler_with_precompile() -> None:
+    """mojox only drives `mojo precompile`, which 0.x compilers lack; the floor must not silently vanish."""
+    data = tomllib.loads((PACKAGES / "mojox" / "pyproject.toml").read_text())
+    deps = [d.replace(" ", "") for d in data["project"]["dependencies"] if d.startswith("mojo-compiler")]
+    assert deps == ["mojo-compiler>=1.0"]

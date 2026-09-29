@@ -12,23 +12,23 @@ members = [
 
 [[package]]
 name = "mojo-compiler"
-version = "0.26.2.0"
+version = "1.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "mojo-compiler-mojo-libs" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/53/d4/09a8d8a98aadf260f466b2e35c62aff253600dce8d79e05170ee7ae5d75f/mojo_compiler-0.26.2.0-py3-none-macosx_13_0_arm64.whl", hash = "sha256:d9ff03ed5db5f921d7ef5c7e4afcb8bc1cb2ff4ff40ee0403f248d23f85d5881", size = 68204393, upload-time = "2026-03-19T15:39:15.448Z" },
-    { url = "https://files.pythonhosted.org/packages/df/54/c6d06b05a51422872cae7e8ed4161bc7585db299a1239dcfca06cb5f3eb1/mojo_compiler-0.26.2.0-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:a88837d71435330d1c100a8f16d9ef8221d366227c0eb1234d60e8cf06a5e48c", size = 88668407, upload-time = "2026-03-19T15:38:38.036Z" },
-    { url = "https://files.pythonhosted.org/packages/93/a5/8125e0025a9cc0d562c7b814bcb073bf80d55e41398bf74b58a2965c7c0a/mojo_compiler-0.26.2.0-py3-none-manylinux_2_34_x86_64.whl", hash = "sha256:afb81f9146369bbef7f05899b95ce3897e598be69e0109694a85278613e84e1f", size = 93264509, upload-time = "2026-03-19T15:38:43.606Z" },
+    { url = "https://files.pythonhosted.org/packages/7e/47/4ee8cf2041538076d1a11bb3c2b3ed18791b52c1edec8e31ca244d841389/mojo_compiler-1.1.0-py3-none-macosx_13_0_arm64.whl", hash = "sha256:02daffdfd8fcd56ecfb74e93d2adfaf4551cbb0b384094508fd00c1d5d81cb00", size = 72376758, upload-time = "2026-09-17T15:45:39.852Z" },
+    { url = "https://files.pythonhosted.org/packages/67/1c/2c93f967615e3581b124b1b5f4af29913994199e8741736d9c08ed3d9f13/mojo_compiler-1.1.0-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:14ed7fe3570e1374a88bc8aa93dc4e9c519ea28e7f8d731ae4bf1c468d8179ec", size = 77790801, upload-time = "2026-09-17T15:44:25.242Z" },
+    { url = "https://files.pythonhosted.org/packages/e8/5e/31522e5336d63ab0fad18980cccf6c5cc2085c1a041ea3723eb916a17c08/mojo_compiler-1.1.0-py3-none-manylinux_2_34_x86_64.whl", hash = "sha256:b47442278eb39705075f23d058b38a364bd68bdaa542ad514c187cee633beab7", size = 80657416, upload-time = "2026-09-17T15:45:02.119Z" },
 ]
 
 [[package]]
 name = "mojo-compiler-mojo-libs"
-version = "0.26.2.0"
+version = "1.1.0"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/bf/db/ef741e589787d5ea5503a51ced4992285d83c40afd39b3511e1e8631e286/mojo_compiler_mojo_libs-0.26.2.0-py3-none-any.whl", hash = "sha256:e4419e4b744e88fc187a552d0e9cb4145c5b1ad1a3a4efff1301e13e7c70b55c", size = 12643744, upload-time = "2026-03-19T15:38:51.061Z" },
+    { url = "https://files.pythonhosted.org/packages/83/8d/4fb2147d140b6ea688f6d256b3119d6554a3d50095d802f01bf24234bd7d/mojo_compiler_mojo_libs-1.1.0-py3-none-any.whl", hash = "sha256:dd8c5382e27fe5c1ffe0834d267f549abbffee35bf1a8d605cf24252ff95a2e6", size = 3216162, upload-time = "2026-09-17T15:45:19.27Z" },
 ]
 
 [[package]]
@@ -42,7 +42,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "mojo-compiler" },
+    { name = "mojo-compiler", specifier = ">=1.0" },
     { name = "mojox-core", editable = "packages/mojox-core" },
 ]
 

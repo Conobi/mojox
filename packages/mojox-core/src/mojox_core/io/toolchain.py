@@ -9,6 +9,8 @@ from __future__ import annotations
 import importlib.metadata
 from pathlib import Path
 
+from packaging.version import InvalidVersion, Version
+
 from ..errors import ConfigError
 from ..types import Toolchain
 
@@ -16,16 +18,13 @@ from ..types import Toolchain
 def resolve() -> Toolchain:
     """Resolve the installed Mojo toolchain.
 
-    Reads the mojo-compiler distribution metadata to find the binary path
-    and version. Never runs a subprocess.
-
-    Returns:
-        A ``Toolchain`` with the mojo binary path, version string,
-        subcommand (``"precompile"``), and extension (``".mojoc"``).
+    Never runs a subprocess. Only Mojo 1.0+ (including its pre-releases)
+    is supported: the toolchain surface is always ``mojo precompile`` and
+    ``.mojoc``, neither of which exists in 0.x compilers.
 
     Raises:
-        ConfigError: If ``mojo-compiler`` is not installed or its ``mojo``
-            binary cannot be located in the distribution's file list.
+        ConfigError: If ``mojo-compiler`` is not installed, is older than
+            1.0, or its ``mojo`` binary is missing from the file list.
     """
     try:
         dist = importlib.metadata.distribution("mojo-compiler")
@@ -36,20 +35,32 @@ def resolve() -> Toolchain:
         )
 
     version = dist.metadata["Version"]
-
-    # Find the mojo console script
-    mojo_path = _find_console_script(dist)
-
-    # Determine subcommand and extension based on version
-    subcommand = "precompile"
-    extension = ".mojoc"
+    _require_precompile(version)
 
     return Toolchain(
-        mojo_path=mojo_path,
+        mojo_path=_find_console_script(dist),
         version=version,
-        subcommand=subcommand,
-        extension=extension,
+        subcommand="precompile",
+        extension=".mojoc",
     )
+
+
+def _require_precompile(version: str) -> None:
+    """Reject 0.x compilers before any command fails with ``no such command 'precompile'``.
+
+    Compares the release major only, so 1.0 pre-releases pass. An
+    unparseable version is let through rather than blocking a build.
+    """
+    try:
+        major = Version(version).major
+    except InvalidVersion:
+        return
+    if major < 1:
+        raise ConfigError(
+            "toolchain",
+            f"mojo-compiler {version} is too old: mojox needs Mojo 1.0 or newer "
+            "(`mojo precompile`). Upgrade it with: uv add 'mojo-compiler>=1.0'",
+        )
 
 
 def _find_console_script(dist: importlib.metadata.Distribution) -> str:

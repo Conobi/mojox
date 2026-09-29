@@ -20,7 +20,7 @@ Four commands. Pure uv. No `-I` flags, no `LD_LIBRARY_PATH` wrangling.
 | [`mojox-build`](./packages/mojox-build) | [![PyPI](https://img.shields.io/pypi/v/mojox-build)](https://pypi.org/project/mojox-build/) | The build backend. Compiles `.mojo` into `.mojoc` and packages platform-tagged wheels. |
 | [`mojox-core`](./packages/mojox-core) | [![PyPI](https://img.shields.io/pypi/v/mojox-core)](https://pypi.org/project/mojox-core/) | Internal mojox features. A requirement for the other two packages to work properly. |
 
-The Mojo compiler version is **not** pinned by any of these packages. Pin it in your own project via `mojo-compiler==X.Y.Z`. Modular's PyPI distribution handles toolchain delivery; mojox sits on top. Only Mojo 1.0+ is supported (`.mojoc` format only).
+Only Mojo 1.0+ is supported (`mojo precompile` and `.mojoc` only): `mojox` requires `mojo-compiler>=1.0` with no upper bound, and both `mojox` and `mojox-build` stop with a clear error on an older compiler. Pin the exact version in your own project via `mojo-compiler==X.Y.Z`. Modular's PyPI distribution handles toolchain delivery; mojox sits on top.
 
 ## CLI
 
