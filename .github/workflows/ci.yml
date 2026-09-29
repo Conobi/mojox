@@ -126,7 +126,7 @@ jobs:
 
       - name: Smoke-test mojox-build hooks
         run: |
-          uv run --python ${{ matrix.python }} --no-project --with packaging --with ./packages/mojox-build python - <<'PY'
+          uv run --python ${{ matrix.python }} --no-project --with packaging --with ./packages/mojox-core --with ./packages/mojox-build python - <<'PY'
           import mojox_build as m
           required = {
               "build_wheel",
@@ -145,11 +145,11 @@ jobs:
 
       - name: Smoke-test mojox CLI entry point
         run: |
-          uv run --python ${{ matrix.python }} --no-project --with ./packages/mojox python - <<'PY'
+          uv run --python ${{ matrix.python }} --no-project --with ./packages/mojox-core --with ./packages/mojox python - <<'PY'
           import sys
-          from mojox._cli import main
-          from mojox._exec import run_commands
-          from mojox._output import make_progress_callback
+          from mojox.cli import main
+          from mojox.exec import run_commands
+          from mojox.output import make_progress_callback
           sys.argv = ["mojox", "--help"]
           try:
               main()
