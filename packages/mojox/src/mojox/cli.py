@@ -196,8 +196,7 @@ def determine_exit_code(outcomes: tuple[Outcome, ...]) -> int:
     from .types import OutcomeKind
 
     has_test_failure = any(
-        o.kind not in (OutcomeKind.PASS, OutcomeKind.SKIPPED) and o.command.kind in _TEST_KINDS
-        for o in outcomes
+        o.kind not in (OutcomeKind.PASS, OutcomeKind.SKIPPED) and o.command.kind in _TEST_KINDS for o in outcomes
     )
     if has_test_failure:
         return 1
@@ -698,9 +697,7 @@ def _run_bundle_test(
 
         funcs = discover_test_functions(source_content)
         if not funcs:
-            diagnostics.append(
-                f"{cmd.target_id}: no test_* functions found, excluding from bundle"
-            )
+            diagnostics.append(f"{cmd.target_id}: no test_* functions found, excluding from bundle")
             continue
 
         module_path = file_path_to_module_path(cmd.target_id)

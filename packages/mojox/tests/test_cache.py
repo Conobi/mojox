@@ -77,7 +77,6 @@ class TestHashDirectoryTree:
         assert len(result) == 64
         assert all(c in "0123456789abcdef" for c in result)
 
-
     def test_fire_extension_edit_changes_hash(self, tmp_path: Path):
         """A lib written only in ``.\U0001f525`` files is still hashed."""
         lib = tmp_path / "navette"
@@ -409,11 +408,15 @@ class TestCacheMetaRoundtrip:
     def test_wrong_schema_version_returns_none(self, tmp_path: Path):
         """An unexpected schema_version returns None."""
         meta = tmp_path / "cache_meta.json"
-        meta.write_text(json.dumps({
-            "schema_version": 999,
-            "cache_key": "abc",
-            "compiler_version": "25.4.0",
-        }))
+        meta.write_text(
+            json.dumps(
+                {
+                    "schema_version": 999,
+                    "cache_key": "abc",
+                    "compiler_version": "25.4.0",
+                }
+            )
+        )
         assert read_cache_meta(meta) is None
 
     def test_missing_file_returns_none(self, tmp_path: Path):

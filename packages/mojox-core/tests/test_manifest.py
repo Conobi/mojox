@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 from mojox_core.errors import ConfigError
-from mojox_core.types import BinaryEntry
 from mojox_core.manifest import parse_manifest
+from mojox_core.types import BinaryEntry
 
 
 class TestHappyPath:

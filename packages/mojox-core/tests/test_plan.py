@@ -430,9 +430,7 @@ class TestBuildTestArgvOrdering:
         output_val_idx = o_idx + 1  # the value after -o
         for flag in ("-I", "-D", "-O2", "--num-threads"):
             if flag in argv:
-                assert argv.index(flag) > output_val_idx, (
-                    f"{flag} must appear after -o <path> in mojo build argv"
-                )
+                assert argv.index(flag) > output_val_idx, f"{flag} must appear after -o <path> in mojo build argv"
 
     def test_source_before_flags_with_precompile(self):
         """When precompilation is active, source still precedes -o and flags."""

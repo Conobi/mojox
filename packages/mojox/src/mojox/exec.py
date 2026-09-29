@@ -842,10 +842,7 @@ def run_cached_test(
                 kind=OutcomeKind.COMPILE_ERROR,
                 exit_code=0,
                 stdout=build_outcome.stdout,
-                stderr=(
-                    f"Build succeeded but binary not found: {tmp_binary}\n"
-                    + build_outcome.stderr
-                ),
+                stderr=(f"Build succeeded but binary not found: {tmp_binary}\n" + build_outcome.stderr),
                 diagnostics=build_outcome.diagnostics,
                 elapsed_s=build_outcome.elapsed_s,
             )

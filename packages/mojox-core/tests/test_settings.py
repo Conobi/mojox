@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 from mojox_core.errors import ConfigError
-from mojox_core.types import LocalSettings
 from mojox_core.settings import parse_settings
+from mojox_core.types import LocalSettings
 
 _FORBIDDEN_KEYS = [
     "packages",

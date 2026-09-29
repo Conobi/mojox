@@ -71,16 +71,11 @@ class TestFilePathToModulePath:
 
     def test_nested_path(self) -> None:
         """Multi-level test file path."""
-        assert (
-            file_path_to_module_path("tests/http/test_method.mojo")
-            == "tests.http.test_method"
-        )
+        assert file_path_to_module_path("tests/http/test_method.mojo") == "tests.http.test_method"
 
     def test_deeply_nested(self) -> None:
         """Three levels of nesting."""
-        assert (
-            file_path_to_module_path("tests/a/b/test_c.mojo") == "tests.a.b.test_c"
-        )
+        assert file_path_to_module_path("tests/a/b/test_c.mojo") == "tests.a.b.test_c"
 
 
 class TestMakeAlias:
@@ -90,10 +85,7 @@ class TestMakeAlias:
 
     def test_nested_module(self) -> None:
         """Multi-level module dots become underscores."""
-        assert (
-            make_alias("tests.http.test_method", "test_get")
-            == "tests_http_test_method__test_get"
-        )
+        assert make_alias("tests.http.test_method", "test_get") == "tests_http_test_method__test_get"
 
 
 class TestTestModule:
@@ -121,9 +113,7 @@ class TestGenerateHarness:
     def test_multiple_modules_multiple_functions(self) -> None:
         """Multiple modules produce distinct aliased imports."""
         modules = [
-            TestModule(
-                "tests.test_a", "tests/test_a.mojo", ("test_foo", "test_bar")
-            ),
+            TestModule("tests.test_a", "tests/test_a.mojo", ("test_foo", "test_bar")),
             TestModule(
                 "tests.http.test_method",
                 "tests/http/test_method.mojo",
@@ -133,10 +123,7 @@ class TestGenerateHarness:
         source = generate_harness(modules)
         assert "from tests.test_a import test_foo as tests_test_a__test_foo" in source
         assert "from tests.test_a import test_bar as tests_test_a__test_bar" in source
-        assert (
-            "from tests.http.test_method import test_get"
-            " as tests_http_test_method__test_get" in source
-        )
+        assert "from tests.http.test_method import test_get as tests_http_test_method__test_get" in source
 
     def test_collision_safe_aliases(self) -> None:
         """Same function name in different modules produces distinct aliases."""

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 from mojox_core.errors import ConfigError
-from mojox_core.types import LintConfig, LocalSettings, Manifest, Profile
 from mojox_core.policy import BUILTIN_DEV, BUILTIN_RELEASE, resolve
+from mojox_core.types import LintConfig, LocalSettings, Manifest, Profile
 
 
 def _minimal_manifest(**overrides) -> Manifest:

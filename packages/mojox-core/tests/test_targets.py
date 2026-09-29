@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 from mojox_core.errors import ConfigError
-from mojox_core.types import BinaryEntry, LintConfig, TargetKind
 from mojox_core.targets import discover
+from mojox_core.types import BinaryEntry, LintConfig, TargetKind
 
 
 def _make_tree(tmp_path: Path, files: list[str]) -> Path:

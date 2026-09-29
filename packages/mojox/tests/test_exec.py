@@ -1256,9 +1256,7 @@ class TestTempPathIsolation:
 
         binary = tmp_path / "bin" / "test_x-deadbeef"
         script = (
-            "import sys\n"
-            "p = sys.argv[sys.argv.index('-o') + 1]\n"
-            "open(p, 'w').write('#!/bin/sh\\necho no-chmod\\n')\n"
+            "import sys\np = sys.argv[sys.argv.index('-o') + 1]\nopen(p, 'w').write('#!/bin/sh\\necho no-chmod\\n')\n"
         )
         cmd = _build_test_cmd((sys.executable, "-c", script), str(binary))
         outcome = run_cached_test(cmd, cache_key="k", meta_dir=tmp_path / "meta", compiler_version="v")
@@ -1300,10 +1298,7 @@ class TestTempPathIsolation:
     def test_temp_removed_on_build_failure(self, tmp_path: Path):
         binary = tmp_path / "bin" / "test_x-deadbeef"
         script = (
-            "import sys\n"
-            "idx = sys.argv.index('-o')\n"
-            "open(sys.argv[1], 'w').write(sys.argv[idx + 1])\n"
-            "sys.exit(1)\n"
+            "import sys\nidx = sys.argv.index('-o')\nopen(sys.argv[1], 'w').write(sys.argv[idx + 1])\nsys.exit(1)\n"
         )
         log = tmp_path / "log"
         cmd = _build_test_cmd((sys.executable, "-c", script, str(log)), str(binary))
@@ -1323,10 +1318,7 @@ class TestTempPathIsolation:
     def test_no_cache_temp_dir_removed_on_build_failure(self, tmp_path: Path):
         binary = tmp_path / "bin" / "test_x-deadbeef"
         script = (
-            "import sys\n"
-            "idx = sys.argv.index('-o')\n"
-            "open(sys.argv[1], 'w').write(sys.argv[idx + 1])\n"
-            "sys.exit(1)\n"
+            "import sys\nidx = sys.argv.index('-o')\nopen(sys.argv[1], 'w').write(sys.argv[idx + 1])\nsys.exit(1)\n"
         )
         log = tmp_path / "log"
         cmd = _build_test_cmd((sys.executable, "-c", script, str(log)), str(binary))
@@ -1409,7 +1401,7 @@ class TestCorruptMetaIsMiss:
 
     @pytest.mark.parametrize(
         "payload",
-        [b"", b"{\"schema_version\": 1, \"cache_k", b"\xff\xfe\x00", b"null", b"[\"k\"]"],
+        [b"", b'{"schema_version": 1, "cache_k', b"\xff\xfe\x00", b"null", b'["k"]'],
     )
     def test_corrupt_meta_rebuilds(self, tmp_path: Path, payload: bytes):
         binary = tmp_path / "bin" / "test_x-deadbeef"

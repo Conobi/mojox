@@ -123,8 +123,7 @@ def generate_harness(modules: Sequence[TestModule]) -> str:
         label = f"{file_path}::{func_name}"
         lines.append("")
         lines.append(
-            f"    if filter_pattern.byte_length() == 0"
-            f' or String("{func_name}").lower().find(filter_pattern) != -1:'
+            f'    if filter_pattern.byte_length() == 0 or String("{func_name}").lower().find(filter_pattern) != -1:'
         )
         lines.append("        try:")
         lines.append(f"            _ = {alias}()")
@@ -137,9 +136,7 @@ def generate_harness(modules: Sequence[TestModule]) -> str:
 
     lines.append("")
     lines.append('    print("---")')
-    lines.append(
-        '    print(passed, "passed,", failed, "failed,", skipped, "skipped")'
-    )
+    lines.append('    print(passed, "passed,", failed, "failed,", skipped, "skipped")')
     lines.append("    if failed > 0:")
     lines.append('        raise Error(String(failed) + " test(s) failed")')
     lines.append("")

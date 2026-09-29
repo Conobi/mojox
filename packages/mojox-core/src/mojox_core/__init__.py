@@ -6,7 +6,14 @@ Public API:
   - Errors: ConfigError
 """
 
+from .environment import build_env
 from .errors import ConfigError
+from .manifest import parse_manifest
+from .metadata import serialize
+from .plan import plan
+from .policy import resolve
+from .settings import parse_settings
+from .targets import discover
 from .types import (
     BinaryEntry,
     Command,
@@ -26,13 +33,6 @@ from .types import (
     TargetKind,
     Toolchain,
 )
-from .environment import build_env
-from .manifest import parse_manifest
-from .metadata import serialize
-from .plan import plan
-from .policy import resolve
-from .settings import parse_settings
-from .targets import discover
 
 __all__ = [
     "BinaryEntry",
