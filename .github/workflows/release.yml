@@ -53,7 +53,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Install semantic-release
-        run: uv tool install python-semantic-release
+        run: uv tool install python-semantic-release==10.7.0
 
       - name: Determine version
         id: version
