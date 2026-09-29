@@ -1,9 +1,9 @@
-"""Cache key computation and tree hashing for AOT test binaries.
+"""Cache key computation and tree hashing for AOT test binaries and precompiled packages.
 
 Deterministic hashing of source trees, stat stamps of dependency include
-dirs, and cache metadata management. The cache key captures everything
-that could change the compiled output: test and project sources,
-dependency files, compiler identity, build flags and build environment.
+dirs, and cache metadata management. A cache key captures everything
+that could change the compiled output: sources, dependency files,
+compiler identity, build flags and build environment.
 """
 
 from __future__ import annotations
@@ -161,20 +161,55 @@ def compute_cache_key(
     h.update(test_source.read_bytes())
     h.update(b"\0")
     h.update(
-        json.dumps(
-            {
-                "project_hash": project_hash,
-                "tests_tree_hash": tests_tree_hash,
-                "deps_stamp": deps_stamp,
-                "compiler_version": compiler_version,
-                "mojo_path": mojo_path,
-                "flags": list(flags),
-                "env": sorted(env.items()),
-            },
-            sort_keys=True,
-        ).encode()
+        _encode_inputs(
+            project_hash=project_hash,
+            tests_tree_hash=tests_tree_hash,
+            deps_stamp=deps_stamp,
+            compiler_version=compiler_version,
+            mojo_path=mojo_path,
+            flags=flags,
+            env=env,
+        )
     )
     return h.hexdigest()
+
+
+def compute_precompile_key(
+    *,
+    lib_hash: str,
+    deps_stamp: str,
+    compiler_version: str,
+    mojo_path: str,
+    args: tuple[str, ...],
+    env: Mapping[str, str],
+) -> str:
+    """Build the cache key of one ``mojo precompile`` invocation.
+
+    Same encoding as :func:`compute_cache_key`, tagged so a precompile key
+    can never equal a test key.
+
+    Args:
+        lib_hash: :func:`hash_directory_tree` of the lib package.
+        deps_stamp: :func:`stamp_include_dirs` of its ``-I`` dirs, in order.
+        args: The argv after the compiler binary, in order.
+        env: Environment the precompile runs with.
+    """
+    return hashlib.sha256(
+        _encode_inputs(
+            kind="precompile",
+            lib_hash=lib_hash,
+            deps_stamp=deps_stamp,
+            compiler_version=compiler_version,
+            mojo_path=mojo_path,
+            flags=args,
+            env=env,
+        )
+    ).hexdigest()
+
+
+def _encode_inputs(*, flags: tuple[str, ...], env: Mapping[str, str], **fields: str) -> bytes:
+    """Encode key inputs as one JSON document: *flags* keep order, *env* does not."""
+    return json.dumps({**fields, "flags": list(flags), "env": sorted(env.items())}, sort_keys=True).encode()
 
 
 def read_cache_meta(meta_path: Path) -> str | None:

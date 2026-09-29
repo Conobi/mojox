@@ -16,23 +16,32 @@ import tempfile
 import time
 from collections.abc import Callable
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from itertools import pairwise
 from pathlib import Path
 
 from mojox_core import Command, CommandKind
 
-from .cache import compute_cache_key, read_cache_meta, write_cache_meta
+from .cache import (
+    compute_cache_key,
+    compute_precompile_key,
+    hash_directory_tree,
+    read_cache_meta,
+    stamp_include_dirs,
+    write_cache_meta,
+)
 from .diagnostics import parse_diagnostics
 from .types import Outcome, OutcomeKind
 
 
 @dataclass(frozen=True)
 class CacheContext:
-    """Context for binary cache lookups passed to the executor.
+    """Context for cache lookups passed to the executor.
 
     Groups the per-run inputs of the AOT binary cache key. They are
-    computed once per ``mojox test`` or ``mojox run`` invocation, not per
-    built file.
+    computed once per invocation, not per built file. ``COMPILE_PACKAGE``
+    commands only use ``compiler_version``, ``meta_dir`` and ``enabled``:
+    their key is computed per command (see :func:`_precompile_cache_key`).
 
     Attributes:
         project_hash: Hash of the project's library source trees.
@@ -43,7 +52,7 @@ class CacheContext:
         meta_dir: Directory for per-target cache metadata JSON files.
         enabled: Whether cache lookups are active. When ``False`` the
             compound build-then-execute still runs, but every lookup
-            is a guaranteed miss.
+            is a guaranteed miss and no metadata is written.
         runtime_args: Extra command-line arguments appended to the
             compiled binary's argv at execution time. Used by bundle
             mode to pass a ``-k`` filter pattern to the test binary.
@@ -172,6 +181,77 @@ def _resolve_cache_for_build_test(
         skip_cache_write=not cache_context.enabled,
         runtime_args=cache_context.runtime_args,
     )
+
+
+def _precompile_cache_key(
+    cmd: Command,
+    extra_env: dict[str, str] | None,
+    compiler_version: str,
+) -> str | None:
+    """Return the cache key for a COMPILE_PACKAGE command, or ``None`` if uncacheable.
+
+    Relies on the planner layout ``<mojo> precompile <lib dir> -o <output>
+    <flags...>``. The key covers the lib's importable files, a stat stamp
+    of each ``-I`` dir in argv order (relative ones resolved against
+    ``cmd.cwd``, as the compiler resolves them), the whole argv, the
+    compiler binary and version, and the environment as
+    :func:`run_command` merges it. Another layout, or a lib that is not a
+    readable directory, is uncacheable: it always precompiles.
+    """
+    argv = cmd.argv
+    if len(argv) < 5 or argv[3] != "-o":
+        return None
+    cwd = Path(cmd.cwd)
+    lib_dir = cwd / argv[2]
+    if not lib_dir.is_dir():
+        return None
+    flags = argv[5:]
+    include_dirs = [str(cwd / value) for flag, value in pairwise(flags) if flag == "-I"]
+    try:
+        lib_hash = hash_directory_tree(lib_dir)
+    except OSError:
+        return None
+    return compute_precompile_key(
+        lib_hash=lib_hash,
+        deps_stamp=stamp_include_dirs(include_dirs),
+        compiler_version=compiler_version,
+        mojo_path=argv[0],
+        args=argv[1:],
+        env={**(extra_env or {}), **cmd.env},
+    )
+
+
+def _resolve_cache_for_precompile(
+    cmd: Command,
+    cache_context: CacheContext,
+    extra_env: dict[str, str] | None,
+    include_paths: tuple[str, ...],
+) -> Outcome:
+    """Route a COMPILE_PACKAGE command through :func:`run_cached_precompile`."""
+    cache_key = _precompile_cache_key(cmd, extra_env, cache_context.compiler_version) if cache_context.enabled else None
+    return run_cached_precompile(
+        cmd,
+        cache_key=cache_key,
+        meta_dir=cache_context.meta_dir,
+        compiler_version=cache_context.compiler_version,
+        extra_env=extra_env,
+        include_paths=include_paths,
+    )
+
+
+def _execute(
+    cmd: Command,
+    extra_env: dict[str, str] | None,
+    include_paths: tuple[str, ...],
+    cache_context: CacheContext | None,
+) -> Outcome:
+    """Run *cmd*, through its cache when *cache_context* is given and its kind has one."""
+    if cache_context is not None:
+        if cmd.kind == CommandKind.BUILD_TEST:
+            return _resolve_cache_for_build_test(cmd, cache_context, extra_env, include_paths)
+        if cmd.kind == CommandKind.COMPILE_PACKAGE:
+            return _resolve_cache_for_precompile(cmd, cache_context, extra_env, include_paths)
+    return run_command(cmd, extra_env=extra_env, include_paths=include_paths)
 
 
 _ETXTBSY_ATTEMPTS = 5
@@ -314,27 +394,10 @@ def _run_with_start(
     on_start: Callable[[Command], None] | None,
     cache_context: CacheContext | None = None,
 ) -> Outcome:
-    """Run a command, calling on_start from the worker thread first.
-
-    When *cache_context* is provided and the command is a ``BUILD_TEST``,
-    the execution is routed through the cached test runner instead of
-    the plain :func:`run_command` path.
-
-    Args:
-        cmd: The command to execute.
-        extra_env: Additional environment variables to merge.
-        include_paths: Dependency include directories.
-        on_start: Optional callback invoked before execution.
-        cache_context: Optional cache context for AOT test binaries.
-
-    Returns:
-        An Outcome describing the result.
-    """
+    """Call *on_start* from the worker thread, then :func:`_execute` *cmd*."""
     if on_start is not None:
         on_start(cmd)
-    if cache_context is not None and cmd.kind == CommandKind.BUILD_TEST:
-        return _resolve_cache_for_build_test(cmd, cache_context, extra_env, include_paths)
-    return run_command(cmd, extra_env=extra_env, include_paths=include_paths)
+    return _execute(cmd, extra_env, include_paths, cache_context)
 
 
 def run_commands(
@@ -358,8 +421,9 @@ def run_commands(
     queued commands and skips remaining phases.
 
     When *cache_context* is provided, ``BUILD_TEST`` commands are routed
-    through the cached test runner for compound build-then-execute with
-    optional cache lookups.
+    through the cached test runner for compound build-then-execute, and
+    ``COMPILE_PACKAGE`` commands through :func:`run_cached_precompile`.
+    A precompile cache hit is a PASS, so its dependents run as usual.
 
     The current two-phase implementation supports commands with at most
     one level of dependencies (e.g., precompile -> test). Deeper
@@ -379,9 +443,9 @@ def run_commands(
             completes. Called from the executor thread; must be thread-safe.
         fail_fast: If True, cancel remaining commands after the first
             non-PASS outcome.
-        cache_context: Optional cache context for AOT test binary
-            caching. When ``None``, ``BUILD_TEST`` commands run via the
-            plain :func:`run_command` path (build only, no execution).
+        cache_context: Optional cache context. When ``None``, every
+            command runs via the plain :func:`run_command` path, so
+            ``BUILD_TEST`` builds without executing.
 
     Returns:
         A tuple of Outcomes in the same order as the input commands.
@@ -478,7 +542,7 @@ def _run_phase(
             execution begins.
         on_complete: Optional callback invoked with each Outcome.
         fail_fast: If True, cancel remaining futures after first non-PASS.
-        cache_context: Optional cache context for AOT test binary caching.
+        cache_context: Optional cache context (see :func:`run_commands`).
     """
 
     def _record(idx: int, outcome: Outcome) -> None:
@@ -550,28 +614,11 @@ def _run_or_skip(
     on_start: Callable[[Command], None] | None = None,
     cache_context: CacheContext | None = None,
 ) -> Outcome:
-    """Run a command or skip it if dependencies failed.
-
-    When *cache_context* is provided and the command is a ``BUILD_TEST``,
-    execution is routed through the cached test runner.
-
-    Args:
-        cmd: The command to execute.
-        completed: Mapping of target_id to Outcome for finished commands.
-        extra_env: Additional env vars merged into the command.
-        include_paths: Dependency include directories whose ``lib/``
-            subdirectories are added to the dynamic linker search path.
-        on_start: Optional callback invoked before execution begins.
-        cache_context: Optional cache context for AOT test binary caching.
-    """
+    """Return a SKIPPED outcome if a dependency of *cmd* failed, else run it."""
     skip = _check_dependencies(cmd, completed)
     if skip is not None:
         return skip
-    if on_start is not None:
-        on_start(cmd)
-    if cache_context is not None and cmd.kind == CommandKind.BUILD_TEST:
-        return _resolve_cache_for_build_test(cmd, cache_context, extra_env, include_paths)
-    return run_command(cmd, extra_env=extra_env, include_paths=include_paths)
+    return _run_with_start(cmd, extra_env, include_paths, on_start, cache_context)
 
 
 def _check_dependencies(
@@ -662,6 +709,21 @@ def _execute_binary(
     return run_command(exec_cmd, extra_env=extra_env, include_paths=include_paths)
 
 
+def _with_output(cmd: Command, output: Path) -> Command:
+    """Copy *cmd* so it writes *output*: its ``-o`` value is replaced, or ``-o`` appended."""
+    argv = list(cmd.argv)
+    try:
+        argv[argv.index("-o") + 1] = str(output)
+    except (ValueError, IndexError):
+        argv.extend(["-o", str(output)])
+    return replace(cmd, argv=tuple(argv), outputs=(str(output),))
+
+
+def _is_nonempty_file(path: Path) -> bool:
+    """Whether *path* is a regular file with content (an empty one was never built)."""
+    return path.is_file() and path.stat().st_size > 0
+
+
 def run_cached_test(
     cmd: Command,
     *,
@@ -747,24 +809,7 @@ def run_cached_test(
 
     published = False
     try:
-        build_argv = list(cmd.argv)
-        try:
-            o_idx = build_argv.index("-o")
-            build_argv[o_idx + 1] = str(tmp_binary)
-        except (ValueError, IndexError):
-            build_argv.extend(["-o", str(tmp_binary)])
-
-        build_cmd = Command(
-            argv=tuple(build_argv),
-            cwd=cmd.cwd,
-            env=cmd.env,
-            kind=cmd.kind,
-            target_id=cmd.target_id,
-            timeout_s=cmd.timeout_s,
-            outputs=(str(tmp_binary),),
-            depends_on=cmd.depends_on,
-        )
-        build_outcome = run_command(build_cmd, extra_env=extra_env, include_paths=include_paths)
+        build_outcome = run_command(_with_output(cmd, tmp_binary), extra_env=extra_env, include_paths=include_paths)
 
         if build_outcome.kind != OutcomeKind.PASS:
             return Outcome(
@@ -778,7 +823,7 @@ def run_cached_test(
             )
 
         # mkstemp pre-creates an empty file, so "empty" also means "not built".
-        if not tmp_binary.is_file() or tmp_binary.stat().st_size == 0:
+        if not _is_nonempty_file(tmp_binary):
             return Outcome(
                 command=cmd,
                 kind=OutcomeKind.COMPILE_ERROR,
@@ -844,3 +889,69 @@ def run_cached_test(
         diagnostics=build_outcome.diagnostics + exec_outcome.diagnostics,
         elapsed_s=total_elapsed,
     )
+
+
+def run_cached_precompile(
+    cmd: Command,
+    *,
+    cache_key: str | None,
+    meta_dir: Path,
+    compiler_version: str,
+    extra_env: dict[str, str] | None = None,
+    include_paths: tuple[str, ...] = (),
+) -> Outcome:
+    """Precompile a lib package unless the published one matches *cache_key*.
+
+    The package is ``cmd.outputs[0]``, one ``.mojoc`` file. Its key lives
+    in ``<meta_dir>/precompile-<file name>.json``; output names are unique
+    per lib, so libs never share an entry. A hit needs the stored key to
+    match and the package to be a non-empty file. It returns a PASS
+    without running the compiler, so dependents run as usual.
+
+    On a miss the package is built into a private ``mkdtemp`` dir next to
+    it, under its final file name (``mojo precompile`` may care about the
+    extension). Then the old meta is deleted, the package renamed into
+    place, and only then the new meta written. A failed or empty build
+    publishes nothing: the previous package and its key stay consistent.
+
+    A ``None`` key (``--no-cache``, or an uncacheable command) skips the
+    lookup and writes no meta. The package is still published, because
+    dependents import it from its fixed path, so the old meta is dropped.
+    """
+    output = Path(cmd.cwd) / cmd.outputs[0]
+    meta_path = meta_dir / f"precompile-{output.name}.json"
+
+    if cache_key is not None and read_cache_meta(meta_path) == cache_key and _is_nonempty_file(output):
+        return Outcome(
+            command=cmd,
+            kind=OutcomeKind.PASS,
+            exit_code=0,
+            stdout="",
+            stderr="",
+            diagnostics=(),
+            elapsed_s=0.0,
+        )
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    tmp_dir = Path(tempfile.mkdtemp(dir=output.parent, prefix=f".{output.name}."))
+    tmp_output = tmp_dir / output.name
+    try:
+        outcome = run_command(_with_output(cmd, tmp_output), extra_env=extra_env, include_paths=include_paths)
+        if outcome.kind != OutcomeKind.PASS:
+            return replace(outcome, command=cmd)
+        if not _is_nonempty_file(tmp_output):
+            return replace(
+                outcome,
+                command=cmd,
+                kind=OutcomeKind.COMPILE_ERROR,
+                stderr=f"Precompile succeeded but package not found: {output.name}\n" + outcome.stderr,
+            )
+        # Same ordering as run_cached_test: an interrupt after the rename
+        # reads as a miss, never as the old key vouching for the new file.
+        meta_path.unlink(missing_ok=True)
+        os.replace(tmp_output, output)
+        if cache_key is not None:
+            write_cache_meta(meta_path, cache_key=cache_key, compiler_version=compiler_version)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+    return replace(outcome, command=cmd)

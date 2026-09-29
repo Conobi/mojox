@@ -7,11 +7,13 @@ import sys
 from pathlib import Path, PurePosixPath
 
 import pytest
-from mojox.cache import stamp_include_dirs, write_cache_meta
+from mojox.cache import read_cache_meta, stamp_include_dirs, write_cache_meta
 from mojox.exec import (
     CacheContext,
     _build_test_cache_key,
     _extract_test_source_and_flags,
+    _precompile_cache_key,
+    run_cached_precompile,
     run_cached_test,
     run_command,
     run_commands,
@@ -1425,3 +1427,230 @@ class TestCorruptMetaIsMiss:
         )
         assert outcome.stdout.strip() == "built-fresh"
         assert json.loads(meta.read_text())["cache_key"] == "k"
+
+
+def _precompile_cmd(tmp_path: Path, *flags: str, mojo: str = "/opt/mojo/bin/mojo", env: dict | None = None) -> Command:
+    """A planner-shaped COMPILE_PACKAGE command for ``src/mylib`` under *tmp_path*."""
+    lib = tmp_path / "src" / "mylib"
+    lib.mkdir(parents=True, exist_ok=True)
+    (lib / "__init__.mojo").write_text("fn lib(): pass\n")
+    output = ".mojox/build/pkg/mylib.mojoc"
+    return _cmd(
+        (mojo, "precompile", "src/mylib", "-o", output, *flags),
+        cwd=PurePosixPath(str(tmp_path)),
+        env=env or {"PATH": "/usr/bin", "HOME": ""},
+        kind=CommandKind.COMPILE_PACKAGE,
+        target_id="src/mylib",
+        outputs=(output,),
+    )
+
+
+class TestPrecompileCacheKey:
+    """The precompile key covers every input of ``mojo precompile``."""
+
+    def test_unchanged_inputs_give_identical_key(self, tmp_path: Path):
+        cmd = _precompile_cmd(tmp_path, "-I", str(tmp_path / "dep"))
+        assert _precompile_cache_key(cmd, None, "1.0.0") == _precompile_cache_key(cmd, None, "1.0.0")
+
+    def test_lib_edit_changes_key(self, tmp_path: Path):
+        cmd = _precompile_cmd(tmp_path)
+        before = _precompile_cache_key(cmd, None, "1.0.0")
+        (tmp_path / "src" / "mylib" / "__init__.mojo").write_text("fn lib(): return\n")
+        assert _precompile_cache_key(cmd, None, "1.0.0") != before
+
+    def test_include_dir_edit_changes_key(self, tmp_path: Path):
+        dep = tmp_path / "dep"
+        (dep / "navette").mkdir(parents=True)
+        (dep / "navette" / "__init__.mojo").write_text("a")
+        cmd = _precompile_cmd(tmp_path, "-I", str(dep))
+        before = _precompile_cache_key(cmd, None, "1.0.0")
+        (dep / "navette" / "__init__.mojo").write_text("ab")
+        assert _precompile_cache_key(cmd, None, "1.0.0") != before
+
+    def test_relative_include_dir_is_resolved_against_cwd(self, tmp_path: Path, monkeypatch):
+        (tmp_path / "vendored").mkdir()
+        cmd = _precompile_cmd(tmp_path, "-I", "vendored")
+        before = _precompile_cache_key(cmd, None, "1.0.0")
+        monkeypatch.chdir("/")
+        (tmp_path / "vendored" / "x.mojo").write_text("")
+        assert _precompile_cache_key(cmd, None, "1.0.0") != before
+
+    def test_include_reorder_changes_key(self, tmp_path: Path):
+        a, b = str(tmp_path / "a"), str(tmp_path / "b")
+        first = _precompile_cache_key(_precompile_cmd(tmp_path, "-I", a, "-I", b), None, "1.0.0")
+        assert _precompile_cache_key(_precompile_cmd(tmp_path, "-I", b, "-I", a), None, "1.0.0") != first
+
+    def test_extra_flag_changes_key(self, tmp_path: Path):
+        base = _precompile_cache_key(_precompile_cmd(tmp_path), None, "1.0.0")
+        assert _precompile_cache_key(_precompile_cmd(tmp_path, "--Werror"), None, "1.0.0") != base
+
+    def test_env_changes_key(self, tmp_path: Path):
+        cmd = _precompile_cmd(tmp_path)
+        base = _precompile_cache_key(cmd, None, "1.0.0")
+        assert _precompile_cache_key(cmd, {"MODULAR_X": "1"}, "1.0.0") != base
+        other = _precompile_cmd(tmp_path, env={"PATH": "/usr/bin", "HOME": "", "LANG": "fr_FR.UTF-8"})
+        assert _precompile_cache_key(other, None, "1.0.0") != base
+
+    def test_mojo_path_changes_key(self, tmp_path: Path):
+        base = _precompile_cache_key(_precompile_cmd(tmp_path), None, "1.0.0")
+        assert _precompile_cache_key(_precompile_cmd(tmp_path, mojo="/other/mojo"), None, "1.0.0") != base
+
+    def test_compiler_version_changes_key(self, tmp_path: Path):
+        cmd = _precompile_cmd(tmp_path)
+        assert _precompile_cache_key(cmd, None, "1.0.0") != _precompile_cache_key(cmd, None, "1.0.1")
+
+    def test_missing_lib_dir_is_uncacheable(self, tmp_path: Path):
+        cmd = _precompile_cmd(tmp_path)
+        (tmp_path / "src" / "mylib" / "__init__.mojo").unlink()
+        (tmp_path / "src" / "mylib").rmdir()
+        assert _precompile_cache_key(cmd, None, "1.0.0") is None
+
+    def test_malformed_argv_is_uncacheable(self, tmp_path: Path):
+        cmd = _cmd(("/opt/mojo", "precompile", "src/mylib"), kind=CommandKind.COMPILE_PACKAGE)
+        assert _precompile_cache_key(cmd, None, "1.0.0") is None
+
+
+# Fake precompiler: logs each call, writes ``pkg:<n>`` to the -o path, or
+# exits 1 without writing when ``FAIL`` exists next to the log.
+_FAKE_PRECOMPILE = (
+    "import pathlib, sys\n"
+    "log = pathlib.Path({log!r})\n"
+    "if (log.parent / 'FAIL').exists():\n"
+    "    sys.exit(1)\n"
+    "with log.open('a') as f:\n"
+    "    f.write(sys.argv[sys.argv.index('-o') + 1] + '\\n')\n"
+    "n = len(log.read_text().splitlines())\n"
+    "pathlib.Path(sys.argv[sys.argv.index('-o') + 1]).write_text(f'pkg:{{n}}')\n"
+)
+
+
+class TestRunCachedPrecompile:
+    """Hit / miss / publish flow of ``run_cached_precompile``."""
+
+    @pytest.fixture
+    def setup(self, tmp_path: Path):
+        log = tmp_path / "log" / "calls"
+        log.parent.mkdir()
+        log.touch()
+        script = tmp_path / "fake_mojo"
+        script.write_text(f"#!{sys.executable}\n" + _FAKE_PRECOMPILE.format(log=str(log)))
+        script.chmod(0o755)
+        base = _precompile_cmd(tmp_path)
+        cmd = _cmd(
+            (str(script), *base.argv[1:]),
+            cwd=base.cwd,
+            kind=base.kind,
+            target_id=base.target_id,
+            outputs=base.outputs,
+        )
+        meta_dir = tmp_path / ".mojox" / "cache" / "meta"
+        return cmd, meta_dir, log, tmp_path / base.outputs[0]
+
+    @staticmethod
+    def _run(cmd: Command, meta_dir: Path, key: str | None = "k1") -> Outcome:
+        return run_cached_precompile(cmd, cache_key=key, meta_dir=meta_dir, compiler_version="1.0.0")
+
+    def test_miss_then_hit(self, setup):
+        cmd, meta_dir, log, package = setup
+        first = self._run(cmd, meta_dir)
+        second = self._run(cmd, meta_dir)
+        assert first.kind == second.kind == OutcomeKind.PASS
+        assert second.command is cmd
+        assert len(log.read_text().splitlines()) == 1
+        assert package.read_text() == "pkg:1"
+        assert (meta_dir / "precompile-mylib.mojoc.json").is_file()
+
+    def test_builds_into_a_temp_path_with_the_same_file_name(self, setup):
+        cmd, meta_dir, log, package = setup
+        self._run(cmd, meta_dir)
+        built = Path(log.read_text().splitlines()[0])
+        assert built != package
+        assert built.name == package.name
+        assert not built.exists()
+        assert not any(p.name.startswith(".") for p in package.parent.iterdir())
+
+    def test_key_change_rebuilds(self, setup):
+        cmd, meta_dir, log, package = setup
+        self._run(cmd, meta_dir, "k1")
+        self._run(cmd, meta_dir, "k2")
+        assert len(log.read_text().splitlines()) == 2
+        assert package.read_text() == "pkg:2"
+
+    def test_none_key_always_builds_and_drops_meta(self, setup):
+        cmd, meta_dir, log, package = setup
+        self._run(cmd, meta_dir, "k1")
+        assert self._run(cmd, meta_dir, None).kind == OutcomeKind.PASS
+        assert self._run(cmd, meta_dir, None).kind == OutcomeKind.PASS
+        assert len(log.read_text().splitlines()) == 3
+        assert not (meta_dir / "precompile-mylib.mojoc.json").exists()
+        assert package.read_text() == "pkg:3"
+
+    def test_failure_writes_no_meta_and_keeps_old_package(self, setup):
+        cmd, meta_dir, log, package = setup
+        self._run(cmd, meta_dir, "k1")
+        (log.parent / "FAIL").touch()
+        failed = self._run(cmd, meta_dir, "k2")
+        assert failed.kind == OutcomeKind.FAIL
+        assert package.read_text() == "pkg:1"
+        assert read_cache_meta(meta_dir / "precompile-mylib.mojoc.json") == "k1"
+        assert not any(p.name.startswith(".") for p in package.parent.iterdir())
+
+    def test_first_failure_writes_no_meta(self, setup):
+        cmd, meta_dir, log, _package = setup
+        (log.parent / "FAIL").touch()
+        assert self._run(cmd, meta_dir).kind == OutcomeKind.FAIL
+        assert not (meta_dir / "precompile-mylib.mojoc.json").exists()
+
+    def test_success_without_output_is_a_compile_error(self, tmp_path: Path):
+        base = _precompile_cmd(tmp_path)
+        cmd = _cmd((sys.executable, "-c", "pass", *base.argv[1:]), cwd=base.cwd, kind=base.kind, outputs=base.outputs)
+        meta_dir = tmp_path / "meta"
+        outcome = self._run(cmd, meta_dir)
+        assert outcome.kind == OutcomeKind.COMPILE_ERROR
+        assert "mylib.mojoc" in outcome.stderr
+        assert not (meta_dir / "precompile-mylib.mojoc.json").exists()
+
+    def test_meta_absent_while_package_is_replaced(self, setup, monkeypatch):
+        import mojox.exec as exec_mod
+
+        cmd, meta_dir, _log, package = setup
+        self._run(cmd, meta_dir, "k1")
+        meta = meta_dir / "precompile-mylib.mojoc.json"
+        seen: list[bool] = []
+        real_replace = exec_mod.os.replace
+
+        def spy(src, dst):
+            if Path(dst) == package:
+                seen.append(meta.exists())
+            real_replace(src, dst)
+
+        monkeypatch.setattr(exec_mod.os, "replace", spy)
+        self._run(cmd, meta_dir, "k2")
+        assert seen == [False]
+        assert read_cache_meta(meta) == "k2"
+
+    def test_routed_through_run_commands_with_cache_context(self, setup):
+        cmd, meta_dir, log, _package = setup
+        test = _cmd((sys.executable, "-c", "pass"), target_id="t.mojo", depends_on=(cmd.target_id,))
+        ctx = CacheContext(
+            project_hash="a", tests_tree_hash="b", deps_stamp="c", compiler_version="1.0.0", meta_dir=meta_dir
+        )
+        for _ in range(2):
+            results = run_commands((cmd, test), cache_context=ctx)
+            assert [r.kind for r in results] == [OutcomeKind.PASS, OutcomeKind.PASS]
+        assert len(log.read_text().splitlines()) == 1
+
+    def test_disabled_cache_context_always_precompiles(self, setup):
+        cmd, meta_dir, log, _package = setup
+        ctx = CacheContext(
+            project_hash="a",
+            tests_tree_hash="b",
+            deps_stamp="c",
+            compiler_version="1.0.0",
+            meta_dir=meta_dir,
+            enabled=False,
+        )
+        run_commands((cmd,), cache_context=ctx)
+        run_commands((cmd,), cache_context=ctx)
+        assert len(log.read_text().splitlines()) == 2
+        assert not (meta_dir / "precompile-mylib.mojoc.json").exists()

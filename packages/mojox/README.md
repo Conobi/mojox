@@ -38,7 +38,7 @@ Test-specific flags:
 | `-k` / `--filter PATTERN` | | Filter tests by name (case-insensitive substring); see `--bundle` |
 | `--bundle` | off | Compile every `test_*` function into a single harness binary |
 | `--examples` | off | Also compile-check `examples/*/main.mojo` |
-| `--no-cache` | off | Always rebuild; the existing cache is left untouched |
+| `--no-cache` | off | Always rebuild; cached test binaries are left untouched, precompiled packages are rebuilt in place and lose their cache entry |
 | `paths` (positional) | | Filter tests by file or directory prefix |
 
 Examples are not checked unless you pass `--examples` or a path under `examples/`. They are compiled, never executed.
@@ -48,6 +48,8 @@ With `--bundle`, test files without `test_*` functions are left out of the bundl
 #### Binary cache
 
 Build outputs live under `.mojox/cache/`: test binaries in `bin/`, their cache keys in `meta/`, example builds in `examples/`. A test is rebuilt only when its key changes. The key covers the test source, the project's library and test trees, the dependency include dirs (file size and mtime, not content), the compiler flags, the build environment and the compiler. `mojox cache clean` deletes `.mojox/cache/`.
+
+Precompiled library packages (`.mojox/build/pkg/`) are cached too, by `test`, `build` and `check` alike: a lib is precompiled again only when its sources, the dependency include dirs, the precompile arguments, the environment or the compiler change, or when its package is missing.
 
 Add `.mojox/` to your `.gitignore`.
 

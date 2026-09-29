@@ -743,3 +743,244 @@ class TestRunExecutesProgram:
         _cmd_run(build_parser().parse_args(["run", "--no-config", "--dry-run", "hello.mojo"]))
         assert "build hello.mojo" in capsys.readouterr().err
         assert log.read_text() == ""
+
+
+# Fake ``mojo`` with ``build`` and ``precompile``. Each call logs
+# ``<subcommand> <source>``. ``precompile`` fails without writing when the
+# lib's ``__init__.mojo`` contains PRECOMPILE_ERROR, else writes a package
+# stamped with the lib's source so a stale package is detectable.
+_FAKE_MOJO_PRECOMPILE = """#!{python}
+import pathlib, stat, sys
+args = sys.argv[1:]
+with open({log!r}, "a") as f:
+    f.write(args[0] + " " + args[1] + "\\n")
+out = pathlib.Path(args[args.index("-o") + 1])
+if args[0] == "precompile":
+    src = (pathlib.Path(args[1]) / "__init__.mojo").read_text()
+    if "PRECOMPILE_ERROR" in src:
+        print(args[1] + "/__init__.mojo:1:1: error: bad lib", file=sys.stderr)
+        sys.exit(1)
+    out.write_text("mojoc:" + src)
+    sys.exit(0)
+assert args[0] == "build", args
+out.write_text("#!/bin/sh\\nexit 0\\n")
+out.chmod(out.stat().st_mode | stat.S_IEXEC)
+"""
+
+
+class TestPrecompileCache:
+    """``mojox test`` end to end: an unchanged lib is not precompiled twice."""
+
+    @pytest.fixture
+    def project(self, tmp_path, monkeypatch):
+        """Project with one lib, two tests (enough to precompile) and one dependency."""
+        from mojox_core import DistKind, Toolchain
+
+        proj = tmp_path / "proj"
+        (proj / "tests").mkdir(parents=True)
+        (proj / "pyproject.toml").write_text('[project]\nname = "testlib"\nversion = "0.1.0"\n')
+        for name in ("test_a", "test_b"):
+            (proj / "tests" / f"{name}.mojo").write_text(f"def {name}():\n    pass\n")
+        (proj / "src" / "mylib").mkdir(parents=True)
+        (proj / "src" / "mylib" / "__init__.mojo").write_text("fn lib(): pass\n")
+
+        dep = tmp_path / "mojo_packages"
+        (dep / "navette").mkdir(parents=True)
+        (dep / "navette" / "__init__.mojo").write_text("fn f(): pass\n")
+
+        log = tmp_path / "calls.log"
+        log.touch()
+        fake = tmp_path / "bin" / "mojo"
+        fake.parent.mkdir()
+        fake.write_text(_FAKE_MOJO_PRECOMPILE.format(python=sys.executable, log=str(log)))
+        fake.chmod(0o755)
+
+        toolchain = Toolchain(mojo_path=str(fake), version="1.0.0", subcommand="precompile", extension=".mojoc")
+        dist = {
+            "name": "navette",
+            "include_dir": str(dep),
+            "kind": DistKind.SOURCE,
+            "packages": ["navette"],
+            "provenance": "0.1.0",
+            "native_lib_dirs": (),
+        }
+        monkeypatch.setattr("mojox_core.io.toolchain.resolve", lambda: toolchain)
+        monkeypatch.setattr("mojox_core.io.environment.read_distributions", lambda: [dist])
+        monkeypatch.setenv("LANG", "C.UTF-8")
+        monkeypatch.chdir(proj)
+        return proj, dep, log
+
+    @staticmethod
+    def _run(*extra: str) -> int:
+        from mojox.cli import _cmd_test
+
+        args = build_parser().parse_args(["test", "--no-config", *extra])
+        with pytest.raises(SystemExit) as exc:
+            _cmd_test(args)
+        return exc.value.code
+
+    @staticmethod
+    def _precompiles(log: Path) -> int:
+        return sum(1 for line in log.read_text().splitlines() if line.startswith("precompile "))
+
+    @staticmethod
+    def _package(proj: Path) -> Path:
+        return proj / ".mojox" / "build" / "pkg" / "mylib.mojoc"
+
+    @staticmethod
+    def _meta(proj: Path) -> Path:
+        return proj / ".mojox" / "cache" / "meta" / "precompile-mylib.mojoc.json"
+
+    def test_warm_run_skips_precompile(self, project):
+        proj, _dep, log = project
+        assert self._run() == 0
+        assert self._run() == 0
+        assert self._precompiles(log) == 1
+        assert self._package(proj).read_text() == "mojoc:fn lib(): pass\n"
+
+    def test_lib_edit_reprecompiles(self, project):
+        proj, _dep, log = project
+        assert self._run() == 0
+        (proj / "src" / "mylib" / "__init__.mojo").write_text("fn lib(): return\n")
+        assert self._run() == 0
+        assert self._precompiles(log) == 2
+        assert self._package(proj).read_text() == "mojoc:fn lib(): return\n"
+
+    def test_new_lib_module_reprecompiles(self, project):
+        proj, _dep, log = project
+        assert self._run() == 0
+        (proj / "src" / "mylib" / "extra.mojo").write_text("fn x(): pass\n")
+        assert self._run() == 0
+        assert self._precompiles(log) == 2
+
+    def test_dependency_touch_reprecompiles(self, project):
+        _proj, dep, log = project
+        assert self._run() == 0
+        (dep / "navette" / "__init__.mojo").write_text("fn f(): return\n")
+        assert self._run() == 0
+        assert self._precompiles(log) == 2
+
+    def test_include_dir_change_reprecompiles(self, project, tmp_path, monkeypatch):
+        """A different ``-I`` list is a different precompile argv."""
+        from mojox_core import DistKind
+
+        _proj, dep, log = project
+        assert self._run() == 0
+        other = tmp_path / "other_packages"
+        (other / "wagon").mkdir(parents=True)
+        dists = [
+            {
+                "name": name,
+                "include_dir": str(path),
+                "kind": DistKind.SOURCE,
+                "packages": [name],
+                "provenance": "0.1.0",
+                "native_lib_dirs": (),
+            }
+            for name, path in (("navette", dep), ("wagon", other))
+        ]
+        monkeypatch.setattr("mojox_core.io.environment.read_distributions", lambda: dists)
+        assert self._run() == 0
+        assert self._precompiles(log) == 2
+
+    def test_env_change_reprecompiles(self, project, monkeypatch):
+        _proj, _dep, log = project
+        assert self._run() == 0
+        monkeypatch.setenv("LANG", "en_US.UTF-8")
+        assert self._run() == 0
+        assert self._precompiles(log) == 2
+
+    def test_profile_and_flags_do_not_reprecompile(self, project):
+        """``mojo precompile`` takes no -O/-D/--flag, so its output ignores them."""
+        _proj, _dep, log = project
+        assert self._run() == 0
+        assert self._run("--profile", "release", "-D", "X=1", "--flag=--foo") == 0
+        assert self._precompiles(log) == 1
+
+    def test_missing_package_reprecompiles(self, project):
+        proj, _dep, log = project
+        assert self._run() == 0
+        self._package(proj).unlink()
+        assert self._run() == 0
+        assert self._precompiles(log) == 2
+        assert self._package(proj).is_file()
+
+    def test_empty_package_reprecompiles(self, project):
+        proj, _dep, log = project
+        assert self._run() == 0
+        self._package(proj).write_bytes(b"")
+        assert self._run() == 0
+        assert self._precompiles(log) == 2
+
+    @pytest.mark.parametrize("payload", [b"", b"{not json", b'{"schema_version": 1}', b"\xff\xfe"])
+    def test_corrupt_meta_reprecompiles(self, project, payload):
+        proj, _dep, log = project
+        assert self._run() == 0
+        self._meta(proj).write_bytes(payload)
+        assert self._run() == 0
+        assert self._precompiles(log) == 2
+
+    def test_no_cache_always_precompiles_and_writes_no_meta(self, project):
+        proj, _dep, log = project
+        assert self._run("--no-cache") == 0
+        assert self._run("--no-cache") == 0
+        assert self._precompiles(log) == 2
+        assert not self._meta(proj).exists()
+        assert self._package(proj).is_file()
+
+    def test_no_cache_invalidates_an_existing_entry(self, project):
+        """``--no-cache`` rewrites the package in place, so its old key must go."""
+        proj, _dep, log = project
+        assert self._run() == 0
+        assert self._run("--no-cache") == 0
+        assert not self._meta(proj).exists()
+        assert self._run() == 0
+        assert self._precompiles(log) == 3
+
+    def test_failed_precompile_writes_no_meta_and_skips_tests(self, project, capsys):
+        proj, _dep, log = project
+        (proj / "src" / "mylib" / "__init__.mojo").write_text("PRECOMPILE_ERROR\n")
+        assert self._run("--no-fail-fast") == 2
+        assert not self._meta(proj).exists()
+        assert not any(line.startswith("build ") for line in log.read_text().splitlines())
+        assert "SKIP" in capsys.readouterr().err
+
+    def test_failed_precompile_keeps_last_good_entry_consistent(self, project):
+        """A failure leaves the previous package and its key untouched: reverting is a hit."""
+        proj, _dep, log = project
+        init = proj / "src" / "mylib" / "__init__.mojo"
+        assert self._run() == 0
+        init.write_text("PRECOMPILE_ERROR\n")
+        assert self._run() == 2
+        init.write_text("fn lib(): pass\n")
+        assert self._run() == 0
+        assert self._precompiles(log) == 2
+        assert self._package(proj).read_text() == "mojoc:fn lib(): pass\n"
+
+    def test_check_shares_the_cache(self, project, capsys):
+        """``mojox check`` goes through the same entry, so it never leaves a stale key."""
+        from mojox.cli import _cmd_check
+
+        proj, _dep, log = project
+        assert self._run() == 0
+        _cmd_check(build_parser().parse_args(["check", "--no-config"]))
+        assert self._precompiles(log) == 1
+        (proj / "src" / "mylib" / "__init__.mojo").write_text("fn lib(): return\n")
+        _cmd_check(build_parser().parse_args(["check", "--no-config"]))
+        assert self._precompiles(log) == 2
+        assert self._run() == 0
+        assert self._precompiles(log) == 2
+        assert self._package(proj).read_text() == "mojoc:fn lib(): return\n"
+
+    def test_build_shares_the_cache(self, project):
+        from mojox.cli import _cmd_build
+
+        proj, _dep, log = project
+        (proj / "pyproject.toml").write_text(
+            '[project]\nname = "testlib"\nversion = "0.1.0"\n\n'
+            '[[tool.mojox.binaries]]\nname = "app"\nsource = "app.mojo"\n'
+        )
+        (proj / "app.mojo").write_text("def main():\n    pass\n")
+        assert self._run() == 0
+        _cmd_build(build_parser().parse_args(["build", "--no-config"]))
+        assert self._precompiles(log) == 1

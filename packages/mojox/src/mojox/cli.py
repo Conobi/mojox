@@ -413,8 +413,9 @@ def _make_cache_context(
     Lib and test trees are content-hashed; *stamped_dirs* are stat-stamped
     in order, so they must list the include dirs in the planner's ``-I``
     order. The precompile output dir (``.mojox/build/pkg``) belongs in none
-    of them: it is rewritten every run, and its content is a function of
-    the lib sources, the include dirs and the compiler.
+    of them: its packages are a function of the lib sources, the include
+    dirs, the environment and the compiler, which this key covers too, and
+    each is only replaced under its own precompile cache key.
     """
     import hashlib
 
@@ -431,6 +432,19 @@ def _make_cache_context(
         compiler_version=compiler_version,
         meta_dir=root / ".mojox" / "cache" / "meta",
         enabled=not no_cache,
+    )
+
+
+def _precompile_cache_context(compiler_version: str) -> CacheContext:
+    """Cache context for subcommands that plan no test: only precompiles consult it.
+
+    ``build`` and ``check`` rewrite the same ``.mojox/build/pkg`` packages as
+    ``mojox test``, so they must go through the same entries; a plain
+    precompile would replace a package behind the key that vouches for it.
+    Precompile keys are computed per command, so the tree hashes are skipped.
+    """
+    return _make_cache_context(
+        lib_paths=(), test_roots=(), stamped_dirs=(), compiler_version=compiler_version, no_cache=False
     )
 
 
@@ -989,7 +1003,7 @@ def _cmd_build(args: argparse.Namespace) -> None:
     )
     from .types import OutputMode
 
-    _manifest, _graph, env, policy, _toolchain, _host, settings, commands, include_paths = _resolve_pipeline(args)
+    _manifest, _graph, env, policy, toolchain, _host, settings, commands, include_paths = _resolve_pipeline(args)
 
     build_commands = tuple(c for c in commands if c.kind in (CommandKind.COMPILE_PACKAGE, CommandKind.COMPILE_BINARY))
 
@@ -1011,6 +1025,7 @@ def _cmd_build(args: argparse.Namespace) -> None:
                 success_output=OutputMode.IMMEDIATE if args.verbose else OutputMode.NEVER,
                 failure_output=OutputMode.IMMEDIATE,
             ),
+            cache_context=_precompile_cache_context(toolchain.version),
         )
     except KeyboardInterrupt:
         print(f"\n{_interrupted_summary(build_commands)}", file=sys.stderr)
@@ -1060,7 +1075,7 @@ def _cmd_check(args: argparse.Namespace) -> None:
 
     # --- Compiler check: resolve pipeline and precompile ---
     try:
-        _manifest, _graph, env, policy, _toolchain, _host, settings, commands, include_paths = _resolve_pipeline(args)
+        _manifest, _graph, env, policy, toolchain, _host, settings, commands, include_paths = _resolve_pipeline(args)
     except SystemExit:
         print(_c(sys.stderr, _DIM, "compiler not available, skipping compilation check"), file=sys.stderr)
         if findings:
@@ -1096,6 +1111,7 @@ def _cmd_check(args: argparse.Namespace) -> None:
             max_workers=policy.jobs_compile,
             extra_env=settings.env if settings.env else None,
             include_paths=include_paths,
+            cache_context=_precompile_cache_context(toolchain.version),
         )
     except KeyboardInterrupt:
         print(f"\n{_interrupted_summary(compile_commands)}", file=sys.stderr)
