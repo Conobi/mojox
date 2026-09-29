@@ -5,7 +5,7 @@ description = "CLI and execution layer for Mojo build tooling"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
-dependencies = ["mojox-core", "mojo-compiler"]
+dependencies = ["mojox-core>=0.6,<0.7", "mojo-compiler"]
 authors = [{name = "Conobi"}]
 
 [project.urls]
