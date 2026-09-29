@@ -22,7 +22,7 @@ from mojox_core import BinaryEntry, Manifest, Policy, Toolchain
 
 from .metadata import render_metadata, render_wheel_file
 
-GENERATOR_VERSION = "0.5.0"
+GENERATOR_VERSION = "0.6.0"
 
 
 def _normalize_name(name: str) -> str:
