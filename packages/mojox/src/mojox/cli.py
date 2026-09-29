@@ -20,6 +20,8 @@ from typing import IO, TYPE_CHECKING, Any
 from mojox_core import CommandKind
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from mojox_core import (
         Command,
         HostFacts,
@@ -31,6 +33,7 @@ if TYPE_CHECKING:
         Toolchain,
     )
 
+    from .exec import CacheContext
     from .lints import LintFinding
     from .types import Outcome, OutputFormat, OutputMode
 
@@ -54,6 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("file", help="The .mojo file to run")
     run_p.set_defaults(profile="dev")
     _add_common_flags(run_p)
+    _add_no_cache_flag(run_p)
 
     build_p = sub.add_parser("build", help="Compile binary targets")
     build_p.set_defaults(profile="release")
@@ -123,12 +127,7 @@ def _add_test_flags(parser: argparse.ArgumentParser) -> None:
         choices=["immediate", "final", "never"],
         help="When to show failing test output (default: immediate)",
     )
-    parser.add_argument(
-        "--no-cache",
-        action="store_true",
-        default=False,
-        help="Disable binary cache for AOT test compilation",
-    )
+    _add_no_cache_flag(parser)
     parser.add_argument(
         "--bundle",
         action="store_true",
@@ -153,6 +152,16 @@ def _add_test_flags(parser: argparse.ArgumentParser) -> None:
         nargs="*",
         default=[],
         help="Filter tests by path (file or directory prefix)",
+    )
+
+
+def _add_no_cache_flag(parser: argparse.ArgumentParser) -> None:
+    """Add ``--no-cache``, shared by the subcommands that build-then-execute."""
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        default=False,
+        help="Disable the compiled-binary cache (always rebuild)",
     )
 
 
@@ -390,13 +399,46 @@ def _resolve_pipeline(
     return manifest, graph, env, policy, toolchain, host, settings, commands, include_paths
 
 
-def _cmd_test(args: argparse.Namespace) -> None:
-    """Execute the test subcommand."""
+def _make_cache_context(
+    *,
+    lib_paths: Iterable[str],
+    test_roots: Iterable[str],
+    stamped_dirs: Iterable[str],
+    compiler_version: str,
+    no_cache: bool,
+) -> CacheContext:
+    """Compute the per-invocation inputs of the AOT binary cache key.
+
+    Paths are relative to the working directory, which is the project root.
+    Lib and test trees are content-hashed; *stamped_dirs* are stat-stamped
+    in order, so they must list the include dirs in the planner's ``-I``
+    order. The precompile output dir (``.mojox/build/pkg``) belongs in none
+    of them: it is rewritten every run, and its content is a function of
+    the lib sources, the include dirs and the compiler.
+    """
     import hashlib
-    import time
 
     from .cache import hash_directory_tree, stamp_include_dirs
-    from .exec import CacheContext, run_commands
+    from .exec import CacheContext
+
+    root = Path.cwd()
+    pkg_hashes = sorted(hash_directory_tree(root / p) for p in lib_paths)
+    test_hashes = [hash_directory_tree(root / t) for t in test_roots]
+    return CacheContext(
+        project_hash=hashlib.sha256("".join(pkg_hashes).encode()).hexdigest(),
+        tests_tree_hash=hashlib.sha256("".join(test_hashes).encode()).hexdigest(),
+        deps_stamp=stamp_include_dirs(stamped_dirs),
+        compiler_version=compiler_version,
+        meta_dir=root / ".mojox" / "cache" / "meta",
+        enabled=not no_cache,
+    )
+
+
+def _cmd_test(args: argparse.Namespace) -> None:
+    """Execute the test subcommand."""
+    import time
+
+    from .exec import run_commands
     from .output import (
         make_progress_callback,
         render_diagnostics,
@@ -476,35 +518,15 @@ def _cmd_test(args: argparse.Namespace) -> None:
         return
 
     # --- Cache context ---
-    root = Path.cwd()
-
     from mojox_core import TargetKind
 
-    pkg_hashes: list[str] = []
-    for target in graph.targets:
-        if target.kind == TargetKind.LIB:
-            pkg_hashes.append(hash_directory_tree(root / target.path))
-    project_hash = hashlib.sha256("".join(sorted(pkg_hashes)).encode()).hexdigest()
-
-    test_hashes: list[str] = []
-    for test_root in manifest.test_roots:
-        test_hashes.append(hash_directory_tree(root / test_root))
-    tests_tree_hash = hashlib.sha256("".join(test_hashes).encode()).hexdigest()
-
-    # Dependency dirs, in the planner's -I order. The precompile output dir
-    # (.mojox/build/pkg) is deliberately absent: it is rewritten every run,
-    # and its content is a function of the lib sources (project_hash), these
-    # dirs and the compiler.
-    deps_stamp = stamp_include_dirs(include_paths)
-
     no_cache = getattr(args, "no_cache", False)
-    cache_ctx = CacheContext(
-        project_hash=project_hash,
-        tests_tree_hash=tests_tree_hash,
-        deps_stamp=deps_stamp,
+    cache_ctx = _make_cache_context(
+        lib_paths=[t.path for t in graph.targets if t.kind == TargetKind.LIB],
+        test_roots=manifest.test_roots,
+        stamped_dirs=include_paths,
         compiler_version=toolchain.version,
-        meta_dir=root / ".mojox" / "cache" / "meta",
-        enabled=not no_cache,
+        no_cache=no_cache,
     )
 
     # --- Bundle mode ---
@@ -518,9 +540,9 @@ def _cmd_test(args: argparse.Namespace) -> None:
             settings=settings,
             commands=commands,
             include_paths=include_paths,
-            project_hash=project_hash,
-            tests_tree_hash=tests_tree_hash,
-            deps_stamp=deps_stamp,
+            project_hash=cache_ctx.project_hash,
+            tests_tree_hash=cache_ctx.tests_tree_hash,
+            deps_stamp=cache_ctx.deps_stamp,
             output_format=output_format,
             filter_pattern=filter_pattern,
             no_cache=no_cache,
@@ -806,22 +828,29 @@ def _run_bundle_test(
 
 
 def _cmd_run(args: argparse.Namespace) -> None:
-    """Execute the run subcommand for a single file."""
+    """Build the file to a cached binary, run it, and exit with its exit code.
+
+    Takes the ``mojox test`` build-then-execute path, so an unchanged file
+    and unchanged imports reuse the binary. The program's captured stdout
+    and stderr (build diagnostics first) are replayed once it exits. A
+    build failure exits non-zero even when the compiler itself exited 0.
+    """
     from mojox_core import (
         ConfigError,
         parse_manifest,
         plan,
         resolve,
     )
-    from mojox_core.types import LintConfig, Policy, Target, TargetGraph, TargetKind
     from mojox_core.environment import build_env
     from mojox_core.io.environment import read_distributions, read_host_facts, read_lockfile
     from mojox_core.io.manifest import read as read_manifest
     from mojox_core.io.toolchain import resolve as resolve_toolchain
+    from mojox_core.types import LintConfig, Policy, Target, TargetGraph, TargetKind
 
-    from .exec import run_command
+    from .exec import run_commands
     from .output import render_diagnostics
     from .settings_reader import read_settings
+    from .types import OutcomeKind
 
     root = Path.cwd()
 
@@ -908,15 +937,30 @@ def _cmd_run(args: argparse.Namespace) -> None:
 
     include_paths = tuple(dict.fromkeys(list(policy.include_paths) + [d.include_dir for d in env.include_sequence]))
 
-    outcome = run_command(
-        commands[0],
+    # The compiler resolves imports from the file's own directory too, so
+    # sibling modules are stamped ahead of the -I dirs.
+    cache_ctx = _make_cache_context(
+        lib_paths=(manifest.packages or ()) if manifest is not None else (),
+        test_roots=(),
+        stamped_dirs=(str((root / args.file).parent), *include_paths),
+        compiler_version=toolchain.version,
+        no_cache=args.no_cache,
+    )
+    outcomes = run_commands(
+        commands,
         extra_env=settings.env if settings.env else None,
         include_paths=include_paths,
+        cache_context=cache_ctx,
     )
-    print(outcome.stdout, end="")
-    if outcome.stderr:
-        print(outcome.stderr, end="", file=sys.stderr)
-    sys.exit(outcome.exit_code if outcome.exit_code is not None else 1)
+    for outcome in outcomes:
+        print(outcome.stdout, end="")
+        if outcome.stderr:
+            print(outcome.stderr, end="", file=sys.stderr)
+    # The program is planned last: anything before it is a prerequisite.
+    final = outcomes[-1]
+    if final.kind == OutcomeKind.PASS:
+        sys.exit(0)
+    sys.exit(final.exit_code or 1)
 
 
 def _cmd_build(args: argparse.Namespace) -> None:

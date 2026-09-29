@@ -581,3 +581,122 @@ class TestCacheInvalidatesOnDependencyChange:
         (Path.cwd() / "src" / "util.mojo").write_text("fn u(): return\n")
         assert self._run("--bundle") == 0
         assert len(log.read_text().splitlines()) == 2
+
+
+# Fake ``mojo build`` for ``mojox run``: fails with a diagnostic when the
+# source contains COMPILE_ERROR, else emits a program that prints the
+# source's ``# out:`` line, one stderr line, and exits with its ``# exit:``.
+_FAKE_MOJO_PROGRAM = """#!{python}
+import pathlib, re, stat, sys
+args = sys.argv[1:]
+assert args[0] == "build", args
+src = pathlib.Path(args[1]).read_text()
+with open({log!r}, "a") as f:
+    f.write(args[1] + "\\n")
+if "COMPILE_ERROR" in src:
+    print(args[1] + ":1:1: error: use of unknown declaration", file=sys.stderr)
+    sys.exit(1)
+out_line = re.search(r"# out: (.*)", src).group(1)
+code = int(re.search(r"# exit: (\\d+)", src).group(1))
+out = pathlib.Path(args[args.index("-o") + 1])
+out.write_text(
+    "#!{python}\\nimport sys\\n"
+    f"print({{out_line!r}})\\n"
+    "print('program-stderr', file=sys.stderr)\\n"
+    f"sys.exit({{code}})\\n"
+)
+out.chmod(out.stat().st_mode | stat.S_IEXEC)
+"""
+
+
+class TestRunExecutesProgram:
+    """``mojox run`` end to end with a fake compiler: the built program runs, cached."""
+
+    @pytest.fixture
+    def project(self, tmp_path, monkeypatch):
+        """Project with a runnable file and a sibling module, wired to a fake ``mojo``."""
+        from mojox_core import Toolchain
+
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (proj / "pyproject.toml").write_text('[project]\nname = "app"\nversion = "0.1.0"\n')
+        (proj / "util.mojo").write_text("fn u(): pass\n")
+
+        log = tmp_path / "builds.log"
+        log.touch()
+        fake = tmp_path / "bin" / "mojo"
+        fake.parent.mkdir()
+        fake.write_text(_FAKE_MOJO_PROGRAM.format(python=sys.executable, log=str(log)))
+        fake.chmod(0o755)
+
+        toolchain = Toolchain(mojo_path=str(fake), version="1.0.0", subcommand="precompile", extension=".mojoc")
+        monkeypatch.setattr("mojox_core.io.toolchain.resolve", lambda: toolchain)
+        monkeypatch.setattr("mojox_core.io.environment.read_distributions", list)
+        monkeypatch.chdir(proj)
+        return proj, log
+
+    @staticmethod
+    def _run(*argv: str) -> int:
+        from mojox.cli import _cmd_run
+
+        args = build_parser().parse_args(["run", "--no-config", *argv])
+        with pytest.raises(SystemExit) as exc:
+            _cmd_run(args)
+        return exc.value.code
+
+    @pytest.mark.parametrize("code", [0, 3])
+    def test_prints_program_output_and_exits_with_its_code(self, project, capsys, code):
+        proj, _log = project
+        (proj / "hello.mojo").write_text(f"# out: hello from mojo\n# exit: {code}\n")
+        assert self._run("hello.mojo") == code
+        captured = capsys.readouterr()
+        assert captured.out == "hello from mojo\n"
+        assert "program-stderr" in captured.err
+
+    def test_build_failure_exits_nonzero_with_diagnostic(self, project, capsys):
+        proj, _log = project
+        (proj / "bad.mojo").write_text("COMPILE_ERROR\n")
+        assert self._run("bad.mojo") not in (0, None)
+        assert "error: use of unknown declaration" in capsys.readouterr().err
+
+    def test_second_run_is_a_cache_hit(self, project, capsys):
+        proj, log = project
+        (proj / "hello.mojo").write_text("# out: hi\n# exit: 0\n")
+        assert self._run("hello.mojo") == 0
+        assert self._run("hello.mojo") == 0
+        assert capsys.readouterr().out == "hi\nhi\n"
+        assert len(log.read_text().splitlines()) == 1
+
+    def test_source_edit_rebuilds(self, project, capsys):
+        proj, log = project
+        (proj / "hello.mojo").write_text("# out: one\n# exit: 0\n")
+        assert self._run("hello.mojo") == 0
+        (proj / "hello.mojo").write_text("# out: two\n# exit: 0\n")
+        assert self._run("hello.mojo") == 0
+        assert capsys.readouterr().out == "one\ntwo\n"
+        assert len(log.read_text().splitlines()) == 2
+
+    def test_sibling_module_edit_rebuilds(self, project):
+        proj, log = project
+        (proj / "hello.mojo").write_text("# out: hi\n# exit: 0\n")
+        assert self._run("hello.mojo") == 0
+        (proj / "util.mojo").write_text("fn u(): return\n")
+        assert self._run("hello.mojo") == 0
+        assert len(log.read_text().splitlines()) == 2
+
+    def test_no_cache_always_rebuilds(self, project, capsys):
+        proj, log = project
+        (proj / "hello.mojo").write_text("# out: hi\n# exit: 0\n")
+        assert self._run("--no-cache", "hello.mojo") == 0
+        assert self._run("--no-cache", "hello.mojo") == 0
+        assert capsys.readouterr().out == "hi\nhi\n"
+        assert len(log.read_text().splitlines()) == 2
+
+    def test_dry_run_shows_plan_without_building(self, project, capsys):
+        proj, log = project
+        (proj / "hello.mojo").write_text("# out: hi\n# exit: 0\n")
+        from mojox.cli import _cmd_run
+
+        _cmd_run(build_parser().parse_args(["run", "--no-config", "--dry-run", "hello.mojo"]))
+        assert "build hello.mojo" in capsys.readouterr().err
+        assert log.read_text() == ""
