@@ -30,7 +30,7 @@ PSR will:
 3. Update `version` in `pyproject.toml`
 4. Run `uv lock` so the root `uv.lock` records the new version
 5. Commit (including `uv.lock`), tag, and push
-6. Create a GitHub Release (with `uv.lock` attached as an asset)
+6. Create a GitHub Release
 7. Build and publish to PyPI via trusted publishing (OIDC)
 
 If no bump-worthy commits exist, the workflow exits cleanly without releasing.
