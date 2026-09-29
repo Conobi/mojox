@@ -644,14 +644,17 @@ def _run_bundle_test(
     """
     import time
 
-    from mojox_core import TargetKind, plan as plan_fn
+    from mojox_core import TargetKind
+    from mojox_core import plan as plan_fn
     from mojox_core.bundle import (
         TestModule,
         discover_test_functions,
         file_path_to_module_path,
         generate_harness,
     )
-    from mojox_core.types import Policy as PolicyT, Target, TargetGraph as TG
+    from mojox_core.types import Policy as PolicyT
+    from mojox_core.types import Target
+    from mojox_core.types import TargetGraph as TG
 
     from .cache import stamp_include_dirs
     from .exec import CacheContext, run_commands
@@ -662,7 +665,7 @@ def _run_bundle_test(
         render_summary,
     )
     from .staging import cleanup_staging, create_bundle_staging
-    from .types import OutputFormat, OutputMode
+    from .types import OutputFormat
 
     root = Path.cwd()
 
