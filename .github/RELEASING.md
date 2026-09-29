@@ -6,8 +6,10 @@ This repo publishes three packages independently:
 - `mojox-build` → automated via python-semantic-release (PSR)
 - `mojox-core` → manual version bump + tag push
 
-All releases publish directly to PyPI. There is no TestPyPI step — CI
-(ruff + mypy + pytest + build matrix) validates the code before release.
+Every release goes through a **draft GitHub Release** first. Nothing is
+uploaded to PyPI until a maintainer reviews the notes and publishes the draft.
+There is no TestPyPI step — CI (ruff + mypy + pytest + build matrix) validates
+the code before release.
 
 ## mojox & mojox-build (PSR-powered)
 
@@ -18,27 +20,14 @@ Version bumps are determined automatically from conventional commit messages:
 - `feat!:` or `BREAKING CHANGE:` footer → major bump (0.5.0 → 1.0.0)
 - `chore:`, `refactor:`, `docs:`, `test:`, `ci:` → no bump
 
-### To release
-
 1. Go to **Actions → Release → Run workflow**
-2. Select the package (`mojox` or `mojox-build`)
-3. Click **Run workflow**
+2. Select the package (`mojox` or `mojox-build`) and run it
 
-PSR will:
-1. Analyze commits since the last tag for that package
-2. Determine the bump level from commit messages
-3. Update `version` in `pyproject.toml`
-4. Run `uv lock` so the root `uv.lock` records the new version
-5. Commit (including `uv.lock`), tag, and push
-6. Create a GitHub Release
-7. Build and publish to PyPI via trusted publishing (OIDC)
+PSR bumps `version` in `pyproject.toml`, runs `uv lock`, then commits
+(including `uv.lock`), tags and pushes. The workflow then creates a draft
+release for the tag. If no bump-worthy commits exist, it exits cleanly.
 
-If no bump-worthy commits exist, the workflow exits cleanly without releasing.
-
-## Manual release (any package)
-
-Any package can be released manually via tag push. This is the primary
-method for mojox-core, and a fallback for mojox and mojox-build.
+## mojox-core (manual tag push, also a fallback for the others)
 
 ```bash
 # 1. Bump version in pyproject.toml
@@ -53,11 +42,27 @@ git tag <package>-v<version>
 git push origin main --tags
 ```
 
-The release workflow automatically:
-1. Verifies the tag version matches `pyproject.toml`
-2. Builds with `uv build --package <package>`
-3. Publishes to PyPI via `uv publish --trusted-publishing always`
-4. Creates a GitHub Release
+The workflow verifies the tag against `pyproject.toml` and creates a draft
+release. Re-running it when a release already exists for the tag is a no-op.
+
+## Review and publish
+
+1. Open **Releases** on GitHub: the draft (`<package> v<version>`, notes
+   "Release notes pending review.") is listed only to users with write access.
+2. Edit the notes (**Generate release notes** helps as a starting point).
+3. Publish it from the web UI, or with
+   `gh release edit <package>-v<version> --draft=false`.
+
+Publishing fires the `release: published` event, and the `publish-pypi` job
+builds that tag and uploads it to PyPI via trusted publishing (OIDC). The
+draft must be published from your own account: events caused by the
+workflow's `GITHUB_TOKEN` do not start workflow runs.
+
+- **PyPI job failed?** Fix the cause and use **Re-run jobs** on that run in
+  Actions. Re-running reuses the original event, so it builds the same tag.
+- **Marked as pre-release?** The job refuses GitHub pre-releases. Untick
+  "pre-release", set the release back to draft, and publish it again.
+  PEP 440 pre-release versions (e.g. `1.0.0rc1`) are fine as regular releases.
 
 ## Release ordering
 

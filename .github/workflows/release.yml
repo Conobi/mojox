@@ -1,13 +1,21 @@
 name: Release
 
-# Mode A: workflow_dispatch — PSR-powered release for mojox / mojox-build
-# Mode B: tag push — manual release for any package
+# Nothing reaches PyPI until a maintainer reviews and publishes a draft release.
+#
+# Drafting creates the version tag and a DRAFT GitHub Release:
+#   Mode A: workflow_dispatch — PSR bumps, commits, tags and pushes mojox / mojox-build
+#   Mode B: tag push — manual tag for any package (primary path for mojox-core)
+# Publishing the draft (release: published) builds that tag and uploads it to
+#   PyPI. Events caused by GITHUB_TOKEN start no workflow runs, so only the
+#   maintainer's own publish reaches the publish-pypi job.
 on:
   push:
     tags:
       - 'mojox-v*'
       - 'mojox-build-v*'
       - 'mojox-core-v*'
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       package:
@@ -18,7 +26,7 @@ on:
           - mojox
           - mojox-build
 
-# ── Mode A: PSR release ─────────────────────────────────────────────
+# ── Drafting, Mode A: PSR release ───────────────────────────────────
 
 jobs:
   release:
@@ -30,9 +38,6 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: write
-    outputs:
-      released: ${{ steps.version.outputs.released }}
-      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -55,136 +60,193 @@ jobs:
       - name: Install semantic-release
         run: uv tool install python-semantic-release==10.7.0
 
+      # --no-vcs-release: PSR still commits, tags and pushes, but can only
+      # create published releases, so the draft is created below instead.
       - name: Determine version
         id: version
         working-directory: packages/${{ github.event.inputs.package }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PACKAGE: ${{ github.event.inputs.package }}
         run: |
           set -euo pipefail
           BEFORE=$(git describe --tags --abbrev=0 2>/dev/null || echo "none")
-          semantic-release version --no-changelog
+          semantic-release version --no-changelog --no-vcs-release
           AFTER=$(git describe --tags --abbrev=0 2>/dev/null || echo "none")
           if [ "$BEFORE" != "$AFTER" ]; then
-            echo "released=true" >> "$GITHUB_OUTPUT"
-            echo "tag=$AFTER" >> "$GITHUB_OUTPUT"
+            {
+              echo "released=true"
+              echo "tag=$AFTER"
+              echo "version=${AFTER#"${PACKAGE}"-v}"
+            } >> "$GITHUB_OUTPUT"
             echo "Released: $AFTER"
           else
             echo "released=false" >> "$GITHUB_OUTPUT"
             echo "No release needed"
           fi
 
-      - name: Publish to GitHub
+      - name: Create draft GitHub Release
         if: steps.version.outputs.released == 'true'
-        working-directory: packages/${{ github.event.inputs.package }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: semantic-release publish
+          TAG: ${{ steps.version.outputs.tag }}
+          TITLE: ${{ github.event.inputs.package }} v${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          existing=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" \
+                       --jq '.[] | select(.tag_name == env.TAG) | .html_url')
+          if [ -n "$existing" ]; then
+            echo "Release for $TAG already exists: $existing"
+            exit 0
+          fi
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+            --title "$TITLE" --notes "Release notes pending review."
 
-  deploy:
-    name: Publish to PyPI
-    if: github.event_name == 'workflow_dispatch' && needs.release.outputs.released == 'true'
-    needs: release
+  # ── Drafting, Mode B: manual tag push ───────────────────────────────
+
+  draft-tag:
+    name: Draft release (tag push)
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    concurrency:
+      group: draft-${{ github.ref_name }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine package from tag
+        id: pkg
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          case "$TAG" in
+            mojox-build-v*) name="mojox-build" ;;
+            mojox-core-v*)  name="mojox-core" ;;
+            mojox-v*)       name="mojox" ;;
+            *) echo "Unrecognized tag: $TAG" >&2; exit 1 ;;
+          esac
+          version="${TAG#"${name}"-v}"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+(\.[0-9]+)*([A-Za-z0-9.+-]*)$'; then
+            echo "Malformed version in tag: $TAG" >&2
+            exit 1
+          fi
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag matches pyproject.toml version
+        env:
+          NAME: ${{ steps.pkg.outputs.name }}
+          VERSION: ${{ steps.pkg.outputs.version }}
+        run: |
+          set -euo pipefail
+          declared=$(grep -E '^version[[:space:]]*=' "packages/${NAME}/pyproject.toml" \
+                       | head -1 | cut -d'"' -f2)
+          if [ "$declared" != "$VERSION" ]; then
+            echo "Tag version ($VERSION) does not match packages/${NAME}/pyproject.toml ($declared)" >&2
+            exit 1
+          fi
+          echo "Drafting release for ${NAME} ${VERSION}"
+
+      - name: Create draft GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          TITLE: ${{ steps.pkg.outputs.name }} v${{ steps.pkg.outputs.version }}
+        run: |
+          set -euo pipefail
+          existing=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" \
+                       --jq '.[] | select(.tag_name == env.TAG) | .html_url')
+          if [ -n "$existing" ]; then
+            echo "Release for $TAG already exists: $existing"
+            exit 0
+          fi
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+            --title "$TITLE" --notes "Release notes pending review."
+
+  # ── Publishing: upload the published release's tag to PyPI ──────────
+
+  publish-pypi:
+    name: Publish to PyPI (${{ github.event.release.tag_name }})
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pypi-${{ github.event.release.tag_name }}
+      cancel-in-progress: false
     permissions:
       id-token: write
       contents: read
     environment:
       name: pypi
-      url: https://pypi.org/project/${{ github.event.inputs.package }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.release.outputs.tag }}
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          enable-cache: true
-
-      - name: Build
+      # GitHub pre-releases are refused rather than skipped, so the run shows
+      # why nothing was uploaded. PEP 440 pre-release versions (e.g. 1.0.0rc1)
+      # are fine: publish them as regular GitHub releases.
+      - name: Refuse GitHub pre-releases
+        if: github.event.release.prerelease
         run: |
-          rm -rf dist/
-          uv build --package "${{ github.event.inputs.package }}"
-          ls -la dist/
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          print-hash: true
-
-  # ── Mode B: manual tag-push release ─────────────────────────────────
-
-  publish-tag:
-    name: Publish (tag push)
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: write
-    environment:
-      name: pypi
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          enable-cache: true
+          echo "GitHub pre-releases are not uploaded to PyPI. Untick 'pre-release'," >&2
+          echo "revert the release to draft, then publish it again." >&2
+          exit 1
 
       - name: Determine package from tag
         id: pkg
+        env:
+          TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          case "$tag" in
-            mojox-build-v*)
-              name="mojox-build"
-              version="${tag#mojox-build-v}"
-              ;;
-            mojox-core-v*)
-              name="mojox-core"
-              version="${tag#mojox-core-v}"
-              ;;
-            mojox-v*)
-              name="mojox"
-              version="${tag#mojox-v}"
-              ;;
-            *)
-              echo "Unrecognized tag: $tag" >&2
-              exit 1
-              ;;
+          case "$TAG" in
+            mojox-build-v*) name="mojox-build" ;;
+            mojox-core-v*)  name="mojox-core" ;;
+            mojox-v*)       name="mojox" ;;
+            *) echo "Unrecognized tag: $TAG" >&2; exit 1 ;;
           esac
+          version="${TAG#"${name}"-v}"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+(\.[0-9]+)*([A-Za-z0-9.+-]*)$'; then
+            echo "Malformed version in tag: $TAG" >&2
+            exit 1
+          fi
           echo "name=${name}" >> "$GITHUB_OUTPUT"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ github.event.release.tag_name }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
       - name: Verify tag matches pyproject.toml version
+        env:
+          NAME: ${{ steps.pkg.outputs.name }}
+          VERSION: ${{ steps.pkg.outputs.version }}
         run: |
           set -euo pipefail
-          declared=$(grep -E '^version[[:space:]]*=' \
-                       "packages/${{ steps.pkg.outputs.name }}/pyproject.toml" \
+          declared=$(grep -E '^version[[:space:]]*=' "packages/${NAME}/pyproject.toml" \
                        | head -1 | cut -d'"' -f2)
-          if [ "$declared" != "${{ steps.pkg.outputs.version }}" ]; then
-            echo "Tag version (${{ steps.pkg.outputs.version }}) does not match" \
-                 "packages/${{ steps.pkg.outputs.name }}/pyproject.toml ($declared)" >&2
+          if [ "$declared" != "$VERSION" ]; then
+            echo "Tag version ($VERSION) does not match packages/${NAME}/pyproject.toml ($declared)" >&2
             exit 1
           fi
-          echo "Releasing ${{ steps.pkg.outputs.name }} ${{ steps.pkg.outputs.version }}"
+          echo "Publishing ${NAME} ${VERSION}"
 
       - name: Build
+        env:
+          NAME: ${{ steps.pkg.outputs.name }}
         run: |
+          set -euo pipefail
           rm -rf dist/
-          uv build --package "${{ steps.pkg.outputs.name }}"
+          uv build --package "$NAME" --out-dir dist
           ls -la dist/
 
+      # pypa's action also generates and uploads PEP 740 attestations, which
+      # `uv publish` cannot produce.
       - name: Publish to PyPI
-        run: uv publish --trusted-publishing always dist/*
-
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "${{ steps.pkg.outputs.name }} v${{ steps.pkg.outputs.version }}" \
-            --generate-notes
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          print-hash: true

@@ -42,7 +42,7 @@ allow_zero_version = true
 # commit. The command runs from this package dir, hence `../../uv.lock`. Do not
 # list uv.lock in `assets`: PSR also uploads assets to the GitHub Release,
 # resolving them from this dir, where no uv.lock exists.
-# Distributions are built by the deploy job, not here.
+# Distributions are built by the publish-pypi job, not here.
 build_command = "uv lock && git add ../../uv.lock"
 
 [tool.semantic_release.commit_parser_options]
