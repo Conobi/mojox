@@ -16,13 +16,18 @@ import time
 import zipfile
 from base64 import urlsafe_b64encode
 from fnmatch import fnmatch
+from importlib.metadata import version as _dist_version
 from pathlib import Path
 
 from mojox_core import BinaryEntry, Manifest, Policy, Toolchain
 
 from .metadata import render_metadata, render_wheel_file
 
-GENERATOR_VERSION = "0.6.0"
+# Single source of truth is pyproject.toml, read via installed metadata so
+# release tooling only bumps one place. Deliberately no fallback: a PEP 517
+# backend always runs installed, and a bogus version stamped into wheel
+# metadata would be worse than a loud PackageNotFoundError.
+GENERATOR_VERSION = _dist_version("mojox-build")
 
 
 def _normalize_name(name: str) -> str:
