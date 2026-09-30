@@ -1,96 +1,128 @@
-# Releasing
+# Releasing mojox, mojox-core and mojox-build
 
-This repo publishes three packages independently:
+Each package is released on its own, in two phases: you **create a draft release**, then you **publish the draft**. Publishing the draft uploads the package to PyPI, so nothing goes public until you've reviewed the release notes.
 
-- `mojox` → automated via python-semantic-release (PSR)
-- `mojox-build` → automated via python-semantic-release (PSR)
-- `mojox-core` → manual version bump + tag push
+> ⚠️ **Publish drafts from your own GitHub account.** A draft published by a workflow doesn't trigger the PyPI upload.
+>
+> ⚠️ **Release mojox-core first** when a change spans mojox-core and another package.
 
-Every release goes through a **draft GitHub Release** first. Nothing is
-uploaded to PyPI until a maintainer reviews the notes and publishes the draft.
-There is no TestPyPI step — CI (ruff + mypy + pytest + build matrix) validates
-the code before release.
+---
 
-## mojox & mojox-build (PSR-powered)
+## One-time setup
 
-Version bumps are determined automatically from conventional commit messages:
+### What You'll Need
+- Maintainer access to the `Conobi/mojox` GitHub repository
+- Owner access to the three projects on PyPI
 
-- `fix:` → patch bump (0.5.0 → 0.5.1)
-- `feat:` → minor bump (0.5.0 → 0.6.0)
-- `feat!:` or `BREAKING CHANGE:` footer → major bump (0.5.0 → 1.0.0)
-- `chore:`, `refactor:`, `docs:`, `test:`, `ci:` → no bump
+### Steps
 
-1. Go to **Actions → Release → Run workflow**
-2. Select the package (`mojox` or `mojox-build`) and run it
+1. **Create the GitHub environment**
+   - Go to **Settings → Environments** on the repository
+   - Create an environment named `pypi` (no other configuration needed)
 
-PSR bumps `version` in `pyproject.toml`, runs `uv lock`, then commits
-(including `uv.lock`), tags and pushes. The workflow then creates a draft
-release for the tag. If no bump-worthy commits exist, it exits cleanly.
+2. **Add a trusted publisher for each package**
+   - Open the package's PyPI publishing settings:
+     - `mojox`: <https://pypi.org/manage/project/mojox/settings/publishing/>
+     - `mojox-build`: <https://pypi.org/manage/project/mojox-build/settings/publishing/>
+     - `mojox-core`: <https://pypi.org/manage/project/mojox-core/settings/publishing/>
+   - Click **Add a new publisher** and enter:
+     - Owner: `Conobi`
+     - Repository name: `mojox`
+     - Workflow name: `release.yml`
+     - Environment name: `pypi`
+   - For a brand-new package, add a **pending publisher** at <https://pypi.org/manage/account/publishing/> instead
 
-## mojox-core (manual tag push, also a fallback for the others)
+> ✅ No API token is stored anywhere: the workflow exchanges its GitHub OIDC token for a short-lived PyPI credential ([trusted publishing](https://docs.pypi.org/trusted-publishers/)).
 
-```bash
-# 1. Bump version in pyproject.toml
-$EDITOR packages/<package>/pyproject.toml
+---
 
-# 2. Refresh the lock so it records the new version
-uv lock
+## Release mojox or mojox-build
 
-# 3. Commit + tag + push
-git commit -m "chore: release <package> <version>" -- packages/<package>/pyproject.toml uv.lock
-git tag <package>-v<version>
-git push origin main --tags
-```
+The version is computed from the commit messages since the last release (see [Version bumps](#version-bumps)).
 
-The workflow verifies the tag against `pyproject.toml` and creates a draft
-release. Re-running it when a release already exists for the tag is a no-op.
+1. **Start the release**
+   - Go to **Actions → Release → Run workflow**
+   - Select `mojox` or `mojox-build`
+   - Click **Run workflow**
 
-## Review and publish
+2. **Check the result**
+   - A commit `chore: release <package> <version>` appears on `main`, with the new version and the updated `uv.lock`
+   - A tag `<package>-v<version>` and a draft release appear
+   - If no commit calls for a new version, the workflow ends without releasing
 
-1. Open **Releases** on GitHub: the draft (`<package> v<version>`, notes
-   "Release notes pending review.") is listed only to users with write access.
-2. Edit the notes (**Generate release notes** helps as a starting point).
-3. Publish it from the web UI, or with
-   `gh release edit <package>-v<version> --draft=false`.
+3. **Publish the draft** (see [Publish the draft](#publish-the-draft))
 
-Publishing fires the `release: published` event, and the `publish-pypi` job
-builds that tag and uploads it to PyPI via trusted publishing (OIDC). The
-draft must be published from your own account: events caused by the
-workflow's `GITHUB_TOKEN` do not start workflow runs.
+---
 
-- **PyPI job failed?** Fix the cause and use **Re-run jobs** on that run in
-  Actions. Re-running reuses the original event, so it builds the same tag.
-- **Marked as pre-release?** The job refuses GitHub pre-releases. Untick
-  "pre-release", set the release back to draft, and publish it again.
-  PEP 440 pre-release versions (e.g. `1.0.0rc1`) are fine as regular releases.
+## Release mojox-core
 
-## Release ordering
+mojox-core is released by pushing a tag. This also works for mojox and mojox-build if the workflow above is unavailable.
 
-When a change spans mojox-core and a dependent package:
-1. Release mojox-core first (manual tag-push)
-2. Verify it's available on PyPI
-3. Then trigger the dependent's release via workflow dispatch
+1. **Bump the version**
+   - Edit `version` in `packages/<package>/pyproject.toml`
+   - Run `uv lock` so the lockfile records the new version
 
-## Trusted publishing setup
+2. **Commit, tag and push**
+   ```bash
+   git commit -m "chore: release <package> <version>" -- packages/<package>/pyproject.toml uv.lock
+   git tag <package>-v<version>
+   git push origin main <package>-v<version>
+   ```
 
-PyPI [trusted publishing](https://docs.pypi.org/trusted-publishers/) is configured per package.
-No API tokens are stored — the workflow exchanges its GitHub OIDC token for an ephemeral PyPI credential.
+3. **Check the result**
+   - The Release workflow checks that the tag matches `pyproject.toml`
+   - A draft release appears for the tag
+   - Running it again for the same tag does nothing
 
-### For each package
+4. **Publish the draft** (see below)
 
-1. Go to the package's PyPI publishing settings:
-   - `mojox`: <https://pypi.org/manage/project/mojox/settings/publishing/>
-   - `mojox-build`: <https://pypi.org/manage/project/mojox-build/settings/publishing/>
-   - `mojox-core`: <https://pypi.org/manage/project/mojox-core/settings/publishing/>
-2. **Add a new publisher** with:
-   - Owner: `Conobi`
-   - Repository name: `mojox`
-   - Workflow name: `release.yml`
-   - Environment name: `pypi`
+---
 
-For a brand-new package, use a **pending publisher** at <https://pypi.org/manage/account/publishing/>.
+## Publish the draft
 
-## GitHub environments
+1. **Open the draft**
+   - Go to **Releases** on GitHub
+   - Find the draft `<package> v<version>` with the text "Release notes pending review."
+   - Only users with write access can see drafts
 
-Create a `pypi` environment in **Settings → Environments** on the repo
-(no special config needed, just the name).
+2. **Write the release notes**
+   - Replace the placeholder text with the approved notes
+   - **Generate release notes** gives you a list of commits to start from
+
+3. **Publish it**
+   - Click **Publish release**, or run `gh release edit <package>-v<version> --draft=false`
+   - The **Publish to PyPI** job starts in **Actions**, builds the tagged version and uploads it
+
+4. **Check PyPI**
+   - The new version appears on the package's PyPI page within a few minutes
+
+---
+
+## When a change spans mojox-core and another package
+
+1. Release mojox-core and publish its draft
+2. Check that the new mojox-core version is on PyPI
+3. Release the other package
+
+---
+
+## If Something Fails
+
+- **The PyPI job failed**: fix the cause, then click **Re-run jobs** on that run in **Actions**. It rebuilds the same tag.
+- **The release was marked as a pre-release**: the PyPI job refuses pre-releases. Untick **Set as a pre-release**, set the release back to draft, and publish it again. Pre-release version numbers such as `1.0.0rc1` are fine as regular releases.
+- **Nothing reached PyPI after publishing**: check that you published the draft from your own account, not from a workflow.
+
+---
+
+## Version bumps
+
+For mojox and mojox-build, the commit types since the last release decide the new version:
+
+| Commit type | Bump | Example |
+|---|---|---|
+| `fix:` | patch | 0.5.0 → 0.5.1 |
+| `feat:` | minor | 0.5.0 → 0.6.0 |
+| `feat!:` or a `BREAKING CHANGE:` footer | major | 0.5.0 → 1.0.0 |
+| `chore:`, `refactor:`, `docs:`, `test:`, `ci:` | none | — |
+
+There is no TestPyPI step: CI (ruff, mypy, pytest and the build matrix) checks the code before any release.
