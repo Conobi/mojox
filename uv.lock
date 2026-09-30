@@ -33,7 +33,7 @@ wheels = [
 
 [[package]]
 name = "mojox"
-version = "0.6.1"
+version = "0.6.2"
 source = { editable = "packages/mojox" }
 dependencies = [
     { name = "mojo-compiler" },
