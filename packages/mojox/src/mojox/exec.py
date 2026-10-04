@@ -356,6 +356,8 @@ def run_command(
     inherited. Parent directories of ``cmd.outputs`` are created first,
     resolving relative outputs against ``cmd.cwd`` as the child will.
     A transient ETXTBSY from execve is retried (see :func:`_spawn`).
+    Output is decoded as UTF-8 with invalid bytes replaced, so a child that
+    aborts mid-write (or prints raw bytes) still yields an Outcome.
 
     Args:
         cmd: The command to execute.
@@ -383,7 +385,8 @@ def run_command(
             cwd=str(cmd.cwd),
             env=env,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=cmd.timeout_s,
         )
     except subprocess.TimeoutExpired as e:

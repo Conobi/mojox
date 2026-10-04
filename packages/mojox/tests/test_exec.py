@@ -61,6 +61,14 @@ class TestRunCommand:
         assert outcome.kind == OutcomeKind.PASS
         assert "err" in outcome.stderr
 
+    def test_non_utf8_output_reported_as_failure(self):
+        script = "import os, sys; os.write(1, b'out\\xff\\xfe'); os.write(2, b'err\\xff\\xfe'); sys.exit(134)"
+        outcome = run_command(_cmd((sys.executable, "-c", script)))
+        assert outcome.kind == OutcomeKind.FAIL
+        assert outcome.exit_code == 134
+        assert outcome.stdout == "out��"
+        assert outcome.stderr == "err��"
+
     def test_timeout_produces_timeout_outcome(self):
         cmd = _cmd(
             (sys.executable, "-c", "import time; time.sleep(60)"),
