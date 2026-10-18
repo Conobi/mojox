@@ -43,13 +43,15 @@ def _serialize_kind(kind: CommandKind) -> str:
     return str(kind.value)
 
 
-def serialize_suite_started(test_count: int) -> dict[str, Any]:
-    """Build the suite:started event dict."""
+def serialize_suite_started(test_count: int, *, jobs: int, compile_threads: int) -> dict[str, Any]:
+    """Build the suite:started event dict; *jobs* is the worker count actually applied."""
     return {
         "type": "suite",
         "event": "started",
         "test_count": test_count,
         "schema_version": _SCHEMA_VERSION,
+        "jobs": jobs,
+        "compile_threads": compile_threads,
     }
 
 

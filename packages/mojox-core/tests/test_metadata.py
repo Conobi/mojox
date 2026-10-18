@@ -12,6 +12,7 @@ from mojox_core.types import (
     Diagnostic,
     DistEntry,
     DistKind,
+    HostFacts,
     LintConfig,
     Policy,
     ResolvedEnv,
@@ -48,6 +49,8 @@ def _make_fixture():
         jobs_compile=1,
         jobs_tests=1,
         timeout_s=300,
+        compile_threads=1,
+        jobs_spec="1",
     )
     commands = (
         Command(
@@ -106,3 +109,46 @@ class TestSerialization:
         doc = serialize(graph, env, policy, commands, toolchain, diags)
         assert len(doc["diagnostics"]) == 1
         assert doc["diagnostics"][0]["message"] == "test warning"
+
+
+_LEGACY_POLICY_KEYS = ["optimize", "debug_level", "defines", "flags", "jobs", "jobs_compile", "jobs_tests", "timeout_s"]
+
+
+class TestParallelism:
+    def test_policy_reports_compile_threads_and_jobs_spec(self):
+        graph, env, policy, commands, toolchain = _make_fixture()
+        doc = serialize(graph, env, policy, commands, toolchain, ())
+        assert list(doc["policy"]) == [*_LEGACY_POLICY_KEYS, "compile_threads", "jobs_spec"]
+        assert doc["policy"]["compile_threads"] == 1
+        assert doc["policy"]["jobs_spec"] == "1"
+
+    def test_host_reports_cpu_count_and_source(self):
+        graph, env, policy, commands, toolchain = _make_fixture()
+        host = HostFacts(
+            cpu_count=8,
+            available_memory_mb=16384,
+            manifest_dir=PurePosixPath("/project"),
+            locale_env={"LANG": "C.UTF-8"},
+            cpu_count_source="cgroup",
+        )
+        doc = serialize(graph, env, policy, commands, toolchain, (), host=host)
+        assert doc["host"] == {"cpu_count": 8, "cpu_count_source": "cgroup"}
+
+    def test_host_is_null_when_not_given(self):
+        graph, env, policy, commands, toolchain = _make_fixture()
+        assert serialize(graph, env, policy, commands, toolchain, ())["host"] is None
+
+    def test_existing_top_level_keys_keep_their_order(self):
+        graph, env, policy, commands, toolchain = _make_fixture()
+        keys = [k for k in serialize(graph, env, policy, commands, toolchain, ()) if k != "host"]
+        assert keys == [
+            "metadata_version",
+            "toolchain",
+            "environment",
+            "policy",
+            "targets",
+            "commands",
+            "diagnostics",
+            "plan_complete",
+            "unstable",
+        ]

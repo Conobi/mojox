@@ -221,3 +221,41 @@ class TestBuildProfile:
         }
         with pytest.raises(ConfigError):
             parse_manifest(data)
+
+
+class TestCompileThreads:
+    @staticmethod
+    def _data(**mojox) -> dict:
+        return {"project": {"name": "x", "version": "1.0.0"}, "tool": {"mojox": mojox}}
+
+    def test_absent_is_none(self):
+        assert parse_manifest(self._data()).compile_threads is None
+
+    def test_integer_kept(self):
+        assert parse_manifest(self._data(**{"compile-threads": 2})).compile_threads == 2
+
+    @pytest.mark.parametrize("raw", [0, -1, True, "2", 2.0])
+    def test_invalid_rejected(self, raw):
+        with pytest.raises(ConfigError) as exc:
+            parse_manifest(self._data(**{"compile-threads": raw}))
+        assert exc.value.key_path == "tool.mojox.compile-threads"
+
+
+class TestProfileCompileThreads:
+    @staticmethod
+    def _data(profile: dict) -> dict:
+        return {"project": {"name": "x", "version": "1.0.0"}, "tool": {"mojox": {"profile": profile}}}
+
+    def test_absent_is_none(self):
+        m = parse_manifest(self._data({"fast": {"optimize": 2}}))
+        assert m.profiles["fast"].compile_threads is None
+
+    def test_integer_kept(self):
+        m = parse_manifest(self._data({"release": {"compile-threads": 16}}))
+        assert m.profiles["release"].compile_threads == 16
+
+    @pytest.mark.parametrize("raw", [0, -1, True, False, "8", 1.5, 8.0, [8]])
+    def test_invalid_rejected_with_profile_key_path(self, raw):
+        with pytest.raises(ConfigError) as exc:
+            parse_manifest(self._data({"ci": {"compile-threads": raw}}))
+        assert exc.value.key_path == "tool.mojox.profile.ci.compile-threads"

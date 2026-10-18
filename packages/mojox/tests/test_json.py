@@ -48,14 +48,20 @@ def _outcome(
 
 class TestSerializeSuiteStarted:
     def test_structure(self):
-        event = serialize_suite_started(5)
+        event = serialize_suite_started(5, jobs=2, compile_threads=1)
         assert event["type"] == "suite"
         assert event["event"] == "started"
         assert event["test_count"] == 5
         assert event["schema_version"] == 1
 
+    def test_reports_parallelism_without_schema_bump(self):
+        event = serialize_suite_started(5, jobs=6, compile_threads=3)
+        assert event["jobs"] == 6
+        assert event["compile_threads"] == 3
+        assert event["schema_version"] == 1
+
     def test_is_valid_json(self):
-        event = serialize_suite_started(0)
+        event = serialize_suite_started(0, jobs=1, compile_threads=1)
         line = json.dumps(event, separators=(",", ":"))
         assert "\n" not in line
 

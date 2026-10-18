@@ -175,6 +175,10 @@ class TestFrozenDataclasses:
             jobs_compile=1,
             jobs_tests=1,
             timeout_s=300,
+            compile_threads=1,
+            jobs_spec="1",
         )
         assert p.optimize == 0
         assert p.jobs == 1
+        assert p.compile_threads == 1
+        assert p.jobs_spec == "1"

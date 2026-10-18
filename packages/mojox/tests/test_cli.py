@@ -104,6 +104,61 @@ class TestBuildParser:
             parser.parse_args([])
 
 
+_SUBCOMMANDS = (["test"], ["run", "main.mojo"], ["build"], ["check"], ["metadata"])
+
+
+class TestParallelismFlags:
+    @pytest.mark.parametrize(
+        ("argv", "expected"),
+        [
+            (["-j", "4"], 4),
+            (["-j", "num-cpus"], "num-cpus"),
+            (["-j", "-2"], -2),
+            (["-j-2"], -2),
+            (["--jobs=-2"], -2),
+            (["--jobs", "-2"], -2),
+        ],
+    )
+    def test_jobs_spec_forms(self, argv, expected):
+        assert build_parser().parse_args(["test", *argv]).jobs == expected
+
+    @pytest.mark.parametrize("value", ["0", "abc", "1.5", "NUM-CPUS", ""])
+    def test_bad_jobs_exit_2(self, value, capsys):
+        with pytest.raises(SystemExit) as exc:
+            build_parser().parse_args(["test", "-j", value])
+        assert exc.value.code == 2
+        assert "--jobs" in capsys.readouterr().err
+
+    def test_negative_jobs_is_a_value_not_an_option(self):
+        """argparse must not mistake ``-2`` for a flag, even before positionals."""
+        args = build_parser().parse_args(["test", "-j", "-2", "tests/test_a.mojo"])
+        assert (args.jobs, args.paths) == (-2, ["tests/test_a.mojo"])
+        args = build_parser().parse_args(["run", "-j", "-2", "main.mojo"])
+        assert (args.jobs, args.file) == (-2, "main.mojo")
+
+    @pytest.mark.parametrize("sub", _SUBCOMMANDS, ids=lambda a: a[0])
+    def test_compile_threads_on_every_jobs_subcommand(self, sub):
+        args = build_parser().parse_args([*sub, "--compile-threads", "2"])
+        assert args.compile_threads == 2
+        assert build_parser().parse_args(sub).compile_threads is None
+
+    @pytest.mark.parametrize("flag", ["--compile-threads", "--timeout"])
+    @pytest.mark.parametrize("value", ["0", "-1", "abc"])
+    def test_bad_count_exits_2(self, flag, value, capsys):
+        with pytest.raises(SystemExit) as exc:
+            build_parser().parse_args(["test", f"{flag}={value}"])
+        assert exc.value.code == 2
+        assert flag in capsys.readouterr().err
+
+    def test_overrides_carry_compile_threads(self):
+        from mojox.cli import _build_cli_overrides
+
+        args = build_parser().parse_args(["test", "-j", "num-cpus", "--compile-threads", "3"])
+        overrides = _build_cli_overrides(args)
+        assert (overrides["jobs"], overrides["compile_threads"]) == ("num-cpus", 3)
+        assert "compile_threads" not in _build_cli_overrides(build_parser().parse_args(["test"]))
+
+
 class TestTestSubcommandFlags:
     """Tests for test-only CLI flags (output, fail-fast, verbosity, filtering)."""
 
@@ -561,6 +616,13 @@ class TestCacheInvalidatesOnDependencyChange:
             _cmd_test(args)
         return exc.value.code
 
+    def test_bad_cpu_count_override_exits_2(self, project, monkeypatch, capsys):
+        _dep, log = project
+        monkeypatch.setenv("MOJOX_CPU_COUNT", "0")
+        assert self._run() == 2
+        assert "[MOJOX_CPU_COUNT]" in capsys.readouterr().err
+        assert log.read_text() == ""
+
     @pytest.mark.parametrize("mode", [(), ("--bundle",)], ids=["per-file", "bundle"])
     def test_unchanged_dependency_is_a_hit(self, project, mode):
         _dep, log = project
@@ -721,6 +783,17 @@ class TestRunExecutesProgram:
             _cmd_run(args)
         return exc.value.code
 
+    @pytest.mark.parametrize("outside_project", [False, True])
+    def test_bad_cpu_count_override_exits_2(self, project, monkeypatch, capsys, outside_project):
+        proj, log = project
+        if outside_project:
+            (proj / "pyproject.toml").unlink()
+        (proj / "hello.mojo").write_text("# out: hi\n")
+        monkeypatch.setenv("MOJOX_CPU_COUNT", "two")
+        assert self._run("hello.mojo") == 2
+        assert "[MOJOX_CPU_COUNT]" in capsys.readouterr().err
+        assert log.read_text() == ""
+
     @pytest.mark.parametrize("code", [0, 3])
     def test_prints_program_output_and_exits_with_its_code(self, project, capsys, code):
         proj, _log = project
@@ -826,6 +899,39 @@ class TestRunExecutesProgram:
 
         _cmd_run(build_parser().parse_args(["run", "--no-config", "--dry-run", "hello.mojo"]))
         assert "build hello.mojo" in capsys.readouterr().err
+        assert log.read_text() == ""
+
+    def test_dry_run_passes_compile_threads(self, project, capsys):
+        proj, log = project
+        (proj / "hello.mojo").write_text("# out: hi\n# exit: 0\n")
+        from mojox.cli import _cmd_run
+
+        _cmd_run(build_parser().parse_args(["run", "--no-config", "--dry-run", "--compile-threads", "3", "hello.mojo"]))
+        err = capsys.readouterr().err
+        assert "--num-threads 3" in err
+        assert "Using" not in err
+        assert log.read_text() == ""
+
+    def test_verbose_reports_parallelism(self, project, capsys):
+        proj, _log = project
+        (proj / "hello.mojo").write_text("# out: hi\n# exit: 0\n")
+        from mojox.cli import _cmd_run
+
+        _cmd_run(
+            build_parser().parse_args(["run", "--no-config", "--dry-run", "-v", "--compile-threads", "3", "hello.mojo"])
+        )
+        assert "Using jobs 1, compile threads 3\n" in capsys.readouterr().err
+
+    def test_zero_jobs_outside_project_exits_2(self, project, monkeypatch, capsys):
+        proj, log = project
+        (proj / "pyproject.toml").unlink()
+        (proj / "hello.mojo").write_text("# out: hi\n# exit: 0\n")
+        with pytest.raises(SystemExit) as exc:
+            build_parser().parse_args(["run", "--no-config", "--dry-run", "-j", "0", "hello.mojo"])
+        assert exc.value.code == 2
+        monkeypatch.setenv("MOJOX_JOBS", "0")
+        assert self._run("--dry-run", "hello.mojo") == 2
+        assert "[MOJOX_JOBS]" in capsys.readouterr().err
         assert log.read_text() == ""
 
 
@@ -1092,3 +1198,126 @@ class TestPrecompileCache:
         assert self._run() == 0
         _cmd_build(build_parser().parse_args(["build", "--no-config"]))
         assert self._precompiles(log) == 1
+
+
+class TestParallelismReporting:
+    """The resolved jobs and compile threads reach the header, ``-v``, JSON and metadata."""
+
+    @pytest.fixture
+    def project(self, tmp_path, monkeypatch):
+        """Project with one lib, two tests (enough to precompile) and one binary, wired to a fake ``mojo``."""
+        from mojox_core import Toolchain
+
+        proj = tmp_path / "proj"
+        (proj / "tests").mkdir(parents=True)
+        (proj / "pyproject.toml").write_text(
+            '[project]\nname = "testlib"\nversion = "0.1.0"\n\n'
+            "[tool.mojox]\ntest-parallel = true\n\n"
+            '[[tool.mojox.binaries]]\nname = "app"\nsource = "app.mojo"\n'
+        )
+        (proj / "app.mojo").write_text("def main():\n    pass\n")
+        for name in ("test_a", "test_b"):
+            (proj / "tests" / f"{name}.mojo").write_text(f"def {name}():\n    pass\n")
+        (proj / "src" / "mylib").mkdir(parents=True)
+        (proj / "src" / "mylib" / "__init__.mojo").write_text("fn lib(): pass\n")
+
+        log = tmp_path / "calls.log"
+        log.touch()
+        fake = tmp_path / "bin" / "mojo"
+        fake.parent.mkdir()
+        fake.write_text(_FAKE_MOJO_PRECOMPILE.format(python=sys.executable, log=str(log)))
+        fake.chmod(0o755)
+
+        toolchain = Toolchain(mojo_path=str(fake), version="1.0.0", subcommand="precompile", extension=".mojoc")
+        monkeypatch.setattr("mojox_core.io.toolchain.resolve", lambda: toolchain)
+        monkeypatch.setattr("mojox_core.io.environment.read_distributions", list)
+        monkeypatch.setenv("MOJOX_CPU_COUNT", "3")
+        monkeypatch.chdir(proj)
+        return proj
+
+    @staticmethod
+    def _test(*extra: str) -> int:
+        from mojox.cli import _cmd_test
+
+        with pytest.raises(SystemExit) as exc:
+            _cmd_test(build_parser().parse_args(["test", "--no-config", *extra]))
+        return exc.value.code
+
+    def test_header_reports_parallelism(self, project, capsys):
+        assert self._test("-j", "2", "--compile-threads", "4") == 0
+        assert "targets (jobs 2, compile threads 4)\n" in capsys.readouterr().err
+
+    @pytest.mark.parametrize(
+        ("spec", "detail"),
+        [("num-cpus", "jobs 3 (num-cpus=3 via MOJOX_CPU_COUNT)"), ("-1", "jobs 2 (-1 of 3 via MOJOX_CPU_COUNT)")],
+    )
+    def test_header_explains_cpu_relative_jobs(self, project, capsys, spec, detail):
+        assert self._test(f"--jobs={spec}") == 0
+        assert f"targets ({detail}, compile threads 1)\n" in capsys.readouterr().err
+
+    def test_header_shows_serial_tests(self, project, capsys):
+        """Without test-parallel the tests run one at a time, whatever -j says."""
+        (project / "pyproject.toml").write_text('[project]\nname = "testlib"\nversion = "0.1.0"\n')
+        assert self._test("-j", "num-cpus") == 0
+        assert "targets (jobs 1, compile threads 1)\n" in capsys.readouterr().err
+
+    def test_json_suite_started_reports_parallelism(self, project, capsys):
+        import json
+
+        assert self._test("--output-format", "json", "-j", "2", "--compile-threads", "3") == 0
+        started = json.loads(capsys.readouterr().out.splitlines()[0])
+        assert (started["event"], started["jobs"], started["compile_threads"]) == ("started", 2, 3)
+
+    def test_build_dry_run_verbose_reports_parallelism(self, project, capsys):
+        from mojox.cli import _cmd_build
+
+        _cmd_build(build_parser().parse_args(["build", "--no-config", "--dry-run", "-j", "2"]))
+        assert "Using" not in capsys.readouterr().err
+        _cmd_build(build_parser().parse_args(["build", "--no-config", "--dry-run", "-v", "-j", "2"]))
+        err = capsys.readouterr().err
+        assert "Using jobs 2, compile threads 8\n" in err  # build uses release
+        assert "--num-threads 8" in err  # the binary gets the reported value, not cpu_count // jobs
+
+    def test_build_header_reports_parallelism(self, project, capsys):
+        from mojox.cli import _cmd_build
+
+        _cmd_build(build_parser().parse_args(["build", "--no-config", "--compile-threads", "2"]))
+        assert "targets (jobs 1, compile threads 2)\n" in capsys.readouterr().err
+
+    def test_check_verbose_reports_parallelism(self, project, capsys):
+        from mojox.cli import _cmd_check
+
+        _cmd_check(build_parser().parse_args(["check", "--no-config", "-j", "num-cpus"]))
+        assert "Using" not in capsys.readouterr().err
+        _cmd_check(build_parser().parse_args(["check", "--no-config", "-v", "-j", "num-cpus"]))
+        assert "Using jobs 3 (num-cpus=3 via MOJOX_CPU_COUNT), compile threads 1\n" in capsys.readouterr().err
+
+    def test_metadata_reports_policy_and_host(self, project, capsys):
+        import json
+
+        from mojox.cli import _cmd_metadata
+
+        _cmd_metadata(build_parser().parse_args(["metadata", "--no-config", "-j", "-2", "--compile-threads", "2"]))
+        doc = json.loads(capsys.readouterr().out)
+        assert doc["host"] == {"cpu_count": 3, "cpu_count_source": "MOJOX_CPU_COUNT"}
+        policy = doc["policy"]
+        assert (policy["jobs"], policy["jobs_spec"], policy["compile_threads"]) == (1, "-2", 2)
+
+    @pytest.mark.parametrize(("extra", "expected"), [((), 1), (("--profile", "release"), 8)])
+    def test_metadata_reports_profile_compile_threads(self, project, capsys, extra, expected):
+        import json
+
+        from mojox.cli import _cmd_metadata
+
+        _cmd_metadata(build_parser().parse_args(["metadata", "--no-config", *extra]))
+        assert json.loads(capsys.readouterr().out)["policy"]["compile_threads"] == expected
+
+    def test_metadata_reports_manifest_profile_compile_threads(self, project, capsys):
+        import json
+
+        from mojox.cli import _cmd_metadata
+
+        pyproject = project / "pyproject.toml"
+        pyproject.write_text(pyproject.read_text() + "\n[tool.mojox.profile.release]\ncompile-threads = 12\n")
+        _cmd_metadata(build_parser().parse_args(["metadata", "--no-config", "--profile", "release"]))
+        assert json.loads(capsys.readouterr().out)["policy"]["compile_threads"] == 12

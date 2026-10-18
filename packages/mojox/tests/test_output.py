@@ -5,11 +5,15 @@ from __future__ import annotations
 import io
 from pathlib import PurePosixPath
 
+import pytest
 from mojox.output import (
+    describe_jobs,
     render_diagnostics,
     render_dry_run,
     render_final_output,
     render_outcome,
+    render_parallelism,
+    render_starting,
     render_summary,
 )
 from mojox.types import Outcome, OutcomeKind, OutputMode
@@ -297,3 +301,40 @@ class TestRenderSummaryWithSkipped:
         render_summary(outcomes, stream=buf)
         assert "1 passed" in buf.getvalue()
         assert "1 skipped" in buf.getvalue()
+
+
+class TestParallelismHeader:
+    def test_starting_reports_jobs_and_compile_threads(self):
+        buf = io.StringIO()
+        render_starting(7, jobs=2, compile_threads=1, stream=buf)
+        assert buf.getvalue() == "Starting 7 targets (jobs 2, compile threads 1)\n"
+
+    def test_starting_singular(self):
+        buf = io.StringIO()
+        render_starting(1, jobs=1, compile_threads=4, stream=buf)
+        assert buf.getvalue() == "Starting 1 target (jobs 1, compile threads 4)\n"
+
+    def test_starting_with_detail(self):
+        buf = io.StringIO()
+        render_starting(7, jobs=8, compile_threads=1, jobs_detail="num-cpus=8 via cgroup", stream=buf)
+        assert buf.getvalue() == "Starting 7 targets (jobs 8 (num-cpus=8 via cgroup), compile threads 1)\n"
+
+    def test_using_line(self):
+        buf = io.StringIO()
+        render_parallelism(jobs=6, compile_threads=2, jobs_detail="-2 of 8 via affinity", stream=buf)
+        assert buf.getvalue() == "Using jobs 6 (-2 of 8 via affinity), compile threads 2\n"
+
+
+class TestDescribeJobs:
+    @pytest.mark.parametrize(
+        ("spec", "cpu_count", "source", "expected"),
+        [
+            ("num-cpus", 8, "cgroup", "num-cpus=8 via cgroup"),
+            ("-2", 8, "affinity", "-2 of 8 via affinity"),
+            ("-1", 4, "MOJOX_CPU_COUNT", "-1 of 4 via MOJOX_CPU_COUNT"),
+            ("4", 8, "os", None),
+            ("1", 1, "os", None),
+        ],
+    )
+    def test_detail_only_for_cpu_relative_specs(self, spec, cpu_count, source, expected):
+        assert describe_jobs(spec, cpu_count, source) == expected

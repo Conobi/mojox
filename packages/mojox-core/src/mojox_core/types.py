@@ -102,12 +102,16 @@ class DistEntry:
 
 @dataclass(frozen=True)
 class Profile:
-    """A named compilation profile (dev, release, or user-declared)."""
+    """A named compilation profile (dev, release, or user-declared).
+
+    None means "not set here": the value falls through to a lower layer.
+    """
 
     optimize: int | None = None
     debug_level: str | None = None
     defines: dict[str, str] = field(default_factory=dict)
     flags: tuple[str, ...] = ()
+    compile_threads: int | None = None
 
 
 @dataclass(frozen=True)
@@ -148,6 +152,7 @@ class Manifest:
     wheel_exclude: tuple[str, ...]
     profiles: dict[str, Profile]
     build_profile: str
+    compile_threads: int | None = None
 
 
 @dataclass(frozen=True)
@@ -189,19 +194,28 @@ class HostFacts:
     nothing else: it is the only slice of the host environment that reaches
     a planned command, because embedded CPython takes its stdio encoding
     from the locale. Empty means the host set no locale.
+
+    ``cpu_count_source`` names what bounded ``cpu_count``: ``"affinity"``,
+    ``"cgroup"``, ``"os"``, or ``"MOJOX_CPU_COUNT"`` when overridden.
     """
 
     cpu_count: int
     available_memory_mb: int
     manifest_dir: PurePosixPath
     locale_env: dict[str, str] = field(default_factory=dict)
+    cpu_count_source: str = "os"
 
 
 @dataclass(frozen=True)
 class LocalSettings:
-    """Machine-local settings (from .mojox/config.toml + env vars)."""
+    """Machine-local settings (from .mojox/config.toml + env vars).
 
-    jobs: int | None = None
+    ``jobs`` is an unresolved spec: an int (negative = CPUs to leave free)
+    or ``"num-cpus"``; :func:`mojox_core.policy.resolve` turns it into a count.
+    """
+
+    jobs: int | str | None = None
+    compile_threads: int | None = None
     timeout_s: int | None = None
     config_paths: tuple[str, ...] = ()
     env: dict[str, str] = field(default_factory=dict)
@@ -215,7 +229,12 @@ LocalSettings.EMPTY = LocalSettings()
 
 @dataclass(frozen=True)
 class Policy:
-    """The fully resolved flag set the planner consumes."""
+    """The fully resolved flag set the planner consumes.
+
+    ``compile_threads`` is the ``--num-threads`` for each compile, fixed
+    regardless of host or jobs. ``jobs_spec`` is the jobs value as written
+    (``"num-cpus"``, ``"-2"``, ``"4"``), kept for display.
+    """
 
     optimize: int
     debug_level: str
@@ -227,6 +246,8 @@ class Policy:
     jobs_compile: int
     jobs_tests: int
     timeout_s: int
+    compile_threads: int
+    jobs_spec: str
 
 
 @dataclass(frozen=True)

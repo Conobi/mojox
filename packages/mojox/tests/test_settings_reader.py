@@ -26,6 +26,17 @@ class TestDiscovery:
         settings = read_settings(tmp_path, env={})
         assert settings.jobs == 4
 
+    def test_parallelism_keys_round_trip(self, tmp_path):
+        """A TOML jobs spec and compile-threads survive discovery and parsing."""
+        (tmp_path / ".git").mkdir()
+        config_dir = tmp_path / ".mojox"
+        config_dir.mkdir()
+        (config_dir / "config.toml").write_text('jobs = "num-cpus"\ncompile-threads = 2\n')
+
+        settings = read_settings(tmp_path, env={})
+        assert settings.jobs == "num-cpus"
+        assert settings.compile_threads == 2
+
     def test_walks_up_to_git_boundary(self, tmp_path):
         """Config at repo root found when starting from a subdirectory."""
         (tmp_path / ".git").mkdir()

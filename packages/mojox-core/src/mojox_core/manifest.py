@@ -11,6 +11,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from .errors import ConfigError
+from .policy import parse_count
 from .types import BinaryEntry, LintConfig, Manifest, Profile
 
 _VALID_OPTIMIZE = frozenset({0, 1, 2, 3})
@@ -64,6 +65,7 @@ def parse_manifest(data: dict[str, Any]) -> Manifest:
         wheel_exclude=_parse_str_list(mojox, "wheel-exclude"),
         profiles=_parse_profiles(mojox.get("profile", {})),
         build_profile=_parse_build_profile(mojox),
+        compile_threads=_parse_compile_threads(mojox, "tool.mojox.compile-threads"),
     )
 
 
@@ -325,6 +327,13 @@ def _parse_str_list_for_key(table: dict[str, Any], key: str, key_path: str) -> t
     return tuple(raw)
 
 
+def _parse_compile_threads(table: dict[str, Any], key_path: str) -> int | None:
+    """Parse an optional ``compile-threads`` key; None when absent so lower layers apply."""
+    if "compile-threads" not in table:
+        return None
+    return parse_count(table["compile-threads"], key_path, from_text=False)
+
+
 def _parse_build_profile(mojox: dict[str, Any]) -> str:
     """Parse the build-profile key, defaulting to 'release'."""
     raw = mojox.get("build-profile", "release")
@@ -350,5 +359,6 @@ def _parse_profiles(raw: dict[str, Any]) -> dict[str, Profile]:
             debug_level=_parse_debug_level(table.get("debug-level"), f"tool.mojox.profile.{name}.debug-level"),
             defines=_parse_defines_for_key(table, f"tool.mojox.profile.{name}.defines"),
             flags=_parse_str_list_for_key(table, "flags", f"tool.mojox.profile.{name}.flags"),
+            compile_threads=_parse_compile_threads(table, f"tool.mojox.profile.{name}.compile-threads"),
         )
     return profiles

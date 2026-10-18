@@ -17,10 +17,11 @@ import sys
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any
 
-from mojox_core import CommandKind
+from mojox_core import CommandKind, ConfigError
+from mojox_core.policy import parse_count_text, parse_jobs
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
 
     from mojox_core import (
         Command,
@@ -81,11 +82,28 @@ def build_parser() -> argparse.ArgumentParser:
 def _add_common_flags(parser: argparse.ArgumentParser) -> None:
     """Add flags shared across exec-capable subcommands."""
     parser.add_argument("--profile", default=argparse.SUPPRESS, help="Build profile (dev, release, or user-defined)")
-    parser.add_argument("--jobs", "-j", type=int, default=None, help="Maximum concurrent compilations")
-    parser.add_argument("--timeout", type=int, default=None, help="Per-target timeout in seconds")
+    parser.add_argument(
+        "--jobs",
+        "-j",
+        type=_jobs_arg,
+        default=None,
+        help='Maximum concurrent compilations: N, "num-cpus", or -K for all CPUs but K',
+    )
+    parser.add_argument(
+        "--compile-threads",
+        type=_count_arg("--compile-threads"),
+        default=None,
+        metavar="N",
+        help="Threads each mojo build may use (--num-threads; default from the profile: dev 1, release 8)",
+    )
+    parser.add_argument("--timeout", type=_count_arg("--timeout"), default=None, help="Per-target timeout in seconds")
     parser.add_argument("--dry-run", action="store_true", default=False, help="Show planned commands without executing")
     parser.add_argument(
-        "--verbose", "-v", action="store_true", default=False, help="Expand grouped output (e.g. in --dry-run)"
+        "--verbose",
+        "-v",
+        action="store_true",
+        default=False,
+        help="Expand grouped output (e.g. in --dry-run) and show the resolved parallelism",
     )
     parser.add_argument("--no-config", action="store_true", default=False, help="Disable settings file discovery")
     parser.add_argument("--config-file", default=None, help="Explicit config file path")
@@ -99,6 +117,26 @@ def _add_common_flags(parser: argparse.ArgumentParser) -> None:
         dest="flags",
         help="Extra flag passed through to the compiler (use --flag=VALUE for dash-prefixed flags)",
     )
+
+
+def _jobs_arg(text: str) -> int | str:
+    """``type=`` for ``-j``: a jobs spec, so ``0`` and junk exit 2 before any work starts."""
+    try:
+        return parse_jobs(text, "--jobs")
+    except ConfigError as e:
+        raise argparse.ArgumentTypeError(e.message) from None
+
+
+def _count_arg(flag: str) -> Callable[[str], int]:
+    """``type=`` for a flag that takes an integer >= 1; anything else exits 2."""
+
+    def parse(text: str) -> int:
+        try:
+            return parse_count_text(text, flag)
+        except ConfigError as e:
+            raise argparse.ArgumentTypeError(e.message) from None
+
+    return parse
 
 
 def _add_test_flags(parser: argparse.ArgumentParser) -> None:
@@ -170,6 +208,8 @@ def _build_cli_overrides(args: argparse.Namespace) -> dict[str, Any]:
     overrides: dict[str, Any] = {}
     if getattr(args, "jobs", None) is not None:
         overrides["jobs"] = args.jobs
+    if getattr(args, "compile_threads", None) is not None:
+        overrides["compile_threads"] = args.compile_threads
     if getattr(args, "timeout", None) is not None:
         overrides["timeout"] = args.timeout
     if getattr(args, "defines", None):
@@ -296,6 +336,22 @@ def _relativize_paths(paths: tuple[str, ...], project_root: Path) -> list[str]:
     return normalized
 
 
+def _jobs_detail(policy: Policy, host: HostFacts, jobs: int) -> str | None:
+    """Explain how *jobs* came from a CPU-relative spec; None when *jobs* is a forced count (e.g. serial tests)."""
+    from .output import describe_jobs
+
+    if jobs != policy.jobs:
+        return None
+    return describe_jobs(policy.jobs_spec, host.cpu_count, host.cpu_count_source)
+
+
+def _report_parallelism(policy: Policy, host: HostFacts, jobs: int) -> None:
+    """Print the ``Using jobs J, compile threads T`` line (``-v`` on subcommands without a header)."""
+    from .output import render_parallelism
+
+    render_parallelism(jobs=jobs, compile_threads=policy.compile_threads, jobs_detail=_jobs_detail(policy, host, jobs))
+
+
 def _interrupted_summary(commands: tuple[Command, ...]) -> str:
     """Build a short message for Ctrl+C interruption."""
     return f"Interrupted — {len(commands)} targets planned"
@@ -319,7 +375,6 @@ def _resolve_pipeline(
     Returns (manifest, graph, env, policy, toolchain, host, settings, commands, include_paths).
     """
     from mojox_core import (
-        ConfigError,
         discover,
         parse_manifest,
         plan,
@@ -349,12 +404,16 @@ def _resolve_pipeline(
 
     config_file = Path(args.config_file) if getattr(args, "config_file", None) else None
     no_config = getattr(args, "no_config", False)
-    settings = read_settings(
-        root,
-        env=dict(os.environ),
-        no_config=no_config,
-        config_file=config_file,
-    )
+    try:
+        settings = read_settings(
+            root,
+            env=dict(os.environ),
+            no_config=no_config,
+            config_file=config_file,
+        )
+    except ConfigError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(2)
 
     try:
         toolchain = resolve_toolchain()
@@ -364,7 +423,11 @@ def _resolve_pipeline(
 
     dists = read_distributions()
     lock_data = read_lockfile(root)
-    host = read_host_facts(root)
+    try:
+        host = read_host_facts(root, environ=os.environ)
+    except ConfigError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(2)
 
     try:
         env = build_env(
@@ -386,7 +449,7 @@ def _resolve_pipeline(
     cli_overrides = _build_cli_overrides(args)
     profile_name = args.profile
     try:
-        policy = resolve(manifest, profile_name, cli_overrides, settings)
+        policy = resolve(manifest, profile_name, cli_overrides, settings, cpu_count=host.cpu_count)
     except ConfigError as e:
         print(str(e), file=sys.stderr)
         sys.exit(2)
@@ -464,7 +527,7 @@ def _cmd_test(args: argparse.Namespace) -> None:
     )
     from .types import OutputFormat, OutputMode
 
-    manifest, graph, env, policy, toolchain, _host, settings, commands, include_paths = _resolve_pipeline(args)
+    manifest, graph, env, policy, toolchain, host, settings, commands, include_paths = _resolve_pipeline(args)
 
     if env.diagnostics:
         render_diagnostics(env.diagnostics)
@@ -500,7 +563,9 @@ def _cmd_test(args: argparse.Namespace) -> None:
                 from .json import JsonEventWriter, serialize_suite_finished, serialize_suite_started
 
                 writer = JsonEventWriter(sys.stdout)
-                writer.write_event(serialize_suite_started(0))
+                writer.write_event(
+                    serialize_suite_started(0, jobs=policy.jobs_tests, compile_threads=policy.compile_threads)
+                )
                 writer.write_event(serialize_suite_finished((), elapsed_s=0.0))
             return
     fail_fast = getattr(args, "fail_fast", True)
@@ -551,7 +616,7 @@ def _cmd_test(args: argparse.Namespace) -> None:
             env=env,
             policy=policy,
             toolchain=toolchain,
-            host=_host,
+            host=host,
             settings=settings,
             commands=commands,
             include_paths=include_paths,
@@ -573,13 +638,20 @@ def _cmd_test(args: argparse.Namespace) -> None:
 
         test_count = sum(1 for c in commands if c.kind in _TEST_KINDS)
         writer = JsonEventWriter(sys.stdout)
-        writer.write_event(serialize_suite_started(test_count))
+        writer.write_event(
+            serialize_suite_started(test_count, jobs=policy.jobs_tests, compile_threads=policy.compile_threads)
+        )
 
         json_on_start, json_on_complete = make_json_callbacks(writer)
         on_start = json_on_start
         on_complete = json_on_complete
     else:
-        render_starting(len(commands))
+        render_starting(
+            len(commands),
+            jobs=policy.jobs_tests,
+            compile_threads=policy.compile_threads,
+            jobs_detail=_jobs_detail(policy, host, policy.jobs_tests),
+        )
         on_complete = make_progress_callback(
             success_output=success_output,
             failure_output=failure_output,
@@ -662,7 +734,6 @@ def _run_bundle_test(
         file_path_to_module_path,
         generate_harness,
     )
-    from mojox_core.types import Policy as PolicyT
     from mojox_core.types import Target
     from mojox_core.types import TargetGraph as TG
 
@@ -744,17 +815,10 @@ def _run_bundle_test(
             unstable_apis=policy.lints.unstable_apis,
         )
 
-        bundle_policy = PolicyT(
-            optimize=policy.optimize,
-            debug_level=policy.debug_level,
-            defines=policy.defines,
-            flags=policy.flags,
+        bundle_policy = replace(
+            policy,
             include_paths=(staging_result.include_path, *source_dirs, *policy.include_paths),
             lints=bundle_lints,
-            jobs=policy.jobs,
-            jobs_compile=policy.jobs_compile,
-            jobs_tests=policy.jobs_tests,
-            timeout_s=policy.timeout_s,
         )
 
         bundle_commands = plan_fn(bundle_graph, env, bundle_policy, toolchain, host)
@@ -786,12 +850,17 @@ def _run_bundle_test(
 
             writer = JsonEventWriter(sys.stdout)
             test_count = sum(1 for c in bundle_commands if c.kind in _TEST_KINDS)
-            writer.write_event(serialize_suite_started(test_count))
+            writer.write_event(serialize_suite_started(test_count, jobs=1, compile_threads=policy.compile_threads))
             json_on_start, json_on_complete = make_json_callbacks(writer)
             on_start = json_on_start
             on_complete = json_on_complete
         else:
-            render_starting(len(bundle_commands))
+            render_starting(
+                len(bundle_commands),
+                jobs=1,
+                compile_threads=policy.compile_threads,
+                jobs_detail=_jobs_detail(policy, host, 1),
+            )
             on_complete = make_progress_callback(
                 success_output=success_output,
                 failure_output=failure_output,
@@ -841,8 +910,9 @@ def _cmd_run(args: argparse.Namespace) -> None:
     build failure or a timeout exits 1, even when the compiler itself
     exited 0; a signal death exits 128 + the signal number, as a shell does.
     """
+    from dataclasses import replace
+
     from mojox_core import (
-        ConfigError,
         parse_manifest,
         plan,
         resolve,
@@ -851,7 +921,8 @@ def _cmd_run(args: argparse.Namespace) -> None:
     from mojox_core.io.environment import read_distributions, read_host_facts, read_lockfile
     from mojox_core.io.manifest import read as read_manifest
     from mojox_core.io.toolchain import resolve as resolve_toolchain
-    from mojox_core.types import LintConfig, Policy, Target, TargetGraph, TargetKind
+    from mojox_core.policy import resolve_without_manifest
+    from mojox_core.types import Target, TargetGraph, TargetKind
 
     from .exec import run_commands
     from .output import render_diagnostics
@@ -868,7 +939,11 @@ def _cmd_run(args: argparse.Namespace) -> None:
 
     config_file = Path(args.config_file) if getattr(args, "config_file", None) else None
     no_config = getattr(args, "no_config", False)
-    settings = read_settings(root, env=dict(os.environ), no_config=no_config, config_file=config_file)
+    try:
+        settings = read_settings(root, env=dict(os.environ), no_config=no_config, config_file=config_file)
+    except ConfigError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(2)
 
     try:
         toolchain = resolve_toolchain()
@@ -878,7 +953,11 @@ def _cmd_run(args: argparse.Namespace) -> None:
 
     dists = read_distributions()
     lock_data = read_lockfile(root)
-    host = read_host_facts(root)
+    try:
+        host = read_host_facts(root, environ=os.environ)
+    except ConfigError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(2)
     env = build_env(dists, lock_data, mojo_path=toolchain.mojo_path, mojo_version=toolchain.version)
 
     if env.diagnostics:
@@ -886,26 +965,14 @@ def _cmd_run(args: argparse.Namespace) -> None:
 
     cli_overrides = _build_cli_overrides(args)
 
-    if manifest is not None:
-        policy = resolve(manifest, args.profile, cli_overrides, settings)
-    else:
-        from mojox_core.policy import BUILTIN_DEV
-
-        jobs = cli_overrides.get("jobs") or settings.jobs or 1
-        timeout = cli_overrides.get("timeout") or settings.timeout_s or 300
-        opt = cli_overrides.get("optimize", BUILTIN_DEV.optimize)
-        policy = Policy(
-            optimize=opt if opt is not None else 0,
-            debug_level=BUILTIN_DEV.debug_level or "line-tables",
-            defines=cli_overrides.get("defines", dict(BUILTIN_DEV.defines)),
-            flags=tuple(cli_overrides.get("flags", ())),
-            include_paths=(),
-            lints=LintConfig(),
-            jobs=jobs,
-            jobs_compile=jobs,
-            jobs_tests=jobs,
-            timeout_s=timeout,
-        )
+    try:
+        if manifest is not None:
+            policy = resolve(manifest, args.profile, cli_overrides, settings, cpu_count=host.cpu_count)
+        else:
+            policy = resolve_without_manifest(cli_overrides, settings, cpu_count=host.cpu_count)
+    except ConfigError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(2)
 
     # Add project source package parents to include paths so mojo
     # finds them without precompilation.
@@ -916,18 +983,10 @@ def _cmd_run(args: argparse.Namespace) -> None:
             if pkg_path.is_dir():
                 source_dirs.append(str(pkg_path.parent))
         extra_includes = tuple(dict.fromkeys(source_dirs + list(policy.include_paths)))
-        policy = Policy(
-            optimize=policy.optimize,
-            debug_level=policy.debug_level,
-            defines=policy.defines,
-            flags=policy.flags,
-            include_paths=extra_includes,
-            lints=policy.lints,
-            jobs=policy.jobs,
-            jobs_compile=policy.jobs_compile,
-            jobs_tests=policy.jobs_tests,
-            timeout_s=policy.timeout_s,
-        )
+        policy = replace(policy, include_paths=extra_includes)
+
+    if args.verbose:
+        _report_parallelism(policy, host, 1)  # the lone program builds and runs on one worker
 
     graph = TargetGraph(
         targets=(Target(TargetKind.TEST, args.file, args.file),),
@@ -991,7 +1050,7 @@ def _cmd_build(args: argparse.Namespace) -> None:
     )
     from .types import OutputMode
 
-    _manifest, _graph, env, policy, toolchain, _host, settings, commands, include_paths = _resolve_pipeline(args)
+    _manifest, _graph, env, policy, toolchain, host, settings, commands, include_paths = _resolve_pipeline(args)
 
     build_commands = tuple(c for c in commands if c.kind in (CommandKind.COMPILE_PACKAGE, CommandKind.COMPILE_BINARY))
 
@@ -999,10 +1058,17 @@ def _cmd_build(args: argparse.Namespace) -> None:
         render_diagnostics(env.diagnostics)
 
     if args.dry_run:
+        if args.verbose:
+            _report_parallelism(policy, host, policy.jobs_compile)
         render_dry_run(build_commands, compact=not args.verbose)
         return
 
-    render_starting(len(build_commands))
+    render_starting(
+        len(build_commands),
+        jobs=policy.jobs_compile,
+        compile_threads=policy.compile_threads,
+        jobs_detail=_jobs_detail(policy, host, policy.jobs_compile),
+    )
     try:
         outcomes = run_commands(
             build_commands,
@@ -1028,7 +1094,7 @@ def _cmd_build(args: argparse.Namespace) -> None:
 
 def _cmd_check(args: argparse.Namespace) -> None:
     """Execute the check subcommand: compile packages + run lints."""
-    from mojox_core import ConfigError, parse_manifest
+    from mojox_core import parse_manifest
     from mojox_core.io.manifest import read as read_manifest
 
     from .lints import lint_bare_assert, lint_path_source
@@ -1063,7 +1129,7 @@ def _cmd_check(args: argparse.Namespace) -> None:
 
     # --- Compiler check: resolve pipeline and precompile ---
     try:
-        _manifest, _graph, env, policy, toolchain, _host, settings, commands, include_paths = _resolve_pipeline(args)
+        _manifest, _graph, env, policy, toolchain, host, settings, commands, include_paths = _resolve_pipeline(args)
     except SystemExit:
         print(_c(sys.stderr, _DIM, "compiler not available, skipping compilation check"), file=sys.stderr)
         if findings:
@@ -1076,6 +1142,9 @@ def _cmd_check(args: argparse.Namespace) -> None:
 
     if env.diagnostics:
         render_diagnostics(env.diagnostics)
+
+    if args.verbose:
+        _report_parallelism(policy, host, policy.jobs_compile)
 
     compile_commands = tuple(c for c in commands if c.kind == CommandKind.COMPILE_PACKAGE)
 
@@ -1162,12 +1231,12 @@ def _cmd_metadata(args: argparse.Namespace) -> None:
 
     from .output import render_diagnostics
 
-    _manifest, graph, env, policy, toolchain, _host, _settings, commands, _include_paths = _resolve_pipeline(args)
+    _manifest, graph, env, policy, toolchain, host, _settings, commands, _include_paths = _resolve_pipeline(args)
 
     if env.diagnostics:
         render_diagnostics(env.diagnostics)
 
-    doc = serialize(graph, env, policy, commands, toolchain, env.diagnostics)
+    doc = serialize(graph, env, policy, commands, toolchain, env.diagnostics, host=host)
     json.dump(doc, sys.stdout, indent=2, sort_keys=False)
     sys.stdout.write("\n")
 

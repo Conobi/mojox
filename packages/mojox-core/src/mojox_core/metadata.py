@@ -11,6 +11,7 @@ from typing import Any
 from .types import (
     Command,
     Diagnostic,
+    HostFacts,
     Policy,
     ResolvedEnv,
     TargetGraph,
@@ -27,6 +28,8 @@ def serialize(
     commands: tuple[Command, ...],
     toolchain: Toolchain,
     diagnostics: tuple[Diagnostic, ...],
+    *,
+    host: HostFacts | None = None,
 ) -> dict[str, Any]:
     """Serialize the complete build plan into a JSON-serialisable dict.
 
@@ -37,6 +40,7 @@ def serialize(
         commands: The mojo invocations the planner produced.
         toolchain: The resolved Mojo toolchain identity.
         diagnostics: Any compiler or mojox diagnostics to include.
+        host: Host facts behind the resolved jobs; serialized as ``null`` when omitted.
 
     Returns:
         A plain ``dict[str, Any]`` that is directly JSON-serialisable via ``json.dumps``.
@@ -51,6 +55,12 @@ def serialize(
             "version": toolchain.version,
             "subcommand": toolchain.subcommand,
             "extension": toolchain.extension,
+        },
+        "host": None
+        if host is None
+        else {
+            "cpu_count": host.cpu_count,
+            "cpu_count_source": host.cpu_count_source,
         },
         "environment": {
             "include_sequence": [
@@ -78,6 +88,8 @@ def serialize(
             "jobs_compile": policy.jobs_compile,
             "jobs_tests": policy.jobs_tests,
             "timeout_s": policy.timeout_s,
+            "compile_threads": policy.compile_threads,
+            "jobs_spec": policy.jobs_spec,
         },
         "targets": [
             {

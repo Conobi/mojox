@@ -4,13 +4,17 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 
+import pytest
+from mojox_core.manifest import parse_manifest
 from mojox_core.plan import _binary_cache_name, plan
+from mojox_core.policy import resolve
 from mojox_core.types import (
     CommandKind,
     DistEntry,
     DistKind,
     HostFacts,
     LintConfig,
+    LocalSettings,
     Policy,
     ResolvedEnv,
     Target,
@@ -53,6 +57,8 @@ def _make_policy(**overrides) -> Policy:
         "jobs_compile": 1,
         "jobs_tests": 1,
         "timeout_s": 300,
+        "compile_threads": 1,
+        "jobs_spec": "1",
     }
     defaults.update(overrides)
     return Policy(**defaults)
@@ -198,22 +204,67 @@ class TestPrecompilation:
         assert CommandKind.COMPILE_PACKAGE not in kinds
 
 
-class TestThreadDivision:
-    def test_num_threads_divided_by_applied_concurrency(self):
-        graph = TargetGraph(
-            targets=(Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),),
-            edges=(),
+_ALL_COMPILE_KINDS = [CommandKind.BUILD_TEST, CommandKind.CHECK_EXAMPLE, CommandKind.COMPILE_BINARY]
+
+
+class TestCompileThreads:
+    """Test, example and binary builds get ``policy.compile_threads``, whatever the host or jobs."""
+
+    @staticmethod
+    def _argv(kind: CommandKind, *, cpu_count: int = 8, **policy) -> tuple[str, ...]:
+        target = {
+            CommandKind.BUILD_TEST: Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),
+            CommandKind.CHECK_EXAMPLE: Target(TargetKind.EXAMPLE, "examples/demo.mojo", "examples/demo.mojo"),
+            CommandKind.COMPILE_BINARY: Target(TargetKind.BIN, "src/app.mojo", "bin::app"),
+        }[kind]
+        host = HostFacts(cpu_count=cpu_count, available_memory_mb=16384, manifest_dir=PurePosixPath("/project"))
+        cmds = plan(
+            TargetGraph(targets=(target,), edges=()), _make_env(), _make_policy(**policy), _make_toolchain(), host
         )
-        pol = _make_policy(jobs=1, jobs_tests=4)
-        host = HostFacts(cpu_count=8, available_memory_mb=16384, manifest_dir=PurePosixPath("/project"))
-        cmds = plan(graph, _make_env(), pol, _make_toolchain(), host)
-        for c in cmds:
-            if c.kind == CommandKind.BUILD_TEST:
-                argv = list(c.argv)
-                if "--num-threads" in argv:
-                    idx = argv.index("--num-threads")
-                    threads = int(argv[idx + 1])
-                    assert threads == max(1, host.cpu_count // 4)
+        (cmd,) = [c for c in cmds if c.kind == kind]
+        return cmd.argv
+
+    @staticmethod
+    def _threads(argv: tuple[str, ...]) -> str:
+        assert argv.count("--num-threads") == 1
+        return argv[argv.index("--num-threads") + 1]
+
+    @pytest.mark.parametrize("kind", _ALL_COMPILE_KINDS)
+    @pytest.mark.parametrize("cpu_count", [1, 2, 8, 64])
+    @pytest.mark.parametrize("jobs", [1, 4, 16])
+    def test_default_is_one_thread(self, kind, cpu_count, jobs):
+        argv = self._argv(kind, cpu_count=cpu_count, jobs=jobs, jobs_compile=jobs, jobs_tests=jobs)
+        assert self._threads(argv) == "1"
+
+    @pytest.mark.parametrize("kind", _ALL_COMPILE_KINDS)
+    @pytest.mark.parametrize("jobs", [1, 4, 16])
+    def test_argv_is_identical_across_hosts(self, kind, jobs):
+        argvs = {self._argv(kind, cpu_count=n, jobs=jobs, jobs_compile=jobs, jobs_tests=jobs) for n in (1, 2, 8, 64)}
+        assert len(argvs) == 1
+
+    @pytest.mark.parametrize("kind", _ALL_COMPILE_KINDS)
+    def test_configured_thread_count_is_used(self, kind):
+        argv = self._argv(kind, cpu_count=2, jobs=4, jobs_compile=4, jobs_tests=4, compile_threads=3)
+        assert self._threads(argv) == "3"
+
+    @staticmethod
+    def _resolved_binary_threads(mojox: dict, profile: str, cpu_count: int) -> str:
+        manifest = parse_manifest({"project": {"name": "x", "version": "1.0.0"}, "tool": {"mojox": mojox}})
+        policy = resolve(manifest, profile, {}, LocalSettings.EMPTY)
+        host = HostFacts(cpu_count=cpu_count, available_memory_mb=16384, manifest_dir=PurePosixPath("/project"))
+        graph = TargetGraph(targets=(Target(TargetKind.BIN, "src/app.mojo", "bin::app"),), edges=())
+        cmds = plan(graph, _make_env(), policy, _make_toolchain(), host)
+        (cmd,) = [c for c in cmds if c.kind == CommandKind.COMPILE_BINARY]
+        return TestCompileThreads._threads(cmd.argv)
+
+    @pytest.mark.parametrize("cpu_count", [2, 64])
+    def test_release_binary_defaults_to_eight_on_any_host(self, cpu_count):
+        assert self._resolved_binary_threads({}, "release", cpu_count) == "8"
+
+    @pytest.mark.parametrize("cpu_count", [2, 64])
+    def test_release_binary_uses_profile_override(self, cpu_count):
+        mojox = {"compile-threads": 2, "profile": {"release": {"compile-threads": 16}}}
+        assert self._resolved_binary_threads(mojox, "release", cpu_count) == "16"
 
 
 class TestBinaryOutputName:
@@ -228,24 +279,6 @@ class TestBinaryOutputName:
         argv = list(bin_cmds[0].argv)
         o_idx = argv.index("-o")
         assert argv[o_idx + 1] == "myapp"
-
-
-class TestCheckExampleThreads:
-    def test_check_example_gets_num_threads(self):
-        graph = TargetGraph(
-            targets=(Target(TargetKind.EXAMPLE, "examples/demo.mojo", "examples/demo.mojo"),),
-            edges=(),
-        )
-        pol = _make_policy(jobs=1, jobs_compile=4)
-        host = HostFacts(cpu_count=8, available_memory_mb=16384, manifest_dir=PurePosixPath("/project"))
-        cmds = plan(graph, _make_env(), pol, _make_toolchain(), host)
-        for c in cmds:
-            if c.kind == CommandKind.CHECK_EXAMPLE:
-                argv = list(c.argv)
-                assert "--num-threads" in argv
-                idx = argv.index("--num-threads")
-                threads = int(argv[idx + 1])
-                assert threads == max(1, host.cpu_count // 4)
 
 
 class TestCheckExampleOutput:

@@ -52,15 +52,48 @@ _OUTCOME_LABELS: dict[OutcomeKind, tuple[str, str]] = {
 }
 
 
+def describe_jobs(jobs_spec: str, cpu_count: int, cpu_count_source: str) -> str | None:
+    """Explain a CPU-relative jobs spec (``num-cpus=8 via cgroup``, ``-2 of 8 via affinity``).
+
+    None for a plain positive count, which needs no explanation.
+    """
+    if jobs_spec == "num-cpus":
+        return f"num-cpus={cpu_count} via {cpu_count_source}"
+    if jobs_spec.startswith("-"):
+        return f"{jobs_spec} of {cpu_count} via {cpu_count_source}"
+    return None
+
+
+def _parallelism(jobs: int, compile_threads: int, jobs_detail: str | None) -> str:
+    """Format ``jobs N[ (detail)], compile threads M``."""
+    detail = f" ({jobs_detail})" if jobs_detail else ""
+    return f"jobs {jobs}{detail}, compile threads {compile_threads}"
+
+
 def render_starting(
     count: int,
     *,
+    jobs: int,
+    compile_threads: int,
+    jobs_detail: str | None = None,
     stream: IO[str] | None = None,
 ) -> None:
-    """Render the 'Starting N targets' header line."""
+    """Render the 'Starting N targets (jobs J, compile threads T)' header line."""
     out = stream or sys.stderr
     label = "target" if count == 1 else "targets"
-    out.write(f"{_c(out, _BOLD, 'Starting')} {count} {label}\n")
+    out.write(f"{_c(out, _BOLD, 'Starting')} {count} {label} ({_parallelism(jobs, compile_threads, jobs_detail)})\n")
+
+
+def render_parallelism(
+    *,
+    jobs: int,
+    compile_threads: int,
+    jobs_detail: str | None = None,
+    stream: IO[str] | None = None,
+) -> None:
+    """Render the 'Using jobs J, compile threads T' line for subcommands without a header."""
+    out = stream or sys.stderr
+    out.write(f"{_c(out, _BOLD, 'Using')} {_parallelism(jobs, compile_threads, jobs_detail)}\n")
 
 
 def _write_output_block(out: IO[str], outcome: Outcome) -> None:

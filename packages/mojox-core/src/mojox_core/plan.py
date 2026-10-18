@@ -65,8 +65,11 @@ def plan(
     """Produce the sequence of mojo commands to execute.
 
     Returns an ordered tuple of Command objects. Precompile commands appear
-    before any dependent targets (tests, examples, binaries). Thread counts
-    are divided by applied concurrency. Flags that ``mojo precompile`` rejects
+    before any dependent targets (tests, examples, binaries). Every build
+    gets ``policy.compile_threads`` as ``--num-threads``, so argv never
+    depends on the host or on jobs: the thread count changes optimised
+    machine code, and a host-derived value would make binaries differ
+    between machines. Flags that ``mojo precompile`` rejects
     (``-O``, ``-D``, ``--num-threads``) are stripped from lib targets.
     """
     commands: list[Command] = []
@@ -207,8 +210,7 @@ def _build_test_command(
     for key, value in sorted(policy.defines.items()):
         argv.extend(["-D", f"{key}={value}"])
 
-    num_threads = max(1, host.cpu_count // max(1, policy.jobs_tests))
-    argv.extend(["--num-threads", str(num_threads)])
+    argv.extend(["--num-threads", str(policy.compile_threads)])
 
     _append_lint_flags(argv, policy.lints)
     argv.extend(policy.flags)
@@ -258,8 +260,7 @@ def _build_check_example_command(
     for key, value in sorted(policy.defines.items()):
         argv.extend(["-D", f"{key}={value}"])
 
-    num_threads = max(1, host.cpu_count // max(1, policy.jobs_compile))
-    argv.extend(["--num-threads", str(num_threads)])
+    argv.extend(["--num-threads", str(policy.compile_threads)])
 
     _append_lint_flags(argv, policy.lints)
     argv.extend(policy.flags)
@@ -300,8 +301,7 @@ def _build_compile_binary_command(
     for key, value in sorted(policy.defines.items()):
         argv.extend(["-D", f"{key}={value}"])
 
-    num_threads = max(1, host.cpu_count // max(1, policy.jobs_compile))
-    argv.extend(["--num-threads", str(num_threads)])
+    argv.extend(["--num-threads", str(policy.compile_threads)])
 
     _append_lint_flags(argv, policy.lints)
     argv.extend(policy.flags)

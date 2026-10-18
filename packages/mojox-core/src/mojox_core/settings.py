@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from .errors import ConfigError
+from .policy import parse_count, parse_jobs
 from .types import LocalSettings
 
 _FORBIDDEN_KEYS = frozenset(
@@ -42,41 +43,44 @@ def parse_settings(
     """
     merged: dict[str, Any] = {}
 
-    if user is not None:
-        _validate_no_forbidden(user)
-        merged.update(user)
-
-    if project is not None:
-        _validate_no_forbidden(project)
-        merged.update(project)
+    # Each file is validated on its own so a bad user value is not masked
+    # by a good project one.
+    for layer in (user, project):
+        if layer is not None:
+            _validate_no_forbidden(layer)
+            merged.update(_validate_values(layer))
 
     # Environment variable overrides
     if "MOJOX_JOBS" in env:
-        try:
-            merged["jobs"] = int(env["MOJOX_JOBS"])
-        except ValueError:
-            raise ConfigError(
-                "MOJOX_JOBS",
-                f"expected an integer, got {env['MOJOX_JOBS']!r}",
-            )
+        merged["jobs"] = parse_jobs(env["MOJOX_JOBS"], "MOJOX_JOBS")
+
+    if "MOJOX_COMPILE_THREADS" in env:
+        merged["compile-threads"] = parse_count(env["MOJOX_COMPILE_THREADS"], "MOJOX_COMPILE_THREADS", from_text=True)
 
     if "MOJOX_TIMEOUT" in env:
-        try:
-            merged["timeout"] = int(env["MOJOX_TIMEOUT"])
-        except ValueError:
-            raise ConfigError(
-                "MOJOX_TIMEOUT",
-                f"expected an integer, got {env['MOJOX_TIMEOUT']!r}",
-            )
+        merged["timeout"] = parse_count(env["MOJOX_TIMEOUT"], "MOJOX_TIMEOUT", from_text=True)
 
     if not merged:
         return LocalSettings.EMPTY
 
     return LocalSettings(
         jobs=merged.get("jobs"),
+        compile_threads=merged.get("compile-threads"),
         timeout_s=merged.get("timeout"),
         env={k: v for k, v in merged.get("env", {}).items()},
     )
+
+
+def _validate_values(settings: dict[str, Any]) -> dict[str, Any]:
+    """Return *settings* with the parallelism and timeout keys parsed and validated."""
+    out = dict(settings)
+    if "jobs" in out:
+        out["jobs"] = parse_jobs(out["jobs"], "settings.jobs")
+    if "compile-threads" in out:
+        out["compile-threads"] = parse_count(out["compile-threads"], "settings.compile-threads", from_text=False)
+    if "timeout" in out:
+        out["timeout"] = parse_count(out["timeout"], "settings.timeout", from_text=False)
+    return out
 
 
 def _validate_no_forbidden(settings: dict[str, Any]) -> None:
