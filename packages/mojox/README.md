@@ -68,7 +68,7 @@ Exit code: the program's own code; `128 + N` if it is killed by signal `N`; `1` 
 
 ### `build`
 
-Compile binary targets (release profile by default).
+Compile binary targets (the manifest's `build-profile` by default, else release).
 
 ```bash
 mojox build
@@ -104,7 +104,7 @@ These flags are available on every subcommand except `cache`:
 
 | Flag | Description |
 |------|-------------|
-| `--profile PROFILE` | Build profile (`dev`, `release`, or user-defined) |
+| `--profile PROFILE` | Build profile (`dev`, `release`, or user-defined); `build` defaults to `build-profile` |
 | `-j` / `--jobs N` | Maximum concurrent compilations |
 | `--timeout SECONDS` | Per-target timeout |
 | `--dry-run` | Show planned commands without executing |

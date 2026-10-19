@@ -40,7 +40,7 @@ The full `[tool.mojox]` table is owned by `mojox-core` and shared with the CLI. 
 |---|---|---|---|
 | `package-root` | str | `"src"` | Directory containing top-level package dirs to compile |
 | `packages` | list[str] | (auto-scan `package-root`) | Explicit list of source directories. Each becomes one `.mojoc` |
-| `build-profile` | str | `"release"` | Which profile to use for wheel builds |
+| `build-profile` | str | `"release"` | Profile for wheel builds and `mojox build` (`--profile` overrides) |
 | `native-libs` | list[str] | `[]` | Pre-built `.so`/`.dylib` files to copy into `mojo_packages/lib/` |
 | `defines` | table | `{}` | `-D KEY=VALUE` flags passed to `mojo precompile` |
 | `flags` | list[str] | `[]` | Extra flags appended to every compile invocation |

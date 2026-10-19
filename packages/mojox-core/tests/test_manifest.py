@@ -222,6 +222,23 @@ class TestBuildProfile:
         with pytest.raises(ConfigError):
             parse_manifest(data)
 
+    def test_declared_build_profile(self, base_project):
+        data = {
+            "project": base_project,
+            "tool": {"mojox": {"build-profile": "fast", "profile": {"fast": {"optimize": 2}}}},
+        }
+        assert parse_manifest(data).build_profile == "fast"
+
+    def test_unknown_build_profile_names_the_key(self, base_project):
+        data = {
+            "project": base_project,
+            "tool": {"mojox": {"build-profile": "nope", "profile": {"fast": {}}}},
+        }
+        with pytest.raises(ConfigError) as exc:
+            parse_manifest(data)
+        assert exc.value.key_path == "tool.mojox.build-profile"
+        assert exc.value.message == "unknown profile 'nope'. Available: dev, fast, release"
+
 
 class TestCompileThreads:
     @staticmethod

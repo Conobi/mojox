@@ -161,8 +161,10 @@ class TestTestParallel:
 class TestErrors:
     def test_unknown_profile_name(self):
         m = _minimal_manifest()
-        with pytest.raises(ConfigError, match="nonexistent"):
+        with pytest.raises(ConfigError) as exc:
             resolve(m, "nonexistent", {}, LocalSettings.EMPTY)
+        assert exc.value.key_path == "profile.nonexistent"
+        assert exc.value.message == "unknown profile 'nonexistent'. Available: dev, release"
 
 
 class TestJobsSpec:

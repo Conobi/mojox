@@ -56,10 +56,10 @@ class TestBuildParser:
         assert args.profile == "dev"
 
     def test_default_profile_for_build(self):
-        """Build defaults to release profile."""
+        """Build leaves the profile unset so the manifest's build-profile applies."""
         parser = build_parser()
         args = parser.parse_args(["build"])
-        assert args.profile == "release"
+        assert args.profile is None
 
     def test_jobs_flag(self):
         """--jobs/-j sets concurrency."""
@@ -1322,6 +1322,75 @@ class TestParallelismReporting:
         pyproject.write_text(pyproject.read_text() + "\n[tool.mojox.profile.release]\ncompile-threads = 12\n")
         _cmd_metadata(build_parser().parse_args(["metadata", "--no-config", "--profile", "release"]))
         assert json.loads(capsys.readouterr().out)["policy"]["compile_threads"] == 12
+
+    @staticmethod
+    def _set_build_profile(project, build_profile: str) -> None:
+        """Set ``build-profile`` and add a ``fast`` profile whose 5 compile threads tell it apart."""
+        pyproject = project / "pyproject.toml"
+        text = pyproject.read_text().replace(
+            "test-parallel = true\n", f'test-parallel = true\nbuild-profile = "{build_profile}"\n'
+        )
+        pyproject.write_text(text + "\n[tool.mojox.profile.fast]\ncompile-threads = 5\n")
+
+    @staticmethod
+    def _build_verbose(capsys, *extra: str) -> str:
+        from mojox.cli import _cmd_build
+
+        _cmd_build(build_parser().parse_args(["build", "--no-config", "--dry-run", "-v", *extra]))
+        return capsys.readouterr().err
+
+    def test_build_without_build_profile_uses_release(self, project, capsys):
+        err = self._build_verbose(capsys)
+        assert "compile threads 8\n" in err
+        assert "--num-threads 8" in err
+
+    @pytest.mark.parametrize(("build_profile", "threads"), [("dev", 1), ("release", 8), ("fast", 5)])
+    def test_build_uses_manifest_build_profile(self, project, capsys, build_profile, threads):
+        self._set_build_profile(project, build_profile)
+        err = self._build_verbose(capsys)
+        assert f"compile threads {threads}\n" in err
+        assert f"--num-threads {threads}" in err
+
+    def test_build_profile_flag_beats_build_profile(self, project, capsys):
+        self._set_build_profile(project, "dev")
+        assert "--num-threads 8" in self._build_verbose(capsys, "--profile", "release")
+
+    def test_build_with_unknown_build_profile_exits_2(self, project, capsys):
+        self._set_build_profile(project, "nope")
+        with pytest.raises(SystemExit) as exc:
+            self._build_verbose(capsys)
+        assert exc.value.code == 2
+        assert "[tool.mojox.build-profile] unknown profile 'nope'" in capsys.readouterr().err
+
+    def test_profile_flag_does_not_excuse_unknown_build_profile(self, project, capsys):
+        """An unknown build-profile makes the manifest invalid, whatever profile is asked for."""
+        self._set_build_profile(project, "nope")
+        with pytest.raises(SystemExit) as exc:
+            self._build_verbose(capsys, "--profile", "release")
+        assert exc.value.code == 2
+        assert "[tool.mojox.build-profile] unknown profile 'nope'" in capsys.readouterr().err
+
+    def test_unknown_profile_flag_names_the_profile(self, project, capsys):
+        with pytest.raises(SystemExit) as exc:
+            self._build_verbose(capsys, "--profile", "nope")
+        assert exc.value.code == 2
+        assert "[profile.nope] unknown profile 'nope'" in capsys.readouterr().err
+
+    def test_other_commands_ignore_build_profile(self, project, capsys):
+        import json
+
+        from mojox.cli import _cmd_check, _cmd_metadata, _cmd_run
+
+        self._set_build_profile(project, "fast")
+        _cmd_metadata(build_parser().parse_args(["metadata", "--no-config"]))
+        assert json.loads(capsys.readouterr().out)["policy"]["compile_threads"] == 1
+        _cmd_check(build_parser().parse_args(["check", "--no-config", "-v"]))
+        assert "compile threads 1\n" in capsys.readouterr().err
+        (project / "hello.mojo").write_text("def main():\n    pass\n")
+        _cmd_run(build_parser().parse_args(["run", "--no-config", "--dry-run", "-v", "hello.mojo"]))
+        assert "--num-threads 1" in capsys.readouterr().err
+        assert self._test() == 0
+        assert "compile threads 1)\n" in capsys.readouterr().err
 
 
 class TestCheckConfigErrors:

@@ -14,6 +14,7 @@ Merge semantics per key:
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Any, Literal
 
 from .errors import ConfigError
@@ -129,6 +130,18 @@ def resolve_jobs(spec: int | str, cpu_count: int) -> int:
     return spec
 
 
+def check_profile_name(name: str, declared: Mapping[str, Profile], key_path: str) -> None:
+    """Reject *name* unless it is a built-in or a declared profile.
+
+    Raises:
+        ConfigError: At *key_path*, listing every available profile.
+    """
+    if name in _BUILTINS or name in declared:
+        return
+    available = sorted({*_BUILTINS, *declared})
+    raise ConfigError(key_path, f"unknown profile {name!r}. Available: {', '.join(available)}")
+
+
 def resolve(
     manifest: Manifest,
     profile_name: str,
@@ -151,15 +164,9 @@ def resolve(
             compile-threads value.
         ValueError: The jobs spec needs *cpu_count* and none was given.
     """
+    check_profile_name(profile_name, manifest.profiles, f"profile.{profile_name}")
     builtin = _BUILTINS.get(profile_name)
     manifest_profile = manifest.profiles.get(profile_name)
-
-    if builtin is None and manifest_profile is None:
-        available = sorted(set(list(_BUILTINS.keys()) + list(manifest.profiles.keys())))
-        raise ConfigError(
-            f"profile.{profile_name}",
-            f"unknown profile {profile_name!r}. Available: {', '.join(available)}",
-        )
 
     # Precedence: builtin -> manifest top-level -> manifest profile -> settings -> CLI
     optimize = _resolve_scalar(

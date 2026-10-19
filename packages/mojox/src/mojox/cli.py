@@ -3,7 +3,7 @@
 Subcommands:
   test      Run test targets (dev profile by default)
   run       Run a single Mojo file (dev profile by default)
-  build     Compile binary targets (release profile by default)
+  build     Compile binary targets (the manifest's build-profile by default, else release)
   check     Validate manifest and run lints (compiles libs if a compiler is available)
   metadata  Output the build plan as JSON
 """
@@ -51,26 +51,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     test_p = sub.add_parser("test", help="Run test targets")
     test_p.set_defaults(profile="dev")
-    _add_common_flags(test_p)
+    _add_common_flags(test_p, profile_default="dev")
     _add_test_flags(test_p)
 
     run_p = sub.add_parser("run", help="Run a Mojo file")
     run_p.add_argument("file", help="The .mojo file to run")
     run_p.set_defaults(profile="dev")
-    _add_common_flags(run_p)
+    _add_common_flags(run_p, profile_default="dev")
     _add_no_cache_flag(run_p)
 
     build_p = sub.add_parser("build", help="Compile binary targets")
-    build_p.set_defaults(profile="release")
-    _add_common_flags(build_p)
+    build_p.set_defaults(profile=None)  # None: fall back to the manifest's build-profile
+    _add_common_flags(build_p, profile_default="build-profile from pyproject.toml, else release")
 
     check_p = sub.add_parser("check", help="Check project: compile packages and run lints")
     check_p.set_defaults(profile="dev")
-    _add_common_flags(check_p)
+    _add_common_flags(check_p, profile_default="dev")
 
     meta_p = sub.add_parser("metadata", help="Output build plan as JSON")
     meta_p.set_defaults(profile="dev")
-    _add_common_flags(meta_p)
+    _add_common_flags(meta_p, profile_default="dev")
 
     cache_p = sub.add_parser("cache", help="Cache management")
     cache_sub = cache_p.add_subparsers(dest="cache_action", required=True)
@@ -79,9 +79,17 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _add_common_flags(parser: argparse.ArgumentParser) -> None:
-    """Add flags shared across exec-capable subcommands."""
-    parser.add_argument("--profile", default=argparse.SUPPRESS, help="Build profile (dev, release, or user-defined)")
+def _add_common_flags(parser: argparse.ArgumentParser, *, profile_default: str) -> None:
+    """Add flags shared across exec-capable subcommands.
+
+    *profile_default* only documents the subcommand's default profile in
+    ``--help``; the default itself comes from ``set_defaults``.
+    """
+    parser.add_argument(
+        "--profile",
+        default=argparse.SUPPRESS,
+        help=f"Build profile: dev, release, or user-defined (default: {profile_default})",
+    )
     parser.add_argument(
         "--jobs",
         "-j",
@@ -436,7 +444,7 @@ def _resolve_pipeline(
         sys.exit(2)
 
     cli_overrides = _build_cli_overrides(args)
-    profile_name = args.profile
+    profile_name = manifest.build_profile if args.profile is None else args.profile
     try:
         policy = resolve(manifest, profile_name, cli_overrides, settings, cpu_count=host.cpu_count)
     except ConfigError as e:

@@ -11,7 +11,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from .errors import ConfigError
-from .policy import parse_count
+from .policy import check_profile_name, parse_count
 from .types import BinaryEntry, LintConfig, Manifest, Profile
 
 _VALID_OPTIMIZE = frozenset({0, 1, 2, 3})
@@ -29,6 +29,7 @@ def parse_manifest(data: dict[str, Any]) -> Manifest:
 
     name = _require_str(project, "project", "name")
     version = _parse_version(project)
+    profiles = _parse_profiles(mojox.get("profile", {}))
 
     return Manifest(
         name=name,
@@ -63,8 +64,8 @@ def parse_manifest(data: dict[str, Any]) -> Manifest:
         source_include=_parse_path_list_optional(mojox, "source-include"),
         source_exclude=_parse_path_list(mojox, "source-exclude", ()),
         wheel_exclude=_parse_str_list(mojox, "wheel-exclude"),
-        profiles=_parse_profiles(mojox.get("profile", {})),
-        build_profile=_parse_build_profile(mojox),
+        profiles=profiles,
+        build_profile=_parse_build_profile(mojox, profiles),
         compile_threads=_parse_compile_threads(mojox, "tool.mojox.compile-threads"),
     )
 
@@ -334,14 +335,19 @@ def _parse_compile_threads(table: dict[str, Any], key_path: str) -> int | None:
     return parse_count(table["compile-threads"], key_path, from_text=False)
 
 
-def _parse_build_profile(mojox: dict[str, Any]) -> str:
-    """Parse the build-profile key, defaulting to 'release'."""
+def _parse_build_profile(mojox: dict[str, Any], profiles: dict[str, Profile]) -> str:
+    """Parse the build-profile key, defaulting to 'release'.
+
+    The name must be a built-in or one of *profiles*, so a bad value is
+    reported against this key rather than as an unknown ``--profile``.
+    """
     raw = mojox.get("build-profile", "release")
     if not isinstance(raw, str):
         raise ConfigError(
             "tool.mojox.build-profile",
             f"expected a string, got {type(raw).__name__}",
         )
+    check_profile_name(raw, profiles, "tool.mojox.build-profile")
     return raw
 
 

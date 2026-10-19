@@ -149,15 +149,21 @@ def _compile_binary(
 
     Injects ``-I site-packages/mojo_packages`` and an ``$ORIGIN``-relative
     RUNPATH so cross-package imports and the Mojo runtime resolve after
-    install.
+    install. Optimisation, debug level and ``--num-threads`` come from the
+    policy in the same order ``mojox build`` uses; the thread count is never
+    host-derived because it changes optimised machine code.
     """
     src_path = root / source
     cmd = [toolchain.mojo_path, "build", str(src_path), "-o", str(output)]
+    cmd.append(f"-O{policy.optimize}")
+    if policy.debug_level and policy.debug_level != "none":
+        cmd.extend(["--debug-level", policy.debug_level])
     pkg_path = sysconfig.get_path("platlib") + "/mojo_packages"
     if os.path.isdir(pkg_path):
         cmd.extend(["-I", pkg_path])
     for key, value in policy.defines.items():
         cmd.extend(["-D", f"{key}={value}"])
+    cmd.extend(["--num-threads", str(policy.compile_threads)])
 
     py_ver = sysconfig.get_python_version()
     site_pkg_rel = f"$ORIGIN/../lib/python{py_ver}/site-packages"

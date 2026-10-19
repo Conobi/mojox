@@ -27,7 +27,7 @@ Only Mojo 1.0+ is supported (`mojo precompile` and `.mojoc` only): `mojox` requi
 ```
 mojox test       Run test targets (dev profile by default)
 mojox run        Build and execute a single .mojo file (dev profile)
-mojox build      Compile binary targets (release profile)
+mojox build      Compile binary targets (build-profile, release by default)
 mojox check      Validate manifest, run lints, compile libs if a compiler is available
 mojox metadata   Output the build plan as JSON
 mojox cache clean  Delete cached binaries (.mojox/cache/)
@@ -63,7 +63,7 @@ The file is built to a cached binary, which is then executed; mojox exits with t
 ### `mojox build`
 
 ```bash
-uv run mojox build                                 # release profile by default
+uv run mojox build                                 # build-profile (release by default)
 uv run mojox build --profile dev --dry-run
 ```
 
