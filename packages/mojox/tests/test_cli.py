@@ -303,6 +303,7 @@ class TestCLIIntegration:
         )
         tests_dir = tmp_path / "tests"
         tests_dir.mkdir()
+        (tests_dir / "test_a.mojo").write_text("def test_a():\n    pass\n")
         result = subprocess.run(
             [sys.executable, "-m", "mojox", "check"],
             cwd=str(tmp_path),
@@ -1321,3 +1322,85 @@ class TestParallelismReporting:
         pyproject.write_text(pyproject.read_text() + "\n[tool.mojox.profile.release]\ncompile-threads = 12\n")
         _cmd_metadata(build_parser().parse_args(["metadata", "--no-config", "--profile", "release"]))
         assert json.loads(capsys.readouterr().out)["policy"]["compile_threads"] == 12
+
+
+class TestCheckConfigErrors:
+    """``mojox check`` skips compilation only when the toolchain is missing; config errors still exit 2."""
+
+    @pytest.fixture
+    def project(self, tmp_path, monkeypatch):
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (proj / "pyproject.toml").write_text('[project]\nname = "x"\nversion = "0.1.0"\n')
+        (proj / "tests").mkdir()
+        (proj / "tests" / "test_a.mojo").write_text("def test_a():\n    pass\n")
+        (proj / "bad.toml").write_text("compile-threads = 0\n")
+        monkeypatch.setattr("mojox_core.io.environment.read_distributions", list)
+        monkeypatch.setenv("MOJOX_CPU_COUNT", "2")
+        monkeypatch.delenv("MOJOX_COMPILE_THREADS", raising=False)
+        monkeypatch.chdir(proj)
+        return proj
+
+    @staticmethod
+    def _toolchain(monkeypatch, *, installed: bool) -> None:
+        from mojox_core import ConfigError, Toolchain
+
+        def missing() -> Toolchain:
+            raise ConfigError("toolchain", "mojo-compiler is not installed")
+
+        present = Toolchain(mojo_path="/nowhere/mojo", version="1.0.0", subcommand="precompile", extension=".mojoc")
+        monkeypatch.setattr("mojox_core.io.toolchain.resolve", (lambda: present) if installed else missing)
+
+    @staticmethod
+    def _check(*extra: str) -> None:
+        from mojox.cli import _cmd_check
+
+        _cmd_check(build_parser().parse_args(["check", *extra]))
+
+    @pytest.mark.parametrize("installed", [True, False])
+    def test_bad_settings_file_exits_2(self, project, monkeypatch, capsys, installed):
+        self._toolchain(monkeypatch, installed=installed)
+        with pytest.raises(SystemExit) as exc:
+            self._check("--config-file", str(project / "bad.toml"))
+        assert exc.value.code == 2
+        err = capsys.readouterr().err
+        assert "compile-threads" in err
+        assert "OK" not in err
+        assert "compiler not available" not in err
+
+    @pytest.mark.parametrize("installed", [True, False])
+    def test_bad_env_exits_2(self, project, monkeypatch, capsys, installed):
+        self._toolchain(monkeypatch, installed=installed)
+        monkeypatch.setenv("MOJOX_COMPILE_THREADS", "0")
+        with pytest.raises(SystemExit) as exc:
+            self._check("--no-config")
+        assert exc.value.code == 2
+        err = capsys.readouterr().err
+        assert "MOJOX_COMPILE_THREADS" in err
+        assert "OK" not in err
+
+    @pytest.mark.parametrize("installed", [True, False])
+    def test_unknown_profile_exits_2(self, project, monkeypatch, capsys, installed):
+        self._toolchain(monkeypatch, installed=installed)
+        with pytest.raises(SystemExit) as exc:
+            self._check("--no-config", "--profile", "nope")
+        assert exc.value.code == 2
+        err = capsys.readouterr().err
+        assert "unknown profile 'nope'" in err
+        assert "OK" not in err
+
+    def test_missing_toolchain_still_checks_manifest(self, project, monkeypatch, capsys):
+        self._toolchain(monkeypatch, installed=False)
+        self._check("--no-config")
+        err = capsys.readouterr().err
+        assert "mojo-compiler is not installed" in err
+        assert "compiler not available, skipping compilation check" in err
+        assert "check: OK (manifest only)" in err
+
+    def test_missing_toolchain_exits_2_for_other_commands(self, project, monkeypatch):
+        from mojox.cli import _cmd_build
+
+        self._toolchain(monkeypatch, installed=False)
+        with pytest.raises(SystemExit) as exc:
+            _cmd_build(build_parser().parse_args(["build", "--no-config"]))
+        assert exc.value.code == 2

@@ -357,6 +357,10 @@ def _interrupted_summary(commands: tuple[Command, ...]) -> str:
     return f"Interrupted — {len(commands)} targets planned"
 
 
+class _ToolchainUnavailable(SystemExit):
+    """Exit 2 because no usable Mojo compiler is installed; the message is already printed."""
+
+
 def _resolve_pipeline(
     args: argparse.Namespace,
 ) -> tuple[
@@ -370,7 +374,11 @@ def _resolve_pipeline(
     tuple[Command, ...],
     tuple[str, ...],
 ]:
-    """Run the shared resolution pipeline.
+    """Run the shared resolution pipeline, exiting 2 with the message on any error.
+
+    The toolchain is resolved after every configuration step, so a missing
+    compiler never hides a configuration error, and it exits with
+    :class:`_ToolchainUnavailable`, which only ``mojox check`` catches.
 
     Returns (manifest, graph, env, policy, toolchain, host, settings, commands, include_paths).
     """
@@ -416,26 +424,7 @@ def _resolve_pipeline(
         sys.exit(2)
 
     try:
-        toolchain = resolve_toolchain()
-    except ConfigError as e:
-        print(str(e), file=sys.stderr)
-        sys.exit(2)
-
-    dists = read_distributions()
-    lock_data = read_lockfile(root)
-    try:
         host = read_host_facts(root, environ=os.environ)
-    except ConfigError as e:
-        print(str(e), file=sys.stderr)
-        sys.exit(2)
-
-    try:
-        env = build_env(
-            dists,
-            lock_data,
-            mojo_path=toolchain.mojo_path,
-            mojo_version=toolchain.version,
-        )
     except ConfigError as e:
         print(str(e), file=sys.stderr)
         sys.exit(2)
@@ -450,6 +439,25 @@ def _resolve_pipeline(
     profile_name = args.profile
     try:
         policy = resolve(manifest, profile_name, cli_overrides, settings, cpu_count=host.cpu_count)
+    except ConfigError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(2)
+
+    try:
+        toolchain = resolve_toolchain()
+    except ConfigError as e:
+        print(str(e), file=sys.stderr)
+        raise _ToolchainUnavailable(2) from None
+
+    dists = read_distributions()
+    lock_data = read_lockfile(root)
+    try:
+        env = build_env(
+            dists,
+            lock_data,
+            mojo_path=toolchain.mojo_path,
+            mojo_version=toolchain.version,
+        )
     except ConfigError as e:
         print(str(e), file=sys.stderr)
         sys.exit(2)
@@ -1130,7 +1138,7 @@ def _cmd_check(args: argparse.Namespace) -> None:
     # --- Compiler check: resolve pipeline and precompile ---
     try:
         _manifest, _graph, env, policy, toolchain, host, settings, commands, include_paths = _resolve_pipeline(args)
-    except SystemExit:
+    except _ToolchainUnavailable:
         print(_c(sys.stderr, _DIM, "compiler not available, skipping compilation check"), file=sys.stderr)
         if findings:
             print(_c(sys.stderr, _BOLD, f"check: {len(findings)} warning(s)"), file=sys.stderr)
