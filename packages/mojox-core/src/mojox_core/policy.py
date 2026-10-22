@@ -8,7 +8,7 @@ turns the layers into fold sources and projects the fold into :class:`Policy`.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .errors import ConfigError
@@ -18,7 +18,7 @@ from .options import (
     OPTIONS,
     Option,
     Resolution,
-    by_key,
+    cli_source,
     env_source,
     parse_count,
     parse_count_text,
@@ -37,18 +37,6 @@ __all__ = [
     "resolve_jobs",
     "resolve_without_manifest",
 ]
-
-# cli_overrides keys (argparse dests) -> option keys. optimize and debug_level
-# have no flag; tests still pass them.
-_LEGACY_CLI_KEYS = {
-    "jobs": "jobs",
-    "compile_threads": "compile-threads",
-    "timeout": "timeout",
-    "defines": "defines",
-    "flags": "flags",
-    "optimize": "optimize",
-    "debug_level": "debug-level",
-}
 
 
 def resolve_jobs(spec: int | str, cpu_count: int) -> int:
@@ -90,7 +78,9 @@ def resolve(
     """Resolve the full flag set from all precedence layers.
 
     Args:
-        cli_overrides: Overrides from CLI flags (highest precedence), re-validated here.
+        cli_overrides: CLI values keyed by option key and shaped like TOML
+            values (a tuple for ``flags``, a dict for ``defines``); see
+            :func:`mojox_core.options.cli_source`.
         env: The process environment; only the ``MOJOX_*`` names of options
             that allow ENV are read. Pass ``{}`` where the environment must not
             count (the build backend).
@@ -99,7 +89,8 @@ def resolve(
 
     Raises:
         ConfigError: Unknown *profile_name*, or an invalid ``MOJOX_*`` or CLI value.
-        ValueError: The jobs spec needs *cpu_count* and none was given.
+        ValueError: The jobs spec needs *cpu_count* and none was given, or a
+            *cli_overrides* key is not a command-line option.
     """
     check_profile_name(profile_name, manifest.profiles, f"profile.{profile_name}")
     sources = collect_sources(manifest, profile_name, cli_overrides, settings, env, options=options)
@@ -140,6 +131,7 @@ def collect_sources(
 
     Raises:
         ConfigError: An invalid ``MOJOX_*`` or CLI value, named by its origin.
+        ValueError: A *cli_overrides* key is not a command-line option.
     """
     sources: list[Mapping[str, Value]] = []
     if manifest is not None:
@@ -149,7 +141,7 @@ def collect_sources(
             sources.append(profile.values)
     sources.extend(values for _path, values in settings.sources)
     sources.append(env_source(env, options=options))
-    sources.append(_legacy_cli(cli_overrides))
+    sources.append(cli_source(cli_overrides, options=options))
     return tuple(sources)
 
 
@@ -181,19 +173,3 @@ def _project(resolution: Resolution, cpu_count: int | None, *, tests_follow_jobs
         env=dict(values["env"]),
         origins=dict(resolution.origins),
     )
-
-
-def _legacy_cli(cli_overrides: Mapping[str, Any]) -> dict[str, Value]:
-    """CLI overrides keyed by argparse dest, re-validated and named by their flag."""
-    raw = {_LEGACY_CLI_KEYS[name]: value for name, value in cli_overrides.items() if name in _LEGACY_CLI_KEYS}
-    return _checked(raw, lambda key: f"--{key}")
-
-
-def _checked(raw: Mapping[str, Any], origin_of: Callable[[str], str]) -> dict[str, Value]:
-    """Parse each set value with its option's TOML parser, so hand-built inputs get the usual checks."""
-    table = by_key(OPTIONS)
-    return {
-        key: Value(table[key].parse(value, origin_of(key)), origin_of(key))
-        for key, value in raw.items()
-        if value is not None
-    }

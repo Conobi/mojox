@@ -212,12 +212,15 @@ def _add_no_cache_flag(parser: argparse.ArgumentParser) -> None:
 
 
 def _build_cli_overrides(args: argparse.Namespace) -> dict[str, Any]:
-    """Extract CLI override dict from parsed arguments."""
+    """Collect the given option flags into overrides keyed by option key.
+
+    Keys are option keys (``compile-threads``), not argparse dests.
+    """
     overrides: dict[str, Any] = {}
     if getattr(args, "jobs", None) is not None:
         overrides["jobs"] = args.jobs
     if getattr(args, "compile_threads", None) is not None:
-        overrides["compile_threads"] = args.compile_threads
+        overrides["compile-threads"] = args.compile_threads
     if getattr(args, "timeout", None) is not None:
         overrides["timeout"] = args.timeout
     if getattr(args, "defines", None):

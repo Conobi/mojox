@@ -51,7 +51,7 @@ _CI = {"optimize": 1, "debug-level": "none", "defines": {"A": "2", "B": "3"}, "f
 _USER_FILE = {"jobs": 2, "compile-threads": 5, "timeout": 60}
 _PROJECT_FILE = {"jobs": 3, "timeout": 70}
 _ENV = {"MOJOX_JOBS": "4", "MOJOX_COMPILE_THREADS": "6", "MOJOX_TIMEOUT": "80"}
-_CLI = {"jobs": 5, "compile_threads": 7, "timeout": 90, "defines": {"C": "x"}, "flags": ("--c",)}
+_CLI = {"jobs": 5, "compile-threads": 7, "timeout": 90, "defines": {"C": "x"}, "flags": ("--c",)}
 
 
 def _policy(mojox, profile, *, user=None, project=None, env=None, cli=None, cpu_count=None) -> dict:

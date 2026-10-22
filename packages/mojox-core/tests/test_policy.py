@@ -142,12 +142,13 @@ class TestPrecedence:
         assert p.optimize == 1
 
     def test_cli_overrides_everything(self):
-        m = _minimal_manifest(
-            optimize=2,
-            profiles={"dev": _profile(optimize=1, defines={}, flags=())},
-        )
-        p = resolve(m, "dev", {"optimize": 0}, LocalSettings.EMPTY)
-        assert p.optimize == 0
+        m = _minimal_manifest(compile_threads=2, profiles={"dev": _profile(compile_threads=3)})
+        p = resolve(m, "dev", {"compile-threads": 4}, _settings(compile_threads=5), {"MOJOX_COMPILE_THREADS": "6"})
+        assert p.compile_threads == 4
+
+    def test_optimize_has_no_cli_layer(self):
+        with pytest.raises(ValueError, match="not a command-line option"):
+            resolve(_minimal_manifest(), "dev", {"optimize": 0}, LocalSettings.EMPTY)
 
     def test_release_is_default_for_build(self):
         m = _minimal_manifest()
@@ -349,7 +350,7 @@ class TestCompileThreadsPrecedence:
 
     def test_cli_beats_settings_and_profile(self):
         m = _minimal_manifest(profiles={"release": _profile(compile_threads=12)})
-        p = resolve(m, "release", {"compile_threads": 4}, _settings(compile_threads=2))
+        p = resolve(m, "release", {"compile-threads": 4}, _settings(compile_threads=2))
         assert p.compile_threads == 4
 
     def test_env_beats_named_profile(self):
@@ -366,17 +367,17 @@ class TestCompileThreadsPrecedence:
 
     def test_cli_beats_settings(self):
         m = _minimal_manifest(compile_threads=2)
-        p = resolve(m, "dev", {"compile_threads": 4}, _settings(compile_threads=3))
+        p = resolve(m, "dev", {"compile-threads": 4}, _settings(compile_threads=3))
         assert p.compile_threads == 4
 
     def test_none_falls_through(self):
         m = _minimal_manifest(compile_threads=2)
-        assert resolve(m, "dev", {"compile_threads": None}, LocalSettings.EMPTY).compile_threads == 2
+        assert resolve(m, "dev", {"compile-threads": None}, LocalSettings.EMPTY).compile_threads == 2
 
     @pytest.mark.parametrize("raw", [0, -1, True, "4"])
     def test_invalid_cli_value_rejected(self, raw):
         with pytest.raises(ConfigError):
-            resolve(_minimal_manifest(), "dev", {"compile_threads": raw}, LocalSettings.EMPTY)
+            resolve(_minimal_manifest(), "dev", {"compile-threads": raw}, LocalSettings.EMPTY)
 
     def test_independent_of_jobs_and_cpus(self):
         p = resolve(_minimal_manifest(), "dev", {"jobs": "num-cpus"}, LocalSettings.EMPTY, cpu_count=64)
@@ -432,7 +433,7 @@ class TestResolveWithoutManifest:
             ({"jobs": "num-cpus"}, LocalSettings.EMPTY),
             ({"jobs": -2}, _settings(jobs=4)),
             ({}, _settings(jobs="num-cpus", compile_threads=3)),
-            ({"compile_threads": 5}, _settings(compile_threads=3)),
+            ({"compile-threads": 5}, _settings(compile_threads=3)),
         ],
     )
     def test_matches_resolve(self, cli, settings):
@@ -460,10 +461,10 @@ class TestResolveWithoutManifest:
 
     def test_cli_and_settings_layers(self):
         p = resolve_without_manifest(
-            {"optimize": 2, "defines": {"X": "1"}, "flags": ("--f",), "timeout": 9},
+            {"defines": {"X": "1"}, "flags": ("--f",), "timeout": 9},
             _settings(timeout_s=50),
         )
-        assert p.optimize == 2
+        assert p.optimize == 0
         assert p.defines["X"] == "1"
         assert p.flags == ("--f",)
         assert p.timeout_s == 9
@@ -511,6 +512,20 @@ class TestProvenanceAndEnv:
     def test_settings_env_reaches_the_policy(self):
         p = resolve(_minimal_manifest(), "dev", {}, _settings(env={"CC": "clang"}))
         assert p.env == {"CC": "clang"}
+
+    def test_settings_env_tables_merge_per_key(self):
+        user, project = "/u/.config/mojox/config.toml", "/w/proj/.mojox/config.toml"
+        settings = parse_settings(
+            [
+                (user, {"env": {"CC": "u", "SAME": "user"}}),
+                (project, {"env": {"LD": "p", "SAME": "proj"}}),
+            ]
+        )
+        p = resolve(_minimal_manifest(), "dev", {}, settings)
+        assert p.env == {"CC": "u", "SAME": "proj", "LD": "p"}
+        assert p.origins["env.CC"] == f"{user}:env.CC"
+        assert p.origins["env.SAME"] == f"{project}:env.SAME"
+        assert p.origins["env.LD"] == f"{project}:env.LD"
 
 
 class TestManifestTimeout:

@@ -579,3 +579,25 @@ def _as_layer_value(opt: Option, parsed: Any) -> Any:
         key, value = parsed
         return {key: value}
     return parsed
+
+
+def cli_source(cli_overrides: Mapping[str, Any], *, options: Sequence[Option] = OPTIONS) -> dict[str, Value]:
+    """Re-validate CLI values (keyed by option key, TOML-shaped) and name each by its first long flag.
+
+    None means "flag not given". Hand-built overrides get the same checks as
+    parsed flags.
+
+    Raises:
+        ConfigError: An invalid value, named by the flag.
+        ValueError: A key that is not a CLI option (a programming error).
+    """
+    table = by_key(options)
+    values: dict[str, Value] = {}
+    for key, raw in cli_overrides.items():
+        opt = table.get(key)
+        if opt is None or Layer.CLI not in opt.layers:
+            raise ValueError(f"{key!r} is not a command-line option")
+        if raw is None:
+            continue
+        values[key] = Value(opt.parse(raw, opt.cli_origin), opt.cli_origin)
+    return values

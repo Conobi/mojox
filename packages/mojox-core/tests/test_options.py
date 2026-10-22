@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 from mojox_core.errors import ConfigError
+from mojox_core.manifest import parse_manifest
 from mojox_core.options import (
     BUILTIN_PROFILES,
     OPTIONS,
@@ -12,11 +13,13 @@ from mojox_core.options import (
     Merge,
     allowed_in,
     by_key,
+    cli_source,
     env_source,
     option,
     origin_under,
     parse_bool_strict,
     parse_bool_text,
+    parse_count_text,
     parse_count_toml,
     parse_debug_level,
     parse_define_text,
@@ -30,7 +33,9 @@ from mojox_core.options import (
     registry,
     resolve_values,
 )
-from mojox_core.types import LintConfig, Value
+from mojox_core.policy import collect_sources, resolve
+from mojox_core.settings import parse_settings
+from mojox_core.types import LintConfig, LocalSettings, Value
 
 
 def _same(value, origin):
@@ -554,3 +559,116 @@ class TestEnvSource:
         )
         src = env_source({"MOJOX_X_LIST": "-a", "MOJOX_X_MAP": "K=v"}, options=reg)
         assert (src["x-list"].value, src["x-map"].value) == (("-a",), {"K": "v"})
+
+
+class TestCliSource:
+    def test_values_are_named_by_their_first_long_flag(self):
+        src = cli_source({"jobs": -2, "defines": {"A": "1"}, "flags": ("--x",), "compile-threads": None})
+        assert {key: (v.value, v.origin) for key, v in src.items()} == {
+            "jobs": (-2, "--jobs"),
+            "defines": ({"A": "1"}, "--define"),
+            "flags": (("--x",), "--flag"),
+        }
+
+    @pytest.mark.parametrize(
+        ("key", "raw", "origin"),
+        [
+            ("compile-threads", 0, "--compile-threads"),
+            ("compile-threads", "4", "--compile-threads"),
+            ("jobs", 0, "--jobs"),
+            ("timeout", -1, "--timeout"),
+        ],
+    )
+    def test_invalid_values_name_the_flag(self, key, raw, origin):
+        with pytest.raises(ConfigError) as exc:
+            cli_source({key: raw})
+        assert exc.value.key_path == origin
+
+    @pytest.mark.parametrize("key", ["optimize", "env", "compile_threads", "nope"])
+    def test_non_cli_keys_are_programming_errors(self, key):
+        with pytest.raises(ValueError, match="not a command-line option"):
+            cli_source({key: 1})
+
+
+def _with_throwaways(*layers):
+    """The real registry plus a throwaway bool and int option allowed in *layers*."""
+    return registry(
+        *OPTIONS,
+        option("x-flag", parse_bool_strict, layers, default=False),
+        option("x-count", parse_count_toml, layers, default=1, parse_text=parse_count_text),
+    )
+
+
+def _project(mojox: dict) -> dict:
+    """A minimal pyproject dict with *mojox* as its [tool.mojox] table."""
+    return {"project": {"name": "x", "version": "1.0.0"}, "tool": {"mojox": mojox}}
+
+
+class TestOneEntryPerOption:
+    REG = _with_throwaways(Layer.TOP, Layer.PROFILE)
+
+    def _resolve(self, mojox, profile, env=None):
+        """Parse *mojox* with the throwaway registry and fold it for *profile*."""
+        manifest = parse_manifest(_project(mojox), options=self.REG)
+        sources = collect_sources(manifest, profile, {}, LocalSettings.EMPTY, env or {}, options=self.REG)
+        return manifest, resolve_values(sources, profile, options=self.REG)
+
+    def test_settable_at_top_level_and_per_profile(self):
+        manifest, res = self._resolve({"x-flag": True, "x-count": 2, "profile": {"ci": {"x-count": 5}}}, "ci")
+        assert (res.values["x-flag"], res.values["x-count"]) == (True, 5)
+        assert res.origins["x-count"] == "tool.mojox.profile.ci.x-count"
+        policy = resolve(manifest, "ci", {}, LocalSettings.EMPTY, {}, options=self.REG)
+        assert policy.origins["x-flag"] == "tool.mojox.x-flag"
+
+    def test_defaults_when_unset(self):
+        _manifest, res = self._resolve({}, "dev")
+        assert (res.values["x-flag"], res.values["x-count"]) == (False, 1)
+        assert (res.origins["x-flag"], res.origins["x-count"]) == ("default", "default")
+
+    @pytest.mark.parametrize(
+        ("mojox", "origin"),
+        [
+            ({"x-flag": "yes"}, "tool.mojox.x-flag"),
+            ({"x-count": 0}, "tool.mojox.x-count"),
+            ({"profile": {"ci": {"x-flag": 1}}}, "tool.mojox.profile.ci.x-flag"),
+        ],
+    )
+    def test_validated(self, mojox, origin):
+        with pytest.raises(ConfigError) as exc:
+            parse_manifest(_project(mojox), options=self.REG)
+        assert exc.value.key_path == origin
+
+    def test_environment_is_ignored_until_allowed(self):
+        _manifest, res = self._resolve({}, "dev", {"MOJOX_X_FLAG": "true", "MOJOX_X_COUNT": "3"})
+        assert (res.values["x-flag"], res.values["x-count"]) == (False, 1)
+
+    def test_not_settable_in_settings(self):
+        with pytest.raises(ConfigError, match="allowed in: tool.mojox, tool.mojox.profile.<name>"):
+            parse_settings([("c.toml", {"x-count": 2})], options=self.REG)
+
+
+class TestAddingTheEnvLayer:
+    REG = _with_throwaways(Layer.TOP, Layer.PROFILE, Layer.ENV)
+
+    def test_env_overrides_the_profile(self):
+        manifest = parse_manifest(_project({"profile": {"ci": {"x-count": 5}}}), options=self.REG)
+        env = {"MOJOX_X_FLAG": " TRUE ", "MOJOX_X_COUNT": "3"}
+        policy = resolve(manifest, "ci", {}, LocalSettings.EMPTY, env, options=self.REG)
+        assert (policy.origins["x-flag"], policy.origins["x-count"]) == ("MOJOX_X_FLAG", "MOJOX_X_COUNT")
+        sources = collect_sources(manifest, "ci", {}, LocalSettings.EMPTY, env, options=self.REG)
+        res = resolve_values(sources, "ci", options=self.REG)
+        assert (res.values["x-flag"], res.values["x-count"]) == (True, 3)
+
+    @pytest.mark.parametrize(
+        ("name", "text"), [("MOJOX_X_FLAG", "maybe"), ("MOJOX_X_FLAG", ""), ("MOJOX_X_COUNT", "0")]
+    )
+    def test_bad_text_names_the_variable(self, name, text):
+        manifest = parse_manifest(_project({}), options=self.REG)
+        with pytest.raises(ConfigError) as exc:
+            resolve(manifest, "dev", {}, LocalSettings.EMPTY, {name: text}, options=self.REG)
+        assert exc.value.key_path == name
+
+
+def test_cli_or_env_on_a_non_bool_option_needs_parse_text():
+    with pytest.raises(ValueError, match="parse_text"):
+        option("x-count", parse_count_toml, {Layer.TOP, Layer.CLI})

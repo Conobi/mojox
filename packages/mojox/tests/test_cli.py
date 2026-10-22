@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import signal
 import subprocess
 import sys
@@ -155,8 +156,28 @@ class TestParallelismFlags:
 
         args = build_parser().parse_args(["test", "-j", "num-cpus", "--compile-threads", "3"])
         overrides = _build_cli_overrides(args)
-        assert (overrides["jobs"], overrides["compile_threads"]) == ("num-cpus", 3)
-        assert "compile_threads" not in _build_cli_overrides(build_parser().parse_args(["test"]))
+        assert (overrides["jobs"], overrides["compile-threads"]) == ("num-cpus", 3)
+        assert "compile-threads" not in _build_cli_overrides(build_parser().parse_args(["test"]))
+
+
+class TestOptionFlagsHelp:
+    @pytest.mark.parametrize("sub", ["test", "run", "build", "check", "metadata"])
+    def test_names_metavars_and_relative_order(self, sub, capsys):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args([sub, "--help"])
+        options_section = capsys.readouterr().out.split("options:", 1)[1]
+        # Before Python 3.13 argparse repeats the metavar after each alias.
+        expected = [
+            r"^\s+--jobs(?: JOBS)?, -j JOBS\b",
+            r"^\s+--compile-threads N\b",
+            r"^\s+--timeout TIMEOUT\b",
+            r"^\s+-D(?: DEFINES)?, --define DEFINES\b",
+            r"^\s+--flag FLAGS\b",
+        ]
+        matches = [re.search(pattern, options_section, re.MULTILINE) for pattern in expected]
+        assert all(matches), [p for p, m in zip(expected, matches) if m is None]
+        positions = [m.start() for m in matches if m is not None]
+        assert positions == sorted(positions)
 
 
 class TestTestSubcommandFlags:
