@@ -69,11 +69,45 @@ def _includes(argv: tuple[str, ...]) -> list[str]:
 
 
 class TestPlanBundle:
-    def test_harness_sees_staging_then_lib_parents_then_dependencies(self, tmp_path):
+    def test_every_lib_is_precompiled_before_the_harness(self, tmp_path):
+        commands = _plan_bundle(**_bundle_inputs(tmp_path, libs=("src/mylib", "src/other")))
+        assert [(c.kind, c.target_id) for c in commands] == [
+            (CommandKind.COMPILE_PACKAGE, "src/mylib"),
+            (CommandKind.COMPILE_PACKAGE, "src/other"),
+            (CommandKind.BUILD_TEST, "bundle::harness"),
+        ]
+        assert commands[-1].depends_on == ("src/mylib", "src/other")
+
+    def test_harness_sees_packages_then_staging_then_lib_parents(self, tmp_path):
         commands = _plan_bundle(**_bundle_inputs(tmp_path, libs=("src/mylib",)))
-        (harness,) = [c for c in commands if c.kind == CommandKind.BUILD_TEST]
-        assert harness.target_id == "bundle::harness"
-        assert _includes(harness.argv)[-3:] == [f"{tmp_path}/.mojox/bundle/stage", f"{tmp_path}/src", "/deps"]
+        assert _includes(commands[-1].argv) == [
+            f"{tmp_path}/.mojox/build/pkg",
+            f"{tmp_path}/.mojox/bundle/stage",
+            f"{tmp_path}/src",
+            "/deps",
+        ]
+
+    def test_libs_under_one_parent_add_it_once(self, tmp_path):
+        commands = _plan_bundle(**_bundle_inputs(tmp_path, libs=("src/mylib", "src/other")))
+        assert _includes(commands[-1].argv) == [
+            f"{tmp_path}/.mojox/build/pkg",
+            f"{tmp_path}/.mojox/bundle/stage",
+            f"{tmp_path}/src",
+            "/deps",
+        ]
+
+    def test_lib_that_is_not_a_dir_adds_no_source_dir(self, tmp_path):
+        inputs = _bundle_inputs(tmp_path, libs=())
+        (tmp_path / "single").mkdir()
+        (tmp_path / "single" / "mod.mojo").write_text("")
+        lib = Target(TargetKind.LIB, "single/mod.mojo", "single/mod.mojo")
+        inputs["graph"] = TargetGraph(targets=(lib, *inputs["graph"].targets), edges=())
+        commands = _plan_bundle(**inputs)
+        assert _includes(commands[-1].argv) == [
+            f"{tmp_path}/.mojox/build/pkg",
+            f"{tmp_path}/.mojox/bundle/stage",
+            "/deps",
+        ]
 
     def test_harness_is_built_without_werror(self, tmp_path):
         commands = _plan_bundle(**_bundle_inputs(tmp_path, libs=("src/mylib",)))

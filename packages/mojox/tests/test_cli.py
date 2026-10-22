@@ -574,16 +574,20 @@ class TestBundleFlag:
         assert args.filter == "test_foo"
 
 
+# Fake ``mojo`` with ``build`` and ``precompile``; each call logs ``<subcommand> <source>``.
 _FAKE_MOJO = """#!{python}
 import pathlib, stat, sys
 args = sys.argv[1:]
-assert args[0] == "build", args
+assert args[0] in ("build", "precompile"), args
 out = pathlib.Path(args[args.index("-o") + 1])
 out.parent.mkdir(parents=True, exist_ok=True)
-out.write_text("#!/bin/sh\\nexit 0\\n")
-out.chmod(out.stat().st_mode | stat.S_IEXEC)
+if args[0] == "precompile":
+    out.write_text("mojoc")
+else:
+    out.write_text("#!/bin/sh\\nexit 0\\n")
+    out.chmod(out.stat().st_mode | stat.S_IEXEC)
 with open({log!r}, "a") as f:
-    f.write(args[1] + "\\n")
+    f.write(args[0] + " " + args[1] + "\\n")
 """
 
 
@@ -645,27 +649,39 @@ class TestCacheInvalidatesOnDependencyChange:
         assert "MOJOX_CPU_COUNT: " in capsys.readouterr().err
         assert log.read_text() == ""
 
-    @pytest.mark.parametrize("mode", [(), ("--bundle",)], ids=["per-file", "bundle"])
-    def test_unchanged_dependency_is_a_hit(self, project, mode):
+    @staticmethod
+    def _calls(log: Path, subcommand: str) -> int:
+        return sum(1 for line in log.read_text().splitlines() if line.startswith(f"{subcommand} "))
+
+    # One test target is below the precompile threshold; bundle mode precompiles anyway.
+    @pytest.mark.parametrize(("mode", "precompiles"), [((), 0), (("--bundle",), 1)], ids=["per-file", "bundle"])
+    def test_unchanged_dependency_is_a_hit(self, project, mode, precompiles):
         _dep, log = project
         assert self._run(*mode) == 0
         assert self._run(*mode) == 0
-        assert len(log.read_text().splitlines()) == 1
+        assert (self._calls(log, "build"), self._calls(log, "precompile")) == (1, precompiles)
 
-    @pytest.mark.parametrize("mode", [(), ("--bundle",)], ids=["per-file", "bundle"])
-    def test_dependency_edit_rebuilds(self, project, mode):
+    @pytest.mark.parametrize(("mode", "precompiles"), [((), 0), (("--bundle",), 2)], ids=["per-file", "bundle"])
+    def test_dependency_edit_rebuilds(self, project, mode, precompiles):
         dep, log = project
         assert self._run(*mode) == 0
         (dep / "navette" / "__init__.mojo").write_text("fn f(): return\n")
         assert self._run(*mode) == 0
-        assert len(log.read_text().splitlines()) == 2
+        assert (self._calls(log, "build"), self._calls(log, "precompile")) == (2, precompiles)
 
     def test_bundle_non_target_sibling_module_edit_rebuilds(self, project):
         _dep, log = project
         assert self._run("--bundle") == 0
         (Path.cwd() / "src" / "util.mojo").write_text("fn u(): return\n")
         assert self._run("--bundle") == 0
-        assert len(log.read_text().splitlines()) == 2
+        assert (self._calls(log, "build"), self._calls(log, "precompile")) == (2, 1)
+
+    def test_bundle_lib_edit_reprecompiles_and_rebuilds(self, project):
+        _dep, log = project
+        assert self._run("--bundle") == 0
+        (Path.cwd() / "src" / "mylib" / "__init__.mojo").write_text("fn g(): pass\n")
+        assert self._run("--bundle") == 0
+        assert (self._calls(log, "build"), self._calls(log, "precompile")) == (2, 2)
 
 
 # Where a ``-I extra`` flag can come from, as (pyproject [tool.mojox] body, CLI args).

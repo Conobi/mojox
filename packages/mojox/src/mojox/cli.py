@@ -651,11 +651,15 @@ def _plan_bundle(
 ) -> tuple[Command, ...]:
     """Plan the bundle's lib precompiles and the one ``BUILD_TEST`` that builds the generated harness.
 
-    The harness gets the staging dir, then the parent dir of each lib
-    target, ahead of the policy's include paths. The parent dirs are needed
-    for modules next to the libs that no target covers (``src/util.mojo``).
-    The harness is built without ``--Werror``: its ``try``/``except`` around
-    test functions that cannot raise draws "unreachable except" warnings.
+    Every lib target is precompiled, although the harness is the only
+    target that depends on them: it imports every test module, so it
+    compiles the libs once either way. Its include order is the package
+    dir, the staging dir, then the parent dir of each directory lib target
+    (each parent once). The parent dirs stay, after the packages, for
+    modules next to the libs that no target covers (``src/util.mojo``).
+    The harness is built without ``--Werror``: its ``try``/``except``
+    around test functions that cannot raise draws "unreachable except"
+    warnings.
     """
     from dataclasses import replace
 
@@ -671,7 +675,7 @@ def _plan_bundle(
         lints=replace(policy.lints, warnings_as_errors=False),
     )
     bundle_graph = TargetGraph(targets=(*lib_targets, harness), edges=())
-    return plan_fn(bundle_graph, env, bundle_policy, toolchain, host)
+    return plan_fn(bundle_graph, env, bundle_policy, toolchain, host, force_precompile=True)
 
 
 def _run_bundle_test(
