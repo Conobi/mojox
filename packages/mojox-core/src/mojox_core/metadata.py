@@ -90,6 +90,9 @@ def serialize(
             "timeout_s": policy.timeout_s,
             "compile_threads": policy.compile_threads,
             "jobs_spec": policy.jobs_spec,
+            "origins": {
+                key: list(origin) if isinstance(origin, tuple) else origin for key, origin in policy.origins.items()
+            },
         },
         "targets": [
             {
@@ -126,5 +129,6 @@ def serialize(
         "unstable": [
             "/commands/*/env",
             "/environment/include_sequence/*/native_lib_dirs",
+            "/policy/origins",
         ],
     }

@@ -1476,6 +1476,33 @@ class TestParallelismReporting:
         _cmd_metadata(build_parser().parse_args(["metadata", "--no-config", "--profile", "release"]))
         assert json.loads(capsys.readouterr().out)["policy"]["compile_threads"] == 12
 
+    def test_metadata_reports_origins(self, project, monkeypatch, capsys):
+        import json
+
+        from mojox.cli import _cmd_metadata
+
+        pyproject = project / "pyproject.toml"
+        text = pyproject.read_text().replace("test-parallel = true\n", 'test-parallel = true\nflags = ["--t"]\n')
+        pyproject.write_text(text + "\n[tool.mojox.profile.ci]\ncompile-threads = 4\n")
+        argv = ["metadata", "--no-config", "--profile", "ci", "--flag=--c"]
+        monkeypatch.delenv("MOJOX_COMPILE_THREADS", raising=False)
+        _cmd_metadata(build_parser().parse_args(argv))
+        doc = json.loads(capsys.readouterr().out)
+        assert doc["policy"]["origins"]["compile-threads"] == "tool.mojox.profile.ci.compile-threads"
+        assert doc["policy"]["origins"]["flags"] == ["tool.mojox.flags", "--flag"]
+        assert "/policy/origins" in doc["unstable"]
+        monkeypatch.setenv("MOJOX_COMPILE_THREADS", "2")
+        _cmd_metadata(build_parser().parse_args(argv))
+        assert json.loads(capsys.readouterr().out)["policy"]["origins"]["compile-threads"] == "MOJOX_COMPILE_THREADS"
+
+    def test_metadata_reports_builtin_define_origin(self, project, capsys):
+        import json
+
+        from mojox.cli import _cmd_metadata
+
+        _cmd_metadata(build_parser().parse_args(["metadata", "--no-config"]))
+        assert json.loads(capsys.readouterr().out)["policy"]["origins"]["defines.ASSERT"] == "builtin:dev"
+
     @staticmethod
     def _set_build_profile(project, build_profile: str) -> None:
         """Set ``build-profile`` and add a ``fast`` profile whose 5 compile threads tell it apart."""

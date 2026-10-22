@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import PurePosixPath
 
 from mojox_core.metadata import serialize
@@ -118,7 +119,7 @@ class TestParallelism:
     def test_policy_reports_compile_threads_and_jobs_spec(self):
         graph, env, policy, commands, toolchain = _make_fixture()
         doc = serialize(graph, env, policy, commands, toolchain, ())
-        assert list(doc["policy"]) == [*_LEGACY_POLICY_KEYS, "compile_threads", "jobs_spec"]
+        assert list(doc["policy"]) == [*_LEGACY_POLICY_KEYS, "compile_threads", "jobs_spec", "origins"]
         assert doc["policy"]["compile_threads"] == 1
         assert doc["policy"]["jobs_spec"] == "1"
 
@@ -152,3 +153,23 @@ class TestParallelism:
             "plan_complete",
             "unstable",
         ]
+
+
+class TestOrigins:
+    def test_policy_origins_use_lists_for_appended_values(self):
+        graph, env, policy, commands, toolchain = _make_fixture()
+        policy = replace(
+            policy,
+            origins={"jobs": "--jobs", "flags": ("tool.mojox.flags", "--flag"), "defines.ASSERT": "builtin:dev"},
+        )
+        doc = serialize(graph, env, policy, commands, toolchain, ())
+        assert isinstance(doc["policy"]["origins"]["flags"], list)
+        assert doc["policy"]["origins"] == {
+            "jobs": "--jobs",
+            "flags": ["tool.mojox.flags", "--flag"],
+            "defines.ASSERT": "builtin:dev",
+        }
+
+    def test_origins_are_unstable(self):
+        graph, env, policy, commands, toolchain = _make_fixture()
+        assert "/policy/origins" in serialize(graph, env, policy, commands, toolchain, ())["unstable"]
