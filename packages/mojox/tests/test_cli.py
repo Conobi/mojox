@@ -935,6 +935,31 @@ class TestRunExecutesProgram:
         assert "MOJOX_JOBS: " in capsys.readouterr().err
         assert log.read_text() == ""
 
+    def test_invalid_manifest_value_is_reported(self, project, capsys):
+        proj, log = project
+        (proj / "pyproject.toml").write_text(
+            '[project]\nname = "app"\nversion = "0.1.0"\n\n[tool.mojox]\ncompile-threads = 0\n'
+        )
+        (proj / "hello.mojo").write_text("# out: hi\n# exit: 0\n")
+        assert self._run("hello.mojo") == 2
+        assert "tool.mojox.compile-threads: expected an integer >= 1, got 0" in capsys.readouterr().err
+        assert log.read_text() == ""
+
+    def test_invalid_toml_is_reported(self, project, capsys):
+        proj, log = project
+        (proj / "pyproject.toml").write_text("[project\n")
+        (proj / "hello.mojo").write_text("# out: hi\n# exit: 0\n")
+        assert self._run("hello.mojo") == 2
+        assert "pyproject.toml: failed to parse" in capsys.readouterr().err
+        assert log.read_text() == ""
+
+    def test_non_mojox_pyproject_that_does_not_parse_is_ignored(self, project, capsys):
+        proj, _log = project
+        (proj / "pyproject.toml").write_text('[project]\nname = "app"\n')
+        (proj / "hello.mojo").write_text("# out: hi\n# exit: 0\n")
+        assert self._run("hello.mojo") == 0
+        assert capsys.readouterr().out == "hi\n"
+
 
 # Fake ``mojo`` with ``build`` and ``precompile``. Each call logs
 # ``<subcommand> <source>``. ``precompile`` fails without writing when the

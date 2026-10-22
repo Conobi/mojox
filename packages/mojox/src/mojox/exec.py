@@ -352,7 +352,7 @@ def run_command(
     """Run a single Command and return its Outcome.
 
     The environment is ``cmd.env`` merged with ``extra_env``
-    (LocalSettings.env) by :func:`_merge_env`. The host environment is never
+    (the resolved ``Policy.env``) by :func:`_merge_env`. The host environment is never
     inherited. Parent directories of ``cmd.outputs`` are created first,
     resolving relative outputs against ``cmd.cwd`` as the child will.
     A transient ETXTBSY from execve is retried (see :func:`_spawn`).
@@ -361,7 +361,7 @@ def run_command(
 
     Args:
         cmd: The command to execute.
-        extra_env: Additional environment variables (LocalSettings.env).
+        extra_env: Additional environment variables (the resolved ``Policy.env``).
             cmd.env wins on conflicts, except that a settings locale
             replaces the planner's (see :func:`_merge_env`).
         include_paths: Dependency include directories whose ``lib/``
@@ -499,7 +499,7 @@ def run_commands(
         commands: The commands to execute, in planner order.
         max_workers: Maximum concurrent subprocess invocations.
         extra_env: Additional env vars merged into each command
-            (from LocalSettings.env).
+            (from the resolved ``Policy.env``).
         include_paths: Dependency include directories whose ``lib/``
             subdirectories are added to the dynamic linker search path.
         on_start: Optional callback invoked with each Command just before

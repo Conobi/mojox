@@ -915,6 +915,32 @@ def _run_bundle_test(
         cleanup_staging(staging_result.staging_dir)
 
 
+def _read_run_manifest(root: Path) -> Manifest | None:
+    """Parse the project manifest for ``mojox run``; None when there is no mojox project here.
+
+    Only a missing ``pyproject.toml``, or one with no ``[tool.mojox]`` table that
+    mojox cannot parse (another tool's project file), makes the file a lone
+    file. A mojox project with a bad value is an error, never silently ignored.
+
+    Raises:
+        ConfigError: The file is not valid TOML, or its ``[tool.mojox]`` is invalid.
+    """
+    from mojox_core import parse_manifest
+    from mojox_core.io.manifest import read as read_manifest
+
+    path = root / "pyproject.toml"
+    if not path.is_file():
+        return None
+    raw = read_manifest(path)
+    try:
+        return parse_manifest(raw)
+    except ConfigError:
+        tool = raw.get("tool")
+        if isinstance(tool, dict) and "mojox" in tool:
+            raise
+        return None
+
+
 def _cmd_run(args: argparse.Namespace) -> None:
     """Build the file to a cached binary, run it, and exit with its exit code.
 
@@ -926,14 +952,9 @@ def _cmd_run(args: argparse.Namespace) -> None:
     """
     from dataclasses import replace
 
-    from mojox_core import (
-        parse_manifest,
-        plan,
-        resolve,
-    )
+    from mojox_core import plan, resolve
     from mojox_core.environment import build_env
     from mojox_core.io.environment import read_distributions, read_host_facts, read_lockfile
-    from mojox_core.io.manifest import read as read_manifest
     from mojox_core.io.toolchain import resolve as resolve_toolchain
     from mojox_core.policy import resolve_without_manifest
     from mojox_core.types import Target, TargetGraph, TargetKind
@@ -944,22 +965,19 @@ def _cmd_run(args: argparse.Namespace) -> None:
     from .types import OutcomeKind
 
     root = Path.cwd()
-
-    try:
-        raw = read_manifest(root / "pyproject.toml")
-        manifest = parse_manifest(raw)
-    except Exception:
-        manifest = None
-
     config_file = Path(args.config_file) if getattr(args, "config_file", None) else None
     no_config = getattr(args, "no_config", False)
-    try:
-        settings = read_settings(root, env=dict(os.environ), no_config=no_config, config_file=config_file)
-    except ConfigError as e:
-        print(str(e), file=sys.stderr)
-        sys.exit(2)
+    cli_overrides = _build_cli_overrides(args)
 
+    # Configuration errors come before the toolchain lookup, as in _resolve_pipeline.
     try:
+        manifest = _read_run_manifest(root)
+        settings = read_settings(root, env=dict(os.environ), no_config=no_config, config_file=config_file)
+        host = read_host_facts(root, environ=os.environ)
+        if manifest is not None:
+            policy = resolve(manifest, args.profile, cli_overrides, settings, cpu_count=host.cpu_count)
+        else:
+            policy = resolve_without_manifest(cli_overrides, settings, cpu_count=host.cpu_count)
         toolchain = resolve_toolchain()
     except ConfigError as e:
         print(str(e), file=sys.stderr)
@@ -967,26 +985,10 @@ def _cmd_run(args: argparse.Namespace) -> None:
 
     dists = read_distributions()
     lock_data = read_lockfile(root)
-    try:
-        host = read_host_facts(root, environ=os.environ)
-    except ConfigError as e:
-        print(str(e), file=sys.stderr)
-        sys.exit(2)
     env = build_env(dists, lock_data, mojo_path=toolchain.mojo_path, mojo_version=toolchain.version)
 
     if env.diagnostics:
         render_diagnostics(env.diagnostics)
-
-    cli_overrides = _build_cli_overrides(args)
-
-    try:
-        if manifest is not None:
-            policy = resolve(manifest, args.profile, cli_overrides, settings, cpu_count=host.cpu_count)
-        else:
-            policy = resolve_without_manifest(cli_overrides, settings, cpu_count=host.cpu_count)
-    except ConfigError as e:
-        print(str(e), file=sys.stderr)
-        sys.exit(2)
 
     # Add project source package parents to include paths so mojo
     # finds them without precompilation.
