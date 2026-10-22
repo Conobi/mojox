@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import os
+import sys
 from unittest.mock import patch
 
 import pytest
 from mojox.settings_reader import (
     _find_project_config,
-    _is_path_secure,
-    _safe_read_toml,
+    _read_trusted_toml,
+    _untrusted_directory,
+    _UntrustedFileError,
     _user_config_path,
     read_settings,
 )
@@ -274,7 +276,7 @@ class TestInvalidToml:
             pytest.raises(ConfigError) as exc,
         ):
             read_settings(tmp_path, env={}, config_file=custom)
-        assert (exc.value.key_path, exc.value.message) == (str(custom), "could not be read: does not exist")
+        assert (exc.value.key_path, exc.value.message) == (str(custom), "does not exist")
 
     @pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="O_NOFOLLOW not available on this platform")
     def test_explicit_config_file_symlink_refused(self, tmp_path):
@@ -286,7 +288,7 @@ class TestInvalidToml:
         link.symlink_to(target)
         with pytest.raises(ConfigError) as exc:
             read_settings(tmp_path, env={}, config_file=link)
-        assert (exc.value.key_path, exc.value.message) == (str(link), "could not be read: symlinks are refused")
+        assert (exc.value.key_path, exc.value.message) == (str(link), "untrusted: symlinks are refused")
 
     def test_discovered_file_vanished_before_open_is_skipped(self, tmp_path):
         self._project(tmp_path, b"jobs = 4\n")
@@ -354,36 +356,36 @@ class TestTOCTOU:
         not hasattr(os, "O_NOFOLLOW"),
         reason="O_NOFOLLOW not available on this platform",
     )
-    def test_safe_read_toml_uses_o_nofollow(self, tmp_path):
-        """_safe_read_toml must open with O_NOFOLLOW, not plain open()."""
+    def test_read_trusted_toml_uses_o_nofollow(self, tmp_path):
+        """_read_trusted_toml must open with O_NOFOLLOW, not plain open()."""
         config = tmp_path / "config.toml"
         config.write_text("jobs = 42\n")
 
         # Should succeed on a regular file
-        data = _safe_read_toml(config)
+        data = _read_trusted_toml(config)
         assert data == {"jobs": 42}
 
     @pytest.mark.skipif(
         not hasattr(os, "O_NOFOLLOW"),
         reason="O_NOFOLLOW not available on this platform",
     )
-    def test_safe_read_toml_rejects_symlink(self, tmp_path):
-        """_safe_read_toml must reject a symlink to a config file."""
+    def test_read_trusted_toml_rejects_symlink(self, tmp_path):
+        """_read_trusted_toml must reject a symlink to a config file."""
         real = tmp_path / "real.toml"
         real.write_text("jobs = 42\n")
         link = tmp_path / "config.toml"
         link.symlink_to(real)
 
         # O_NOFOLLOW should cause the open to fail on a symlink
-        data = _safe_read_toml(link)
-        assert data is None
+        with pytest.raises(_UntrustedFileError):
+            _read_trusted_toml(link)
 
     @pytest.mark.skipif(
         not hasattr(os, "O_NOFOLLOW"),
         reason="O_NOFOLLOW not available on this platform",
     )
-    def test_is_path_secure_rejects_symlinked_directory(self, tmp_path):
-        """_is_path_secure must reject a path with a symlinked directory."""
+    def test_untrusted_directory_rejects_symlinked_directory(self, tmp_path):
+        """_untrusted_directory must reject a path with a symlinked directory."""
         real_dir = tmp_path / "real_mojox"
         real_dir.mkdir()
         config = real_dir / "config.toml"
@@ -394,15 +396,14 @@ class TestTOCTOU:
         link_dir.symlink_to(real_dir)
         link_config = link_dir / "config.toml"
 
-        result = _is_path_secure(link_config, stop_at=tmp_path)
-        assert result is False
+        assert _untrusted_directory(link_config, stop_at=tmp_path) is not None
 
     @pytest.mark.skipif(
         not hasattr(os, "O_NOFOLLOW"),
         reason="O_NOFOLLOW not available on this platform",
     )
-    def test_is_path_secure_walks_with_openat(self, tmp_path):
-        """_is_path_secure should use fd-based walk, not Path.stat()."""
+    def test_untrusted_directory_walks_with_openat(self, tmp_path):
+        """_untrusted_directory should use fd-based walk, not Path.stat()."""
         (tmp_path / ".git").mkdir()
         config_dir = tmp_path / ".mojox"
         config_dir.mkdir()
@@ -410,15 +411,15 @@ class TestTOCTOU:
         config.write_text("jobs = 1\n")
 
         # Valid path should pass
-        assert _is_path_secure(config, stop_at=tmp_path) is True
+        assert _untrusted_directory(config, stop_at=tmp_path) is None
 
-    def test_safe_read_toml_windows_fallback(self, tmp_path):
+    def test_read_trusted_toml_windows_fallback(self, tmp_path):
         """On platforms without O_NOFOLLOW, plain open() is used."""
         config = tmp_path / "config.toml"
         config.write_text("jobs = 99\n")
 
         with patch("mojox.settings_reader._HAS_O_NOFOLLOW", False):
-            data = _safe_read_toml(config)
+            data = _read_trusted_toml(config)
             assert data == {"jobs": 99}
 
 
@@ -676,3 +677,494 @@ class TestWalkBoundaries:
         # Should not error with home parameter
         _path, root = _find_project_config(project, home=home)
         assert root == project.resolve()
+
+
+class TestFileTrust:
+    """The settings file itself must pass the same trust rules as its directories."""
+
+    @staticmethod
+    def _project(tmp_path, content: str = "jobs = 4\n"):
+        (tmp_path / ".git").mkdir()
+        config_dir = tmp_path / ".mojox"
+        config_dir.mkdir()
+        config = config_dir / "config.toml"
+        config.write_text(content)
+        return config
+
+    @staticmethod
+    def _foreign_owned_files(uid: int):
+        """An ``os.fstat`` stand-in that reports regular files as owned by *uid*."""
+        import stat as stat_mod
+
+        real_fstat = os.fstat
+
+        def fake(fd):
+            st = real_fstat(fd)
+            if not stat_mod.S_ISREG(st.st_mode):
+                return st
+            fields = list(st)
+            fields[4] = uid  # st_uid
+            return os.stat_result(fields)
+
+        return fake
+
+    def test_world_writable_project_file_is_skipped(self, tmp_path):
+        config = self._project(tmp_path, 'jobs = 4\n[env]\nLD_PRELOAD = "/tmp/evil.so"\n')
+        config.chmod(0o666)
+        settings = read_settings(tmp_path, env={})
+        assert settings.config_paths == ()
+        assert _get(settings, "jobs") is None
+
+    def test_world_writable_user_file_is_skipped(self, tmp_path):
+        user_dir = tmp_path / "xdg" / "mojox"
+        user_dir.mkdir(parents=True)
+        config = user_dir / "config.toml"
+        config.write_text("timeout = 600\n")
+        config.chmod(0o646)
+        no_project = tmp_path / "noproject"
+        no_project.mkdir()
+        settings = read_settings(no_project, env={"XDG_CONFIG_HOME": str(tmp_path / "xdg")})
+        assert settings.config_paths == ()
+
+    def test_owner_readable_file_is_read(self, tmp_path):
+        config = self._project(tmp_path)
+        config.chmod(0o644)
+        settings = read_settings(tmp_path, env={})
+        assert settings.config_paths == (str(config),)
+        assert _get(settings, "jobs") == 4
+
+    @pytest.mark.skipif(not hasattr(os, "getuid"), reason="no POSIX ownership")
+    def test_foreign_owned_file_is_skipped(self, tmp_path):
+        self._project(tmp_path)
+        with patch("mojox.settings_reader.os.fstat", side_effect=self._foreign_owned_files(os.getuid() + 1)):
+            settings = read_settings(tmp_path, env={})
+        assert settings.config_paths == ()
+
+    @pytest.mark.skipif(not hasattr(os, "getuid"), reason="no POSIX ownership")
+    def test_root_owned_file_is_read(self, tmp_path):
+        self._project(tmp_path)
+        with patch("mojox.settings_reader.os.fstat", side_effect=self._foreign_owned_files(0)):
+            settings = read_settings(tmp_path, env={})
+        assert _get(settings, "jobs") == 4
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no FIFOs on this platform")
+    def test_fifo_is_refused_without_blocking(self, tmp_path):
+        import threading
+
+        fifo = tmp_path / "config.toml"
+        os.mkfifo(fifo)
+        outcome: list[BaseException | object] = []
+
+        def read():
+            try:
+                outcome.append(_read_trusted_toml(fifo))
+            except BaseException as e:
+                outcome.append(e)
+
+        worker = threading.Thread(target=read, daemon=True)
+        worker.start()
+        worker.join(5)
+        if worker.is_alive():
+            # Unblock the reader so the thread can finish, then fail.
+            os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+            pytest.fail("opening a FIFO settings file blocked")
+        assert len(outcome) == 1
+        assert isinstance(outcome[0], _UntrustedFileError)
+        assert str(outcome[0]) == "untrusted: not a regular file"
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no FIFOs on this platform")
+    def test_explicit_fifo_is_an_error(self, tmp_path):
+        from mojox_core import ConfigError
+
+        fifo = tmp_path / "custom.toml"
+        os.mkfifo(fifo)
+        with pytest.raises(ConfigError) as exc:
+            read_settings(tmp_path, env={}, config_file=fifo)
+        assert (exc.value.key_path, exc.value.message) == (str(fifo), "untrusted: not a regular file")
+
+    def test_directory_named_config_toml_is_refused(self, tmp_path):
+        directory = tmp_path / "config.toml"
+        directory.mkdir()
+        with pytest.raises(_UntrustedFileError, match="not a regular file"):
+            _read_trusted_toml(directory)
+
+    def test_explicit_world_writable_file_is_an_error(self, tmp_path):
+        from mojox_core import ConfigError
+
+        custom = tmp_path / "custom.toml"
+        custom.write_text('[env]\nLD_PRELOAD = "/tmp/evil.so"\n')
+        custom.chmod(0o666)
+        with pytest.raises(ConfigError) as exc:
+            read_settings(tmp_path, env={}, config_file=custom)
+        assert (exc.value.key_path, exc.value.message) == (str(custom), "untrusted: writable by other users")
+        assert "evil" not in str(exc.value)
+
+    @pytest.mark.skipif(not hasattr(os, "getuid"), reason="no POSIX ownership")
+    def test_explicit_foreign_owned_file_is_an_error(self, tmp_path):
+        from mojox_core import ConfigError
+
+        custom = tmp_path / "custom.toml"
+        custom.write_text("jobs = 2\n")
+        with (
+            patch("mojox.settings_reader.os.fstat", side_effect=self._foreign_owned_files(os.getuid() + 1)),
+            pytest.raises(ConfigError) as exc,
+        ):
+            read_settings(tmp_path, env={}, config_file=custom)
+        assert (exc.value.key_path, exc.value.message) == (str(custom), "untrusted: owned by another user")
+
+    def test_explicit_directory_is_named(self, tmp_path):
+        from mojox_core import ConfigError
+
+        directory = tmp_path / "custom.toml"
+        directory.mkdir()
+        with pytest.raises(ConfigError) as exc:
+            read_settings(tmp_path, env={}, config_file=directory)
+        assert (exc.value.key_path, exc.value.message) == (str(directory), "untrusted: not a regular file")
+
+    def test_without_posix_ownership_explicit_world_writable_file_is_read(self, tmp_path):
+        custom = tmp_path / "custom.toml"
+        custom.write_text("jobs = 2\n")
+        custom.chmod(0o666)
+        with patch("mojox.settings_reader.os.getuid", side_effect=AttributeError):
+            settings = read_settings(tmp_path, env={}, config_file=custom)
+        assert _get(settings, "jobs") == 2
+
+
+@pytest.mark.skipif(not hasattr(os, "getgid"), reason="no POSIX groups")
+class TestGroupWrite:
+    """Group write is trusted only for the user's own private group, as OpenSSH does."""
+
+    @staticmethod
+    def _project(tmp_path, *, dir_mode=0o755, file_mode=0o644):
+        (tmp_path / ".git").mkdir()
+        config_dir = tmp_path / ".mojox"
+        config_dir.mkdir()
+        config = config_dir / "config.toml"
+        config.write_text("jobs = 4\n")
+        config.chmod(file_mode)
+        config_dir.chmod(dir_mode)
+        return config
+
+    @staticmethod
+    def _group(members):
+        from types import SimpleNamespace
+
+        return patch("grp.getgrgid", return_value=SimpleNamespace(gr_mem=list(members)))
+
+    @staticmethod
+    def _user_name():
+        import pwd
+
+        return pwd.getpwuid(os.getuid()).pw_name
+
+    @staticmethod
+    def _accounts(*primary_gids_by_uid):
+        """Patch ``pwd.getpwall`` to list accounts as ``(uid, primary gid)`` pairs."""
+        from types import SimpleNamespace
+
+        entries = [SimpleNamespace(pw_uid=uid, pw_gid=gid) for uid, gid in primary_gids_by_uid]
+        return patch("pwd.getpwall", return_value=entries)
+
+    def test_private_group_is_trusted(self, tmp_path):
+        config = self._project(tmp_path, dir_mode=0o775, file_mode=0o664)
+        with (
+            patch("mojox.settings_reader.os.getgid", return_value=config.stat().st_gid),
+            self._group([]),
+            self._accounts((os.getuid(), config.stat().st_gid), (os.getuid() + 1, config.stat().st_gid + 1)),
+        ):
+            settings = read_settings(tmp_path, env={})
+        assert _get(settings, "jobs") == 4
+
+    def test_group_listing_only_the_user_is_trusted(self, tmp_path):
+        config = self._project(tmp_path, dir_mode=0o775, file_mode=0o664)
+        with (
+            patch("mojox.settings_reader.os.getgid", return_value=config.stat().st_gid),
+            self._group([self._user_name()]),
+            self._accounts((os.getuid(), config.stat().st_gid), (os.getuid() + 1, config.stat().st_gid + 1)),
+        ):
+            settings = read_settings(tmp_path, env={})
+        assert _get(settings, "jobs") == 4
+
+    def test_group_writable_file_of_foreign_group_is_refused(self, tmp_path, capsys):
+        config = self._project(tmp_path, file_mode=0o664)
+        with patch("mojox.settings_reader.os.getgid", return_value=config.stat().st_gid + 1), self._group([]):
+            settings = read_settings(tmp_path, env={})
+        assert settings.config_paths == ()
+        assert capsys.readouterr().err == f"mojox: ignoring {config}: untrusted: writable by a shared group\n"
+
+    def test_group_writable_file_of_group_with_other_members_is_refused(self, tmp_path):
+        config = self._project(tmp_path, file_mode=0o664)
+        with (
+            patch("mojox.settings_reader.os.getgid", return_value=config.stat().st_gid),
+            self._group([self._user_name(), "mallory"]),
+        ):
+            settings = read_settings(tmp_path, env={})
+        assert settings.config_paths == ()
+
+    def test_group_writable_file_of_unknown_group_is_refused(self, tmp_path):
+        config = self._project(tmp_path, file_mode=0o664)
+        with (
+            patch("mojox.settings_reader.os.getgid", return_value=config.stat().st_gid),
+            patch("grp.getgrgid", side_effect=KeyError),
+        ):
+            settings = read_settings(tmp_path, env={})
+        assert settings.config_paths == ()
+
+    def test_group_writable_directory_of_shared_group_is_refused(self, tmp_path, capsys):
+        config = self._project(tmp_path, dir_mode=0o775)
+        with self._group(["mallory"]):
+            settings = read_settings(tmp_path, env={})
+        assert settings.config_paths == ()
+        assert capsys.readouterr().err == (
+            f"mojox: ignoring {config}: untrusted: directory {config.parent} is writable by a shared group\n"
+        )
+
+    def test_explicit_group_writable_file_of_shared_group_is_an_error(self, tmp_path):
+        from mojox_core import ConfigError
+
+        custom = tmp_path / "custom.toml"
+        custom.write_text("jobs = 2\n")
+        custom.chmod(0o664)
+        with self._group(["mallory"]), pytest.raises(ConfigError) as exc:
+            read_settings(tmp_path, env={}, config_file=custom)
+        assert (exc.value.key_path, exc.value.message) == (str(custom), "untrusted: writable by a shared group")
+
+    def test_group_that_is_another_accounts_primary_group_is_refused(self, tmp_path, capsys):
+        config = self._project(tmp_path, file_mode=0o664)
+        gid = config.stat().st_gid
+        with (
+            patch("mojox.settings_reader.os.getgid", return_value=gid),
+            self._group([]),
+            self._accounts((os.getuid(), gid), (os.getuid() + 1, gid)),
+        ):
+            settings = read_settings(tmp_path, env={})
+        assert settings.config_paths == ()
+        assert capsys.readouterr().err == f"mojox: ignoring {config}: untrusted: writable by a shared group\n"
+
+    def test_failed_account_enumeration_is_refused(self, tmp_path):
+        config = self._project(tmp_path, file_mode=0o664)
+        with (
+            patch("mojox.settings_reader.os.getgid", return_value=config.stat().st_gid),
+            self._group([]),
+            patch("pwd.getpwall", side_effect=OSError("directory unreachable")),
+        ):
+            settings = read_settings(tmp_path, env={})
+        assert settings.config_paths == ()
+
+    def test_unknown_user_is_refused(self, tmp_path):
+        config = self._project(tmp_path, file_mode=0o664)
+        with (
+            patch("mojox.settings_reader.os.getgid", return_value=config.stat().st_gid),
+            self._group([]),
+            self._accounts((os.getuid(), config.stat().st_gid)),
+            patch("pwd.getpwuid", side_effect=KeyError),
+        ):
+            settings = read_settings(tmp_path, env={})
+        assert settings.config_paths == ()
+
+    def test_accounts_are_not_enumerated_without_group_write(self, tmp_path):
+        self._project(tmp_path)
+        with patch("pwd.getpwall") as getpwall, patch("grp.getgrgid") as getgrgid:
+            settings = read_settings(tmp_path, env={})
+        assert _get(settings, "jobs") == 4
+        getpwall.assert_not_called()
+        getgrgid.assert_not_called()
+
+
+class TestIgnoredFileWarning:
+    """An ignored discovered file is named on stderr, once, without its content."""
+
+    def test_world_writable_project_file_is_reported(self, tmp_path, capsys):
+        (tmp_path / ".git").mkdir()
+        config_dir = tmp_path / ".mojox"
+        config_dir.mkdir()
+        config = config_dir / "config.toml"
+        config.write_text('[env]\nLD_PRELOAD = "/tmp/evil.so"\n')
+        config.chmod(0o666)
+        read_settings(tmp_path, env={})
+        assert capsys.readouterr().err == f"mojox: ignoring {config}: untrusted: writable by other users\n"
+
+    def test_world_writable_directory_is_reported(self, tmp_path, capsys):
+        (tmp_path / ".git").mkdir()
+        config_dir = tmp_path / ".mojox"
+        config_dir.mkdir()
+        config = config_dir / "config.toml"
+        config.write_text("jobs = 4\n")
+        config_dir.chmod(0o777)
+        try:
+            read_settings(tmp_path, env={})
+        finally:
+            config_dir.chmod(0o755)
+        assert capsys.readouterr().err == (
+            f"mojox: ignoring {config}: untrusted: directory {config_dir} is writable by other users\n"
+        )
+
+    def test_world_writable_user_file_is_reported(self, tmp_path, capsys):
+        user_dir = tmp_path / "xdg" / "mojox"
+        user_dir.mkdir(parents=True)
+        config = user_dir / "config.toml"
+        config.write_text("timeout = 600\n")
+        config.chmod(0o646)
+        no_project = tmp_path / "noproject"
+        no_project.mkdir()
+        read_settings(no_project, env={"XDG_CONFIG_HOME": str(tmp_path / "xdg")})
+        assert capsys.readouterr().err == f"mojox: ignoring {config}: untrusted: writable by other users\n"
+
+    def test_trusted_file_is_silent(self, tmp_path, capsys):
+        (tmp_path / ".git").mkdir()
+        config_dir = tmp_path / ".mojox"
+        config_dir.mkdir()
+        (config_dir / "config.toml").write_text("jobs = 4\n")
+        read_settings(tmp_path, env={})
+        assert capsys.readouterr().err == ""
+
+    def test_vanished_file_is_silent(self, tmp_path, capsys):
+        (tmp_path / ".git").mkdir()
+        config_dir = tmp_path / ".mojox"
+        config_dir.mkdir()
+        (config_dir / "config.toml").write_text("jobs = 4\n")
+        real_open = os.open
+
+        def vanish(path, flags, *args, **kwargs):
+            if str(path).endswith("config.toml"):
+                raise FileNotFoundError(2, "gone")
+            return real_open(path, flags, *args, **kwargs)
+
+        with patch("mojox.settings_reader.os.open", side_effect=vanish):
+            read_settings(tmp_path, env={})
+        assert capsys.readouterr().err == ""
+
+
+class TestPathEscaping:
+    """Paths shown to the user cannot carry terminal control sequences."""
+
+    EVIL = "evil\x1b[31m\nname\x9b"
+
+    @staticmethod
+    def _controls(text):
+        import unicodedata
+
+        return [c for c in text if unicodedata.category(c) in {"Cc", "Cf", "Cs", "Zl", "Zp"}]
+
+    def _project(self, tmp_path, *, file_mode=0o644, content="jobs = 4\n"):
+        root = tmp_path / self.EVIL
+        root.mkdir()
+        (root / ".git").mkdir()
+        config_dir = root / ".mojox"
+        config_dir.mkdir()
+        config = config_dir / "config.toml"
+        config.write_text(content)
+        config.chmod(file_mode)
+        return root, config
+
+    def test_ignored_file_warning_is_escaped(self, tmp_path, capsys):
+        root, _config = self._project(tmp_path, file_mode=0o666)
+        read_settings(root, env={})
+        err = capsys.readouterr().err
+        assert err.endswith(": untrusted: writable by other users\n")
+        assert self._controls(err) == ["\n"]
+        assert "\\x1b[31m\\nname\\x9b" in err
+
+    def test_untrusted_directory_reason_is_escaped(self, tmp_path, capsys):
+        root, config = self._project(tmp_path)
+        config.parent.chmod(0o777)
+        try:
+            read_settings(root, env={})
+        finally:
+            config.parent.chmod(0o755)
+        err = capsys.readouterr().err
+        assert "is writable by other users" in err
+        assert self._controls(err) == ["\n"]
+
+    def test_invalid_toml_error_is_escaped(self, tmp_path):
+        from mojox_core import ConfigError
+
+        root, _config = self._project(tmp_path, content="jobs =\n")
+        with pytest.raises(ConfigError) as exc:
+            read_settings(root, env={})
+        assert self._controls(str(exc.value)) == []
+
+    def test_explicit_missing_file_error_is_escaped(self, tmp_path):
+        from mojox_core import ConfigError
+
+        missing = tmp_path / self.EVIL / "custom.toml"
+        with pytest.raises(ConfigError) as exc:
+            read_settings(tmp_path, env={}, config_file=missing)
+        assert exc.value.message == "does not exist"
+        assert self._controls(str(exc.value)) == []
+
+    def test_explicit_untrusted_file_error_is_escaped(self, tmp_path):
+        from mojox_core import ConfigError
+
+        (tmp_path / self.EVIL).mkdir()
+        custom = tmp_path / self.EVIL / "custom.toml"
+        custom.write_text("jobs = 2\n")
+        custom.chmod(0o666)
+        with pytest.raises(ConfigError) as exc:
+            read_settings(tmp_path, env={}, config_file=custom)
+        assert exc.value.message == "untrusted: writable by other users"
+        assert self._controls(str(exc.value)) == []
+
+    def test_printable_path_is_shown_unchanged(self, tmp_path):
+        from mojox_core import ConfigError
+
+        missing = tmp_path / "plain é dir" / "custom.toml"
+        with pytest.raises(ConfigError) as exc:
+            read_settings(tmp_path, env={}, config_file=missing)
+        assert exc.value.key_path == str(missing)
+
+    def test_invalid_key_error_is_escaped(self, tmp_path):
+        from mojox_core import ConfigError
+
+        root, _config = self._project(tmp_path, content="no-such-key = 1\n")
+        with pytest.raises(ConfigError) as exc:
+            read_settings(root, env={})
+        assert self._controls(str(exc.value)) == []
+
+    def test_paths_stay_raw_as_data(self, tmp_path):
+        from pathlib import Path
+
+        root, config = self._project(tmp_path)
+        settings = read_settings(root, env={})
+        assert settings.config_paths == (str(config),)
+        assert Path(settings.config_paths[0]).exists()
+        assert _get(settings, "jobs") == 4
+
+    def test_error_keeps_raw_key_path_but_prints_escaped(self, tmp_path):
+        from mojox_core import ConfigError
+
+        missing = tmp_path / self.EVIL / "custom.toml"
+        with pytest.raises(ConfigError) as exc:
+            read_settings(tmp_path, env={}, config_file=missing)
+        assert exc.value.key_path == str(missing)
+        assert self._controls(str(exc.value)) == []
+
+    def test_bidi_override_in_warning_is_escaped(self, tmp_path, capsys):
+        root = tmp_path / "gnp.\u202etxt"
+        root.mkdir()
+        (root / ".git").mkdir()
+        (root / ".mojox").mkdir()
+        config = root / ".mojox" / "config.toml"
+        config.write_text("jobs = 4\n")
+        config.chmod(0o666)
+        read_settings(root, env={})
+        err = capsys.readouterr().err
+        assert self._controls(err) == ["\n"]
+        assert "\\u202e" in err
+
+    @pytest.mark.skipif(sys.platform == "darwin", reason="APFS refuses non-UTF-8 names")
+    def test_undecodable_name_in_warning_prints(self, tmp_path, capsys):
+        root = tmp_path / "bad\udcffname"
+        try:
+            root.mkdir()
+        except (OSError, UnicodeEncodeError):
+            pytest.skip("filesystem refuses non-UTF-8 names")
+        (root / ".git").mkdir()
+        (root / ".mojox").mkdir()
+        config = root / ".mojox" / "config.toml"
+        config.write_text("jobs = 4\n")
+        config.chmod(0o666)
+        read_settings(root, env={})
+        err = capsys.readouterr().err
+        assert self._controls(err) == ["\n"]
+        err.encode("utf-8")
