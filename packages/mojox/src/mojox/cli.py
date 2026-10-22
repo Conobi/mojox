@@ -638,6 +638,42 @@ def _cmd_test(args: argparse.Namespace) -> None:
     sys.exit(determine_exit_code(outcomes))
 
 
+def _plan_bundle(
+    *,
+    root: Path,
+    graph: TargetGraph,
+    env: ResolvedEnv,
+    policy: Policy,
+    toolchain: Toolchain,
+    host: HostFacts,
+    harness_rel: str,
+    staging_include: str,
+) -> tuple[Command, ...]:
+    """Plan the bundle's lib precompiles and the one ``BUILD_TEST`` that builds the generated harness.
+
+    The harness gets the staging dir, then the parent dir of each lib
+    target, ahead of the policy's include paths. The parent dirs are needed
+    for modules next to the libs that no target covers (``src/util.mojo``).
+    The harness is built without ``--Werror``: its ``try``/``except`` around
+    test functions that cannot raise draws "unreachable except" warnings.
+    """
+    from dataclasses import replace
+
+    from mojox_core import Target, TargetGraph, TargetKind
+    from mojox_core import plan as plan_fn
+
+    lib_targets = tuple(t for t in graph.targets if t.kind == TargetKind.LIB)
+    harness = Target(TargetKind.TEST, harness_rel, "bundle::harness")
+    source_dirs = dict.fromkeys(str((root / t.path).parent) for t in lib_targets if (root / t.path).is_dir())
+    bundle_policy = replace(
+        policy,
+        include_paths=(staging_include, *source_dirs, *policy.include_paths),
+        lints=replace(policy.lints, warnings_as_errors=False),
+    )
+    bundle_graph = TargetGraph(targets=(*lib_targets, harness), edges=())
+    return plan_fn(bundle_graph, env, bundle_policy, toolchain, host)
+
+
 def _run_bundle_test(
     *,
     graph: TargetGraph,
@@ -674,16 +710,12 @@ def _run_bundle_test(
     import time
     from dataclasses import replace
 
-    from mojox_core import TargetKind
-    from mojox_core import plan as plan_fn
     from mojox_core.bundle import (
         TestModule,
         discover_test_functions,
         file_path_to_module_path,
         generate_harness,
     )
-    from mojox_core.types import Target
-    from mojox_core.types import TargetGraph as TG
 
     from .exec import run_commands
     from .output import (
@@ -731,45 +763,16 @@ def _run_bundle_test(
     staging_result = create_bundle_staging(root, test_file_paths, harness_source)
 
     try:
-        harness_rel = str(staging_result.harness_path.relative_to(root))
-
-        # Build a graph with lib targets + one bundle test target
-        lib_targets = tuple(t for t in graph.targets if t.kind == TargetKind.LIB)
-        bundle_target = Target(TargetKind.TEST, harness_rel, "bundle::harness")
-        bundle_graph = TG(
-            targets=lib_targets + (bundle_target,),
-            edges=(),
+        bundle_commands = _plan_bundle(
+            root=root,
+            graph=graph,
+            env=env,
+            policy=policy,
+            toolchain=toolchain,
+            host=host,
+            harness_rel=str(staging_result.harness_path.relative_to(root)),
+            staging_include=staging_result.include_path,
         )
-
-        # Add lib source parent dirs so Mojo finds project packages
-        # even when precompilation is skipped (bundle has 1 test target,
-        # below _PRECOMPILE_THRESHOLD).
-        source_dirs: list[str] = []
-        for lt in lib_targets:
-            pkg_path = root / lt.path
-            if pkg_path.is_dir():
-                parent = str(pkg_path.parent)
-                if parent not in source_dirs:
-                    source_dirs.append(parent)
-
-        # Disable --Werror for the generated harness: try/except around
-        # non-raising functions triggers "unreachable except" warnings.
-        from mojox_core.types import LintConfig as LintConfigT
-
-        bundle_lints = LintConfigT(
-            warnings_as_errors=False,
-            check_doc_strings=policy.lints.check_doc_strings,
-            missing_doc_strings=policy.lints.missing_doc_strings,
-            unstable_apis=policy.lints.unstable_apis,
-        )
-
-        bundle_policy = replace(
-            policy,
-            include_paths=(staging_result.include_path, *source_dirs, *policy.include_paths),
-            lints=bundle_lints,
-        )
-
-        bundle_commands = plan_fn(bundle_graph, env, bundle_policy, toolchain, host)
 
         # Runtime -k filter passed as argv to the binary
         runtime_args: tuple[str, ...] = ()

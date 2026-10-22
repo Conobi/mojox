@@ -61,11 +61,17 @@ def plan(
     policy: Policy,
     toolchain: Toolchain,
     host: HostFacts,
+    *,
+    force_precompile: bool = False,
 ) -> tuple[Command, ...]:
     """Produce the sequence of mojo commands to execute.
 
     Returns an ordered tuple of Command objects. Precompile commands appear
-    before any dependent targets (tests, examples, binaries). Every build
+    before any dependent targets (tests, examples, binaries). Lib targets are
+    precompiled once the graph holds ``_PRECOMPILE_THRESHOLD`` test, example
+    and binary targets in total, or always with *force_precompile* (bundle
+    mode: one harness that imports every test module); never when the graph
+    has no lib target. Every build
     gets ``policy.compile_threads`` as ``--num-threads``, so argv never
     depends on the host or on jobs: the thread count changes optimised
     machine code, and a host-derived value would make binaries differ
@@ -78,7 +84,7 @@ def plan(
     lib_targets = [t for t in graph.targets if t.kind == TargetKind.LIB]
     dependent_targets = [t for t in graph.targets if t.kind in (TargetKind.TEST, TargetKind.EXAMPLE, TargetKind.BIN)]
 
-    should_precompile = len(lib_targets) > 0 and len(dependent_targets) >= _PRECOMPILE_THRESHOLD
+    should_precompile = bool(lib_targets) and (force_precompile or len(dependent_targets) >= _PRECOMPILE_THRESHOLD)
 
     # Precompile lib targets
     precompiled_ids: list[str] = []

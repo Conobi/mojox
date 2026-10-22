@@ -204,6 +204,43 @@ class TestPrecompilation:
         assert CommandKind.COMPILE_PACKAGE not in kinds
 
 
+class TestForcePrecompile:
+    """Bundle mode: one harness depends on the libs, below the threshold, yet they are precompiled."""
+
+    _LIBS = (Target(TargetKind.LIB, "src/mylib", "src/mylib"), Target(TargetKind.LIB, "src/other", "src/other"))
+    _HARNESS = Target(TargetKind.TEST, ".mojox/bundle/harness.mojo", "bundle::harness")
+
+    def _plan(self, *targets, **policy):
+        graph = TargetGraph(targets=targets, edges=())
+        return plan(graph, _make_env(), _make_policy(**policy), _make_toolchain(), _make_host(), force_precompile=True)
+
+    def test_every_lib_is_precompiled_for_one_dependent(self):
+        cmds = self._plan(*self._LIBS, self._HARNESS)
+        assert [c.target_id for c in cmds if c.kind == CommandKind.COMPILE_PACKAGE] == ["src/mylib", "src/other"]
+        (harness,) = [c for c in cmds if c.kind == CommandKind.BUILD_TEST]
+        assert harness.depends_on == ("src/mylib", "src/other")
+
+    def test_package_dir_comes_before_policy_include_paths(self):
+        cmds = self._plan(*self._LIBS, self._HARNESS, include_paths=("/stage", "/workspace/mylib/src"))
+        (harness,) = [c for c in cmds if c.kind == CommandKind.BUILD_TEST]
+        argv = list(harness.argv)
+        includes = [argv[i + 1] for i, a in enumerate(argv) if a == "-I"]
+        assert includes == [
+            "/workspace/mylib/.mojox/build/pkg",
+            "/stage",
+            "/workspace/mylib/src",
+            "/venv/mojo_packages",
+        ]
+
+    def test_no_lib_means_no_precompile(self):
+        cmds = self._plan(self._HARNESS)
+        assert [c.kind for c in cmds] == [CommandKind.BUILD_TEST]
+        assert cmds[0].depends_on == ()
+        argv = list(cmds[0].argv)
+        includes = [argv[i + 1] for i, a in enumerate(argv) if a == "-I"]
+        assert not any(".mojox/build/pkg" in p for p in includes)
+
+
 _ALL_COMPILE_KINDS = [CommandKind.BUILD_TEST, CommandKind.CHECK_EXAMPLE, CommandKind.COMPILE_BINARY]
 
 
