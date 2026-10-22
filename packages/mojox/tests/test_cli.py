@@ -90,7 +90,7 @@ class TestBuildParser:
         """-D adds define variables."""
         parser = build_parser()
         args = parser.parse_args(["test", "-D", "FAST=true", "-D", "DEBUG=1"])
-        assert args.defines == ["FAST=true", "DEBUG=1"]
+        assert args.defines == [("FAST", "true"), ("DEBUG", "1")]
 
     def test_timeout_flag(self):
         """--timeout sets per-target timeout."""
@@ -152,12 +152,12 @@ class TestParallelismFlags:
         assert flag in capsys.readouterr().err
 
     def test_overrides_carry_compile_threads(self):
-        from mojox.cli import _build_cli_overrides
+        from mojox.option_flags import build_cli_overrides
 
         args = build_parser().parse_args(["test", "-j", "num-cpus", "--compile-threads", "3"])
-        overrides = _build_cli_overrides(args)
+        overrides = build_cli_overrides(args)
         assert (overrides["jobs"], overrides["compile-threads"]) == ("num-cpus", 3)
-        assert "compile-threads" not in _build_cli_overrides(build_parser().parse_args(["test"]))
+        assert "compile-threads" not in build_cli_overrides(build_parser().parse_args(["test"]))
 
 
 class TestOptionFlagsHelp:

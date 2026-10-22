@@ -15,13 +15,14 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Any
+from typing import IO, TYPE_CHECKING
 
 from mojox_core import CommandKind, ConfigError
-from mojox_core.policy import parse_count_text, parse_jobs
+
+from .option_flags import add_option_flags, build_cli_overrides
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Iterable
 
     from mojox_core import (
         Command,
@@ -51,26 +52,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     test_p = sub.add_parser("test", help="Run test targets")
     test_p.set_defaults(profile="dev")
-    _add_common_flags(test_p, profile_default="dev")
+    _add_common_flags(test_p, command="test", profile_default="dev")
     _add_test_flags(test_p)
 
     run_p = sub.add_parser("run", help="Run a Mojo file")
     run_p.add_argument("file", help="The .mojo file to run")
     run_p.set_defaults(profile="dev")
-    _add_common_flags(run_p, profile_default="dev")
+    _add_common_flags(run_p, command="run", profile_default="dev")
     _add_no_cache_flag(run_p)
 
     build_p = sub.add_parser("build", help="Compile binary targets")
     build_p.set_defaults(profile=None)  # None: fall back to the manifest's build-profile
-    _add_common_flags(build_p, profile_default="build-profile from pyproject.toml, else release")
+    _add_common_flags(build_p, command="build", profile_default="build-profile from pyproject.toml, else release")
 
     check_p = sub.add_parser("check", help="Check project: compile packages and run lints")
     check_p.set_defaults(profile="dev")
-    _add_common_flags(check_p, profile_default="dev")
+    _add_common_flags(check_p, command="check", profile_default="dev")
 
     meta_p = sub.add_parser("metadata", help="Output build plan as JSON")
     meta_p.set_defaults(profile="dev")
-    _add_common_flags(meta_p, profile_default="dev")
+    _add_common_flags(meta_p, command="metadata", profile_default="dev")
 
     cache_p = sub.add_parser("cache", help="Cache management")
     cache_sub = cache_p.add_subparsers(dest="cache_action", required=True)
@@ -79,8 +80,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _add_common_flags(parser: argparse.ArgumentParser, *, profile_default: str) -> None:
-    """Add flags shared across exec-capable subcommands.
+def _add_common_flags(parser: argparse.ArgumentParser, *, command: str, profile_default: str) -> None:
+    """Add flags shared across exec-capable subcommands; the option flags come from the registry.
 
     *profile_default* only documents the subcommand's default profile in
     ``--help``; the default itself comes from ``set_defaults``.
@@ -90,21 +91,7 @@ def _add_common_flags(parser: argparse.ArgumentParser, *, profile_default: str) 
         default=argparse.SUPPRESS,
         help=f"Build profile: dev, release, or user-defined (default: {profile_default})",
     )
-    parser.add_argument(
-        "--jobs",
-        "-j",
-        type=_jobs_arg,
-        default=None,
-        help='Maximum concurrent compilations: N, "num-cpus", or -K for all CPUs but K',
-    )
-    parser.add_argument(
-        "--compile-threads",
-        type=_count_arg("--compile-threads"),
-        default=None,
-        metavar="N",
-        help="Threads each mojo build may use (--num-threads; default from the profile: dev 1, release 8)",
-    )
-    parser.add_argument("--timeout", type=_count_arg("--timeout"), default=None, help="Per-target timeout in seconds")
+    add_option_flags(parser, command)
     parser.add_argument("--dry-run", action="store_true", default=False, help="Show planned commands without executing")
     parser.add_argument(
         "--verbose",
@@ -115,36 +102,6 @@ def _add_common_flags(parser: argparse.ArgumentParser, *, profile_default: str) 
     )
     parser.add_argument("--no-config", action="store_true", default=False, help="Disable settings file discovery")
     parser.add_argument("--config-file", default=None, help="Explicit config file path")
-    parser.add_argument(
-        "-D", "--define", action="append", default=[], dest="defines", help="Define a compile-time variable (KEY=VALUE)"
-    )
-    parser.add_argument(
-        "--flag",
-        action="append",
-        default=[],
-        dest="flags",
-        help="Extra flag passed through to the compiler (use --flag=VALUE for dash-prefixed flags)",
-    )
-
-
-def _jobs_arg(text: str) -> int | str:
-    """``type=`` for ``-j``: a jobs spec, so ``0`` and junk exit 2 before any work starts."""
-    try:
-        return parse_jobs(text, "--jobs")
-    except ConfigError as e:
-        raise argparse.ArgumentTypeError(e.message) from None
-
-
-def _count_arg(flag: str) -> Callable[[str], int]:
-    """``type=`` for a flag that takes an integer >= 1; anything else exits 2."""
-
-    def parse(text: str) -> int:
-        try:
-            return parse_count_text(text, flag)
-        except ConfigError as e:
-            raise argparse.ArgumentTypeError(e.message) from None
-
-    return parse
 
 
 def _add_test_flags(parser: argparse.ArgumentParser) -> None:
@@ -209,32 +166,6 @@ def _add_no_cache_flag(parser: argparse.ArgumentParser) -> None:
         default=False,
         help="Disable the compiled-binary cache (always rebuild)",
     )
-
-
-def _build_cli_overrides(args: argparse.Namespace) -> dict[str, Any]:
-    """Collect the given option flags into overrides keyed by option key.
-
-    Keys are option keys (``compile-threads``), not argparse dests.
-    """
-    overrides: dict[str, Any] = {}
-    if getattr(args, "jobs", None) is not None:
-        overrides["jobs"] = args.jobs
-    if getattr(args, "compile_threads", None) is not None:
-        overrides["compile-threads"] = args.compile_threads
-    if getattr(args, "timeout", None) is not None:
-        overrides["timeout"] = args.timeout
-    if getattr(args, "defines", None):
-        defines = {}
-        for d in args.defines:
-            if "=" in d:
-                k, v = d.split("=", 1)
-                defines[k] = v
-            else:
-                defines[d] = ""
-        overrides["defines"] = defines
-    if getattr(args, "flags", None):
-        overrides["flags"] = tuple(args.flags)
-    return overrides
 
 
 def determine_exit_code(outcomes: tuple[Outcome, ...]) -> int:
@@ -446,7 +377,7 @@ def _resolve_pipeline(
         print(str(e), file=sys.stderr)
         sys.exit(2)
 
-    cli_overrides = _build_cli_overrides(args)
+    cli_overrides = build_cli_overrides(args, command=args.subcommand)
     profile_name = manifest.build_profile if args.profile is None else args.profile
     try:
         policy = resolve(manifest, profile_name, cli_overrides, settings, os.environ, cpu_count=host.cpu_count)
@@ -970,7 +901,7 @@ def _cmd_run(args: argparse.Namespace) -> None:
     root = Path.cwd()
     config_file = Path(args.config_file) if getattr(args, "config_file", None) else None
     no_config = getattr(args, "no_config", False)
-    cli_overrides = _build_cli_overrides(args)
+    cli_overrides = build_cli_overrides(args, command=args.subcommand)
 
     # Configuration errors come before the toolchain lookup, as in _resolve_pipeline.
     try:
