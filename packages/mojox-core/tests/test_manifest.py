@@ -80,6 +80,40 @@ class TestErrors:
         with pytest.raises(ConfigError, match="dynamic"):
             parse_manifest({"project": {"name": "x", "dynamic": ["version"]}})
 
+    @pytest.mark.parametrize(
+        ("project", "tool", "key_path"),
+        [
+            ({}, 1, "tool"),
+            ({}, {"mojox": 1}, "tool.mojox"),
+            ({"optional-dependencies": 1}, None, "project.optional-dependencies"),
+            ({"optional-dependencies": {"cli": "rich"}}, None, "project.optional-dependencies.cli"),
+            ({"optional-dependencies": {"cli": [1]}}, None, "project.optional-dependencies.cli[0]"),
+            ({"urls": "x"}, None, "project.urls"),
+            ({"urls": {"home": 1}}, None, "project.urls.home"),
+            ({"keywords": "mojo"}, None, "project.keywords"),
+            ({"classifiers": 1}, None, "project.classifiers"),
+            ({"dependencies": [1]}, None, "project.dependencies[0]"),
+            ({"license-files": 1}, None, "project.license-files"),
+            ({"authors": 1}, None, "project.authors"),
+            ({"authors": ["me"]}, None, "project.authors[0]"),
+            ({"maintainers": 1}, None, "project.maintainers"),
+            ({"version": None, "dynamic": 1}, None, "project.dynamic"),
+            ({}, {"mojox": {"profile": 1}}, "tool.mojox.profile"),
+            ({}, {"mojox": {"binaries": 1}}, "tool.mojox.binaries"),
+            ({}, {"mojox": {"pre-build": 1}}, "tool.mojox.pre-build"),
+        ],
+    )
+    def test_malformed_table_is_a_config_error(self, project, tool, key_path):
+        table = {"name": "x", "version": "1.0.0", **project}
+        if table["version"] is None:
+            del table["version"]
+        data: dict[str, object] = {"project": table}
+        if tool is not None:
+            data["tool"] = tool
+        with pytest.raises(ConfigError) as exc:
+            parse_manifest(data)
+        assert exc.value.key_path == key_path
+
     def test_optimize_out_of_range(self):
         d = {
             "project": {"name": "x", "version": "1.0.0"},

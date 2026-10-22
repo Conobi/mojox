@@ -26,11 +26,11 @@ def parse_manifest(data: dict[str, Any]) -> Manifest:
     No KeyError, no TypeError, no stack trace reaches the user.
     """
     project = _require_table(data, "project")
-    mojox = data.get("tool", {}).get("mojox", {})
+    mojox = _optional_table(_optional_table(data, "tool", "tool"), "mojox", "tool.mojox")
 
     name = _require_str(project, "project", "name")
     version = _parse_version(project)
-    profiles = _parse_profiles(mojox.get("profile", {}))
+    profiles = _parse_profiles(_optional_table(mojox, "profile", "tool.mojox.profile"))
 
     return Manifest(
         name=name,
@@ -38,21 +38,21 @@ def parse_manifest(data: dict[str, Any]) -> Manifest:
         description=project.get("description"),
         readme=project.get("readme") if isinstance(project.get("readme"), str) else None,
         license_expr=_parse_license(project),
-        license_files=tuple(project.get("license-files", ())),
+        license_files=_project_str_list(project, "license-files"),
         requires_python=project.get("requires-python"),
-        dependencies=tuple(project.get("dependencies", ())),
-        optional_dependencies={k: tuple(v) for k, v in project.get("optional-dependencies", {}).items()},
-        keywords=tuple(project.get("keywords", ())),
-        authors=tuple(project.get("authors", ())),
-        maintainers=tuple(project.get("maintainers", ())),
-        urls=dict(project.get("urls", {})),
-        classifiers=tuple(project.get("classifiers", ())),
+        dependencies=_project_str_list(project, "dependencies"),
+        optional_dependencies=_parse_optional_dependencies(project),
+        keywords=_project_str_list(project, "keywords"),
+        authors=_parse_people(project, "authors"),
+        maintainers=_parse_people(project, "maintainers"),
+        urls=_parse_urls(project),
+        classifiers=_project_str_list(project, "classifiers"),
         packages=_parse_packages(mojox),
         package_root=_normalise_path(
             str(mojox.get("package-root", "src")),
             "tool.mojox.package-root",
         ),
-        binaries=_parse_binaries(mojox.get("binaries", [])),
+        binaries=_parse_binaries(_optional_list(mojox, "binaries", "tool.mojox.binaries")),
         test_roots=_parse_path_list(mojox, "test-roots", ("tests",)),
         test_parallel=bool(mojox.get("test-parallel", False)),
         defines=_parse_defines(mojox),
@@ -60,7 +60,7 @@ def parse_manifest(data: dict[str, Any]) -> Manifest:
         lints=_parse_lints(mojox.get("lints", {})),
         optimize=_parse_optimize(mojox.get("optimize"), "tool.mojox.optimize"),
         debug_level=_parse_debug_level(mojox.get("debug-level"), "tool.mojox.debug-level"),
-        pre_build=_parse_pre_build(mojox.get("pre-build", [])),
+        pre_build=_parse_pre_build(_optional_list(mojox, "pre-build", "tool.mojox.pre-build")),
         native_libs=_parse_path_list(mojox, "native-libs", ()),
         source_include=_parse_path_list_optional(mojox, "source-include"),
         source_exclude=_parse_path_list(mojox, "source-exclude", ()),
@@ -84,6 +84,61 @@ def _require_table(data: dict[str, Any], key: str) -> dict[str, Any]:
     return val
 
 
+def _optional_table(data: dict[str, Any], key: str, key_path: str) -> dict[str, Any]:
+    """Return the table at *key*, empty when absent; any non-table value is rejected."""
+    val = data.get(key, {})
+    if not isinstance(val, dict):
+        raise ConfigError(key_path, f"expected a table, got {type(val).__name__}")
+    return val
+
+
+def _optional_list(data: dict[str, Any], key: str, key_path: str) -> list[Any]:
+    """Return the array at *key*, empty when absent; items are left to the caller."""
+    val = data.get(key, [])
+    if not isinstance(val, list):
+        raise ConfigError(key_path, f"expected a list, got {type(val).__name__}")
+    return val
+
+
+def _require_str_list(raw: object, key_path: str) -> tuple[str, ...]:
+    """Require *raw* to be an array of strings; a bare string is not accepted."""
+    if not isinstance(raw, list):
+        raise ConfigError(key_path, f"expected a list, got {type(raw).__name__}")
+    for i, item in enumerate(raw):
+        if not isinstance(item, str):
+            raise ConfigError(f"{key_path}[{i}]", f"expected a string, got {type(item).__name__}")
+    return tuple(raw)
+
+
+def _project_str_list(project: dict[str, Any], key: str) -> tuple[str, ...]:
+    """Parse an optional ``[project]`` array of strings."""
+    return _require_str_list(project.get(key, []), f"project.{key}")
+
+
+def _parse_optional_dependencies(project: dict[str, Any]) -> dict[str, tuple[str, ...]]:
+    """Parse ``project.optional-dependencies``: a table of extra name to requirement strings."""
+    table = _optional_table(project, "optional-dependencies", "project.optional-dependencies")
+    return {k: _require_str_list(v, f"project.optional-dependencies.{k}") for k, v in table.items()}
+
+
+def _parse_people(project: dict[str, Any], key: str) -> tuple[dict[str, str], ...]:
+    """Parse ``project.authors``/``maintainers``: an array of tables (``name``, ``email``)."""
+    people = _optional_list(project, key, f"project.{key}")
+    for i, person in enumerate(people):
+        if not isinstance(person, dict):
+            raise ConfigError(f"project.{key}[{i}]", f"expected a table, got {type(person).__name__}")
+    return tuple(people)
+
+
+def _parse_urls(project: dict[str, Any]) -> dict[str, str]:
+    """Parse ``project.urls``: a table of label to URL string."""
+    table = _optional_table(project, "urls", "project.urls")
+    for label, url in table.items():
+        if not isinstance(url, str):
+            raise ConfigError(f"project.urls.{label}", f"expected a string, got {type(url).__name__}")
+    return dict(table)
+
+
 def _require_str(table: dict[str, Any], prefix: str, key: str) -> str:
     """Require *key* to exist in *table* and be a string."""
     if key not in table:
@@ -100,7 +155,7 @@ def _parse_version(project: dict[str, Any]) -> str:
     Rejects dynamic versions since mojox requires a static version string.
     """
     if "version" not in project:
-        dynamic = set(project.get("dynamic", []))
+        dynamic = set(_project_str_list(project, "dynamic"))
         if "version" in dynamic:
             raise ConfigError(
                 "project.version",

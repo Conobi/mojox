@@ -953,6 +953,40 @@ class TestRunExecutesProgram:
         assert "pyproject.toml: failed to parse" in capsys.readouterr().err
         assert log.read_text() == ""
 
+    def test_profile_flag_selects_a_manifest_profile(self, project, capsys):
+        proj, log = project
+        (proj / "pyproject.toml").write_text(
+            '[project]\nname = "app"\nversion = "0.1.0"\n\n[tool.mojox.profile.ci]\ncompile-threads = 5\n'
+        )
+        (proj / "hello.mojo").write_text("# out: hi\n# exit: 0\n")
+        from mojox.cli import _cmd_run
+
+        _cmd_run(build_parser().parse_args(["run", "--no-config", "--dry-run", "--profile", "ci", "hello.mojo"]))
+        assert "--num-threads 5" in capsys.readouterr().err
+        assert log.read_text() == ""
+
+    def test_unknown_profile_exits_2(self, project, capsys):
+        proj, log = project
+        (proj / "hello.mojo").write_text("# out: hi\n# exit: 0\n")
+        assert self._run("--profile", "nope", "hello.mojo") == 2
+        assert "nope" in capsys.readouterr().err
+        assert log.read_text() == ""
+
+    def test_non_table_tool_without_project_is_ignored(self, project, capsys):
+        proj, _log = project
+        (proj / "pyproject.toml").write_text("tool = 1\n")
+        (proj / "hello.mojo").write_text("# out: hi\n# exit: 0\n")
+        assert self._run("hello.mojo") == 0
+        assert capsys.readouterr().out == "hi\n"
+
+    def test_mojox_table_without_project_exits_2(self, project, capsys):
+        proj, log = project
+        (proj / "pyproject.toml").write_text("[tool.mojox]\noptimize = 1\n")
+        (proj / "hello.mojo").write_text("# out: hi\n# exit: 0\n")
+        assert self._run("hello.mojo") == 2
+        assert "project" in capsys.readouterr().err
+        assert log.read_text() == ""
+
     def test_non_mojox_pyproject_that_does_not_parse_is_ignored(self, project, capsys):
         proj, _log = project
         (proj / "pyproject.toml").write_text('[project]\nname = "app"\n')
