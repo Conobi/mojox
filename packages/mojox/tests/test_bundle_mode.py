@@ -323,6 +323,11 @@ class TestJsonMode:
         assert [(e["type"], e["event"]) for e in events] == [("suite", "started"), ("suite", "ok")]
         assert (events[0]["mode"], events[0]["test_count"]) == ("bundle", 0)
         assert _calls(log) == []
+        assert _test("--output-format", "json", "tests/nothing_here") == 0
+        per_file = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+        assert {k: v for k, v in events[1].items() if k != "elapsed_s"} == {
+            k: v for k, v in per_file[1].items() if k != "elapsed_s"
+        }
 
     def test_no_test_functions_in_human_output_prints_one_line(self, project, capsys):
         proj, _log = project
@@ -333,7 +338,7 @@ class TestJsonMode:
         assert "No test functions found for bundling" in captured.err
         assert captured.out == ""
 
-    def test_project_config_bundle_mode_is_named(self, project, capsys):
+    def test_project_config_bundle_mode_sets_json_mode(self, project, capsys):
         import json
 
         proj, _log = project
@@ -367,6 +372,21 @@ class TestHeader:
         assert exc.value.code == 0
         assert f"(tool.mojox.test-bundle); timeout 60 s for the harness ({config}:timeout)\n" in capsys.readouterr().err
 
+    def test_escapes_control_and_bidi_chars_in_a_settings_path(self, project, capsys):
+        from mojox.cli import _cmd_test
+
+        proj, _log = project
+        config = proj / "a\x1b]0;pwn\x07b\u202e.toml"
+        config.write_text("timeout = 60\n")
+        with pytest.raises(SystemExit) as exc:
+            _cmd_test(build_parser().parse_args(["test", "--bundle", "--config-file", str(config)]))
+        assert exc.value.code == 0
+        header = next(line for line in capsys.readouterr().err.splitlines() if line.startswith("bundle: 1 binary"))
+        assert "\x1b" not in header
+        assert "\x07" not in header
+        assert "\u202e" not in header
+        assert repr(f"{config}:timeout") in header
+
     def test_per_file_mode_has_no_bundle_line(self, project, capsys):
         assert _test() == 0
         assert "bundle:" not in capsys.readouterr().err
@@ -374,3 +394,106 @@ class TestHeader:
     def test_json_output_has_no_header(self, project, capsys):
         assert _test("--bundle", "--output-format", "json") == 0
         assert "bundle:" not in capsys.readouterr().err
+
+
+_JOBS_NOTE = "note: -j applies to precompiles and examples, not to tests inside the bundle\n"
+_FAIL_FAST_NOTE = "note: --fail-fast stops between commands, not between tests inside the bundle\n"
+
+
+class TestNotes:
+    @pytest.mark.parametrize("jobs", [("-j", "4"), ("--jobs=4",)], ids=["-j", "--jobs"])
+    def test_jobs_flag_prints_the_jobs_note_once(self, project, capsys, jobs):
+        assert _test("--bundle", *jobs) == 0
+        assert capsys.readouterr().err.count(_JOBS_NOTE) == 1
+
+    def test_jobs_from_the_environment_prints_no_note(self, project, monkeypatch, capsys):
+        monkeypatch.setenv("MOJOX_JOBS", "4")
+        assert _test("--bundle") == 0
+        assert "note:" not in capsys.readouterr().err
+
+    @pytest.mark.parametrize("flag", ["--fail-fast", "--no-fail-fast"])
+    def test_fail_fast_flags_print_the_fail_fast_note_once(self, project, capsys, flag):
+        assert _test("--bundle", flag) == 0
+        assert capsys.readouterr().err.count(_FAIL_FAST_NOTE) == 1
+
+    def test_bundle_alone_prints_no_note(self, project, capsys):
+        assert _test("--bundle") == 0
+        assert "note:" not in capsys.readouterr().err
+
+    def test_per_file_mode_prints_no_note(self, project, capsys):
+        assert _test("-j", "4", "--no-fail-fast") == 0
+        assert "note:" not in capsys.readouterr().err
+
+    @pytest.mark.parametrize(("argv", "expected"), [((), True), (("--fail-fast",), True), (("--no-fail-fast",), False)])
+    def test_per_file_fail_fast_still_defaults_to_on(self, project, monkeypatch, argv, expected):
+        from mojox.types import Outcome, OutcomeKind
+
+        seen = []
+
+        def fake_run_commands(commands, **kwargs):
+            seen.append(kwargs["fail_fast"])
+            return tuple(Outcome(c, OutcomeKind.PASS, 0, "", "", (), 0.0) for c in commands)
+
+        monkeypatch.setattr("mojox.exec.run_commands", fake_run_commands)
+        assert _test(*argv) == 0
+        assert seen == [expected]
+
+
+_HINT = "rerun with --no-bundle to isolate the failing test"
+
+
+def _outcome(kind, stdout: str = ""):
+    """A harness outcome of *kind* with *stdout*."""
+    from mojox.types import Outcome
+    from mojox_core import Command
+
+    cmd = Command(("mojo",), PurePosixPath("/p"), {}, CommandKind.BUILD_TEST, "bundle::harness", 300, (), ())
+    return Outcome(cmd, kind, 1, stdout, "", (), 0.0)
+
+
+class TestCrashHint:
+    @pytest.mark.parametrize(
+        ("kind", "stdout", "expected"),
+        [
+            ("crash", "", True),
+            ("timeout", "---\n1 passed, 0 failed, 0 skipped\n", True),
+            ("fail", "FAIL t: boom\n", True),
+            ("fail", "FAIL t: boom\n---\n0 passed, 1 failed, 0 skipped\n", False),
+            ("fail", "FAIL t: 1 passed earlier\n", True),
+            ("fail", "FAIL t: boom\n0 passed, 1 failed\n", True),
+            ("fail", "FAIL t: boom\n  0 passed, 1 failed, 0 skipped\n", True),
+            ("fail", "FAIL t: boom\n3 passed, 0 failed, 0 skipped extra\n", True),
+            ("compile-error", "", False),
+            ("pass", "---\n1 passed, 0 failed, 0 skipped\n", False),
+        ],
+    )
+    def test_only_a_harness_that_stopped_before_its_summary_qualifies(self, kind, stdout, expected):
+        from mojox.cli import _harness_stopped_early
+        from mojox.types import OutcomeKind
+
+        assert _harness_stopped_early(_outcome(OutcomeKind(kind), stdout)) is expected
+
+    def test_a_crashing_harness_prints_the_hint_and_keeps_its_exit_code(self, project, capsys):
+        proj, _log = project
+        (proj / "tests" / "test_a.mojo").write_text("def test_a():\n    pass\n# HARNESS_CRASH\n")
+        assert _test("--bundle") == 1
+        assert capsys.readouterr().err.count(_HINT) == 1
+
+    def test_a_failing_test_with_a_summary_prints_no_hint(self, project, capsys):
+        proj, _log = project
+        (proj / "tests" / "test_a.mojo").write_text("def test_a():\n    pass\n# HARNESS_FAIL\n")
+        assert _test("--bundle") == 1
+        assert _HINT not in capsys.readouterr().err
+
+    def test_a_compile_error_prints_no_hint(self, project, capsys):
+        proj, _log = project
+        (proj / "tests" / "test_a.mojo").write_text("def test_a():\n    pass\n# COMPILE_ERROR\n")
+        assert _test("--bundle") == 1
+        assert _HINT not in capsys.readouterr().err
+
+    def test_json_output_prints_no_hint(self, project, capsys):
+        proj, _log = project
+        (proj / "tests" / "test_a.mojo").write_text("def test_a():\n    pass\n# HARNESS_CRASH\n")
+        assert _test("--bundle", "--output-format", "json") == 1
+        captured = capsys.readouterr()
+        assert _HINT not in captured.err + captured.out

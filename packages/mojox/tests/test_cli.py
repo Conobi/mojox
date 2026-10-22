@@ -193,10 +193,14 @@ class TestTestSubcommandFlags:
         args = parser.parse_args(["test", "--output-format", "json"])
         assert args.output_format == "json"
 
-    def test_fail_fast_default_true(self):
+    def test_fail_fast_default_is_not_given(self):
+        """None means "not given"; ``_cmd_test`` resolves it to True."""
         parser = build_parser()
         args = parser.parse_args(["test"])
-        assert args.fail_fast is True
+        assert args.fail_fast is None
+
+    def test_fail_fast_flag(self):
+        assert build_parser().parse_args(["test", "--fail-fast"]).fail_fast is True
 
     def test_no_fail_fast(self):
         parser = build_parser()

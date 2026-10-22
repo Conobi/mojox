@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import IO, TYPE_CHECKING
@@ -115,7 +116,7 @@ def _add_test_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--fail-fast",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=None,  # None: not given; _cmd_test resolves it to True
         help="Stop after first failure (default: --fail-fast)",
     )
     parser.add_argument(
@@ -523,7 +524,7 @@ def _cmd_test(args: argparse.Namespace) -> None:
                 )
                 writer.write_event(serialize_suite_finished((), elapsed_s=0.0))
             return
-    fail_fast = getattr(args, "fail_fast", True)
+    fail_fast = True if args.fail_fast is None else args.fail_fast
 
     # --- Resolve verbosity ---
     if args.success_output is not None:
@@ -566,6 +567,7 @@ def _cmd_test(args: argparse.Namespace) -> None:
 
     # --- Bundle mode ---
     if is_bundle:
+        _print_bundle_notes(policy, fail_fast_given=args.fail_fast is not None)
         _run_bundle_test(
             graph=graph,
             env=env,
@@ -643,6 +645,38 @@ def _cmd_test(args: argparse.Namespace) -> None:
         render_summary(outcomes)
 
     sys.exit(determine_exit_code(outcomes))
+
+
+# The summary line the generated harness prints last (see mojox_core.bundle.generate_harness).
+_HARNESS_SUMMARY = re.compile(r"^\d+ passed, \d+ failed, \d+ skipped$", re.MULTILINE)
+
+
+def _harness_stopped_early(outcome: Outcome) -> bool:
+    """Whether the harness ended before its summary line, so a per-file run would show which test did it.
+
+    Only chooses whether to print a hint: pass/fail stays the exit code's.
+    A crash or a timeout always qualifies, a compile error never (its
+    diagnostics name the file). A test printing a summary-like line hides
+    the hint, which is acceptable for a hint.
+    """
+    from .types import OutcomeKind
+
+    if outcome.kind in (OutcomeKind.CRASH, OutcomeKind.TIMEOUT):
+        return True
+    return outcome.kind == OutcomeKind.FAIL and _HARNESS_SUMMARY.search(outcome.stdout) is None
+
+
+def _print_bundle_notes(policy: Policy, *, fail_fast_given: bool) -> None:
+    """Say on stderr which explicit flags work differently in bundle mode, once each.
+
+    Only a ``-j`` from the command line gets a note: a jobs value from
+    settings or ``MOJOX_JOBS`` is a standing machine default, and repeating
+    the note on every run would be noise.
+    """
+    if policy.origins.get("jobs") == "--jobs":
+        print("note: -j applies to precompiles and examples, not to tests inside the bundle", file=sys.stderr)
+    if fail_fast_given:
+        print("note: --fail-fast stops between commands, not between tests inside the bundle", file=sys.stderr)
 
 
 def _plan_bundle(
@@ -876,6 +910,8 @@ def _run_bundle_test(
                 failure_output=failure_output,
             )
             render_summary(outcomes)
+            if any(o.command.kind == CommandKind.BUILD_TEST and _harness_stopped_early(o) for o in outcomes):
+                print("rerun with --no-bundle to isolate the failing test", file=sys.stderr)
 
         sys.exit(determine_exit_code(outcomes))
 

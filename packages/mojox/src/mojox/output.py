@@ -11,6 +11,7 @@ from collections.abc import Callable
 from typing import IO
 
 from mojox_core import Command, CommandKind, Diagnostic
+from mojox_core.errors import escape_for_display
 
 from .types import Outcome, OutcomeKind, OutputMode
 
@@ -104,6 +105,8 @@ def render_bundle_header(
     Zero counts are left out. The timeout is one budget for the whole
     harness command (its compile and every test in it), so it is shown with
     its origin: a local setting overriding the project's budget is visible.
+    Both origins are escaped here, as they may carry a settings path or a
+    profile name with terminal control characters.
     """
     out = stream or sys.stderr
     counts = ["1 binary"] + [
@@ -111,7 +114,10 @@ def render_bundle_header(
         for count, noun in ((functions, "test function"), (packages, "package"), (examples, "example"))
         if count
     ]
-    out.write(f"bundle: {', '.join(counts)} ({origin}); timeout {timeout_s} s for the harness ({timeout_origin})\n")
+    out.write(
+        f"bundle: {', '.join(counts)} ({escape_for_display(origin)}); "
+        f"timeout {timeout_s} s for the harness ({escape_for_display(timeout_origin)})\n"
+    )
 
 
 def render_parallelism(
