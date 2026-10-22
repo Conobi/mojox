@@ -84,7 +84,7 @@ mojox check
 
 ### `metadata`
 
-Output the build plan as JSON.
+Output the build plan as JSON. `policy.test_bundle` says whether `mojox test` runs in bundle mode; `commands` is always the per-file plan, marked by `"commands_mode": "files"`.
 
 ```bash
 mojox metadata

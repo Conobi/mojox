@@ -240,10 +240,11 @@ class Policy:
 
     ``compile_threads`` is the ``--num-threads`` for each compile, fixed
     regardless of host or jobs. ``jobs_spec`` is the jobs value as written
-    (``"num-cpus"``, ``"-2"``, ``"4"``), kept for display. ``env`` is the
-    settings ``[env]`` table, added to every command mojox runs. ``origins``
-    says where each option's value came from (see
-    :class:`mojox_core.options.Resolution`). Both default to empty so
+    (``"num-cpus"``, ``"-2"``, ``"4"``), kept for display. ``test_bundle``
+    makes ``mojox test`` build one harness binary for every test function.
+    ``env`` is the settings ``[env]`` table, added to every command mojox
+    runs. ``origins`` says where each option's value came from (see
+    :class:`mojox_core.options.Resolution`). These three have defaults so
     hand-built policies stay valid.
     """
 
@@ -259,6 +260,7 @@ class Policy:
     timeout_s: int
     compile_threads: int
     jobs_spec: str
+    test_bundle: bool = False
     env: Mapping[str, str] = field(default_factory=dict)
     origins: Mapping[str, str | tuple[str, ...]] = field(default_factory=dict)
 

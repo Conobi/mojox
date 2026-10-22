@@ -577,3 +577,49 @@ class TestEnvLayer:
     def test_other_mojox_variables_are_ignored(self):
         p = resolve(_minimal_manifest(), "dev", {}, LocalSettings.EMPTY, {"MOJOX_OPTIMIZE": "3", "MOJOX_ENV": "x"})
         assert p.optimize == 0
+
+
+class TestTestBundle:
+    @staticmethod
+    def _manifest(mojox: dict) -> Manifest:
+        return parse_manifest({"project": {"name": "x", "version": "1.0.0"}, "tool": {"mojox": mojox}})
+
+    def test_off_by_default(self):
+        p = resolve(self._manifest({}), "dev", {}, LocalSettings.EMPTY)
+        assert (p.test_bundle, p.origins["test-bundle"]) == (False, "default")
+
+    def test_top_level_turns_it_on(self):
+        p = resolve(self._manifest({"test-bundle": True}), "dev", {}, LocalSettings.EMPTY)
+        assert (p.test_bundle, p.origins["test-bundle"]) == (True, "tool.mojox.test-bundle")
+
+    def test_no_bundle_flag_beats_the_manifest(self):
+        p = resolve(self._manifest({"test-bundle": True}), "dev", {"test-bundle": False}, LocalSettings.EMPTY)
+        assert (p.test_bundle, p.origins["test-bundle"]) == (False, "--bundle")
+
+    def test_profile_applies_only_when_selected(self):
+        m = self._manifest({"profile": {"ci": {"test-bundle": True}}})
+        assert resolve(m, "dev", {}, LocalSettings.EMPTY).test_bundle is False
+        p = resolve(m, "ci", {}, LocalSettings.EMPTY)
+        assert (p.test_bundle, p.origins["test-bundle"]) == (True, "tool.mojox.profile.ci.test-bundle")
+
+    def test_bundle_flag_beats_a_profile_that_turns_it_off(self):
+        m = self._manifest({"test-bundle": True, "profile": {"ci": {"test-bundle": False}}})
+        assert resolve(m, "ci", {}, LocalSettings.EMPTY).test_bundle is False
+        assert resolve(m, "ci", {"test-bundle": True}, LocalSettings.EMPTY).test_bundle is True
+
+    def test_a_string_is_an_error_naming_the_key(self):
+        with pytest.raises(ConfigError) as exc:
+            self._manifest({"test-bundle": "yes"})
+        assert str(exc.value) == "tool.mojox.test-bundle: expected true or false, got 'yes'"
+
+    def test_a_settings_file_cannot_set_it(self):
+        with pytest.raises(ConfigError) as exc:
+            parse_settings([("/p/.mojox/config.toml", {"test-bundle": True})])
+        assert str(exc.value) == (
+            "/p/.mojox/config.toml:test-bundle: `test-bundle` cannot be set in local settings; "
+            "allowed in: tool.mojox, tool.mojox.profile.<name>, --bundle"
+        )
+
+    def test_the_environment_cannot_set_it(self):
+        p = resolve(self._manifest({}), "dev", {}, LocalSettings.EMPTY, {"MOJOX_TEST_BUNDLE": "1"})
+        assert p.test_bundle is False

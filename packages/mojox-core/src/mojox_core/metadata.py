@@ -37,7 +37,9 @@ def serialize(
         graph: The discovered target graph.
         env: The resolved build environment (include sequence, mojo binary).
         policy: The fully resolved flag set.
-        commands: The mojo invocations the planner produced.
+        commands: The mojo invocations the planner produced, the per-file plan
+            (``commands_mode`` is ``"files"`` even when ``policy.test_bundle``
+            is set).
         toolchain: The resolved Mojo toolchain identity.
         diagnostics: Any compiler or mojox diagnostics to include.
         host: Host facts behind the resolved jobs; serialized as ``null`` when omitted.
@@ -90,6 +92,7 @@ def serialize(
             "timeout_s": policy.timeout_s,
             "compile_threads": policy.compile_threads,
             "jobs_spec": policy.jobs_spec,
+            "test_bundle": policy.test_bundle,
             "origins": {
                 key: list(origin) if isinstance(origin, tuple) else origin for key, origin in policy.origins.items()
             },
@@ -115,6 +118,8 @@ def serialize(
             }
             for c in commands
         ],
+        # mojox metadata never stages a bundle harness, so commands are always the per-file plan.
+        "commands_mode": "files",
         "diagnostics": [
             {
                 "kind": d.kind,

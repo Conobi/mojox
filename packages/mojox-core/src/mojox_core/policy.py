@@ -170,6 +170,7 @@ def _project(resolution: Resolution, cpu_count: int | None, *, tests_follow_jobs
         timeout_s=values["timeout"],
         compile_threads=values["compile-threads"],
         jobs_spec=str(spec),
+        test_bundle=values["test-bundle"],
         env=dict(values["env"]),
         origins=dict(resolution.origins),
     )

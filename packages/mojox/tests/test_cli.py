@@ -551,27 +551,46 @@ class TestBundleFlag:
         """--bundle is accepted by the test subparser."""
         parser = build_parser()
         args = parser.parse_args(["test", "--bundle"])
-        assert args.bundle is True
+        assert args.test_bundle is True
 
-    def test_bundle_flag_default_false(self):
-        """--bundle defaults to False."""
+    def test_bundle_flag_default_is_not_given(self):
+        """Without --bundle/--no-bundle the manifest or profile decides."""
         parser = build_parser()
         args = parser.parse_args(["test"])
-        assert args.bundle is False
+        assert args.test_bundle is None
+
+    def test_no_bundle_flag(self):
+        assert build_parser().parse_args(["test", "--no-bundle"]).test_bundle is False
 
     def test_bundle_with_no_cache(self):
         """--bundle --no-cache is accepted."""
         parser = build_parser()
         args = parser.parse_args(["test", "--bundle", "--no-cache"])
-        assert args.bundle is True
+        assert args.test_bundle is True
         assert args.no_cache is True
 
     def test_bundle_with_filter(self):
         """--bundle -k pattern is accepted."""
         parser = build_parser()
         args = parser.parse_args(["test", "--bundle", "-k", "test_foo"])
-        assert args.bundle is True
+        assert args.test_bundle is True
         assert args.filter == "test_foo"
+
+    def test_there_is_no_test_bundle_flag(self, capsys):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(["test", "--test-bundle"])
+        assert "unrecognized arguments: --test-bundle" in capsys.readouterr().err
+
+    def test_metadata_takes_the_bundle_flags(self):
+        assert build_parser().parse_args(["metadata", "--no-bundle"]).test_bundle is False
+
+    @pytest.mark.parametrize("argv", [["build"], ["check"], ["run", "main.mojo"]], ids=lambda a: a[0])
+    @pytest.mark.parametrize("flag", ["--bundle", "--no-bundle", "--test-bundle"])
+    def test_other_subcommands_reject_the_bundle_flags(self, argv, flag, capsys):
+        with pytest.raises(SystemExit) as exc:
+            build_parser().parse_args([*argv, flag])
+        assert exc.value.code == 2
+        assert f"unrecognized arguments: {flag}" in capsys.readouterr().err
 
 
 # Fake ``mojo`` with ``build`` and ``precompile``; each call logs ``<subcommand> <source>``.

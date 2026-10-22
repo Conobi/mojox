@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import threading
 from collections.abc import Callable
-from typing import IO, Any
+from typing import IO, Any, Literal
 
 from mojox_core import Command, CommandKind, Diagnostic
 
@@ -43,8 +43,14 @@ def _serialize_kind(kind: CommandKind) -> str:
     return str(kind.value)
 
 
-def serialize_suite_started(test_count: int, *, jobs: int, compile_threads: int) -> dict[str, Any]:
-    """Build the suite:started event dict; *jobs* is the worker count actually applied."""
+def serialize_suite_started(
+    test_count: int, *, jobs: int, compile_threads: int, mode: Literal["bundle", "files"]
+) -> dict[str, Any]:
+    """Build the suite:started event dict; *jobs* is the worker count actually applied.
+
+    *mode* ``"bundle"`` means one harness command runs every test function,
+    so the suite reports one command event for all of them.
+    """
     return {
         "type": "suite",
         "event": "started",
@@ -52,6 +58,7 @@ def serialize_suite_started(test_count: int, *, jobs: int, compile_threads: int)
         "schema_version": _SCHEMA_VERSION,
         "jobs": jobs,
         "compile_threads": compile_threads,
+        "mode": mode,
     }
 
 

@@ -132,12 +132,6 @@ def _add_test_flags(parser: argparse.ArgumentParser) -> None:
     )
     _add_no_cache_flag(parser)
     parser.add_argument(
-        "--bundle",
-        action="store_true",
-        default=False,
-        help="Compile all tests into a single binary",
-    )
-    parser.add_argument(
         "-k",
         "--filter",
         default=None,
@@ -488,7 +482,7 @@ def _cmd_test(args: argparse.Namespace) -> None:
     # --- Filtering ---
     filter_paths = tuple(getattr(args, "paths", []))
     filter_pattern = getattr(args, "filter", None)
-    is_bundle = getattr(args, "bundle", False)
+    is_bundle = policy.test_bundle
     commands = select_examples(
         commands,
         examples=getattr(args, "examples", False),
@@ -514,7 +508,12 @@ def _cmd_test(args: argparse.Namespace) -> None:
 
                 writer = JsonEventWriter(sys.stdout)
                 writer.write_event(
-                    serialize_suite_started(0, jobs=policy.jobs_tests, compile_threads=policy.compile_threads)
+                    serialize_suite_started(
+                        0,
+                        jobs=policy.jobs_tests,
+                        compile_threads=policy.compile_threads,
+                        mode="bundle" if is_bundle else "files",
+                    )
                 )
                 writer.write_event(serialize_suite_finished((), elapsed_s=0.0))
             return
@@ -588,7 +587,9 @@ def _cmd_test(args: argparse.Namespace) -> None:
         test_count = sum(1 for c in commands if c.kind in _TEST_KINDS)
         writer = JsonEventWriter(sys.stdout)
         writer.write_event(
-            serialize_suite_started(test_count, jobs=policy.jobs_tests, compile_threads=policy.compile_threads)
+            serialize_suite_started(
+                test_count, jobs=policy.jobs_tests, compile_threads=policy.compile_threads, mode="files"
+            )
         )
 
         json_on_start, json_on_complete = make_json_callbacks(writer)
@@ -805,7 +806,9 @@ def _run_bundle_test(
 
             writer = JsonEventWriter(sys.stdout)
             test_count = sum(1 for c in bundle_commands if c.kind in _TEST_KINDS)
-            writer.write_event(serialize_suite_started(test_count, jobs=1, compile_threads=policy.compile_threads))
+            writer.write_event(
+                serialize_suite_started(test_count, jobs=1, compile_threads=policy.compile_threads, mode="bundle")
+            )
             json_on_start, json_on_complete = make_json_callbacks(writer)
             on_start = json_on_start
             on_complete = json_on_complete

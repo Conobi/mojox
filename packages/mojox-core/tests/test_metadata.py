@@ -119,7 +119,7 @@ class TestParallelism:
     def test_policy_reports_compile_threads_and_jobs_spec(self):
         graph, env, policy, commands, toolchain = _make_fixture()
         doc = serialize(graph, env, policy, commands, toolchain, ())
-        assert list(doc["policy"]) == [*_LEGACY_POLICY_KEYS, "compile_threads", "jobs_spec", "origins"]
+        assert list(doc["policy"]) == [*_LEGACY_POLICY_KEYS, "compile_threads", "jobs_spec", "test_bundle", "origins"]
         assert doc["policy"]["compile_threads"] == 1
         assert doc["policy"]["jobs_spec"] == "1"
 
@@ -149,6 +149,7 @@ class TestParallelism:
             "policy",
             "targets",
             "commands",
+            "commands_mode",
             "diagnostics",
             "plan_complete",
             "unstable",
@@ -173,3 +174,21 @@ class TestOrigins:
     def test_origins_are_unstable(self):
         graph, env, policy, commands, toolchain = _make_fixture()
         assert "/policy/origins" in serialize(graph, env, policy, commands, toolchain, ())["unstable"]
+
+
+class TestBundleMode:
+    def test_policy_reports_test_bundle(self):
+        graph, env, policy, commands, toolchain = _make_fixture()
+        doc = serialize(graph, env, replace(policy, test_bundle=True), commands, toolchain, ())
+        assert doc["policy"]["test_bundle"] is True
+
+    def test_commands_are_the_per_file_plan_even_in_bundle_mode(self):
+        graph, env, policy, commands, toolchain = _make_fixture()
+        doc = serialize(graph, env, replace(policy, test_bundle=True), commands, toolchain, ())
+        assert doc["commands_mode"] == "files"
+        assert [c["target_id"] for c in doc["commands"]] == ["tests/test_a.mojo"]
+
+    def test_bundle_fields_are_stable(self):
+        graph, env, policy, commands, toolchain = _make_fixture()
+        unstable = serialize(graph, env, policy, commands, toolchain, ())["unstable"]
+        assert not {"/commands_mode", "/policy/test_bundle"} & set(unstable)

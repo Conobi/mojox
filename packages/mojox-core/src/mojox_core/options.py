@@ -428,6 +428,15 @@ OPTIONS: tuple[Option, ...] = registry(
         builtin={"dev": "line-tables", "release": "none"},
     ),
     option("test-parallel", parse_bool_strict, {Layer.TOP}, default=False),
+    option(
+        "test-bundle",
+        parse_bool_strict,
+        {Layer.TOP, Layer.PROFILE, Layer.CLI},
+        default=False,
+        cli=("--bundle",),
+        commands={"test", "metadata"},
+        doc="Compile every test_* function into one harness binary (--no-bundle: one binary per test file)",
+    ),
     option("lints", parse_lints, {Layer.TOP}, default=LintConfig()),
     option("env", parse_env_table, {Layer.SETTINGS}, merge=Merge.MAP_BY_KEY, default={}),
 )

@@ -97,7 +97,7 @@ class TestOptionFactory:
         assert env_source({"MOJOX_X_FLAG": " TRUE "}, options=(opt,))["x-flag"].value is True
 
     def test_real_registry_bool_options_are_unchanged(self):
-        assert [opt.key for opt in OPTIONS if opt.is_bool] == ["test-parallel"]
+        assert [opt.key for opt in OPTIONS if opt.is_bool] == ["test-parallel", "test-bundle"]
 
     @pytest.mark.parametrize("layer", [Layer.ENV, Layer.CLI])
     def test_env_or_cli_without_parse_text_is_rejected(self, layer):
@@ -300,6 +300,7 @@ _EXPECTED = {
     "optimize": ({_T, _P}, Merge.REPLACE, {"dev": 0, "release": 3}, 0, None, None),
     "debug-level": ({_T, _P}, Merge.REPLACE, {"dev": "line-tables", "release": "none"}, "none", None, None),
     "test-parallel": ({_T}, Merge.REPLACE, {}, False, None, None),
+    "test-bundle": ({_T, _P, _C}, Merge.REPLACE, {}, False, ("--bundle",), None),
     "lints": ({_T}, Merge.REPLACE, {}, LintConfig(), None, None),
     "env": ({_S}, Merge.MAP_BY_KEY, {}, {}, None, None),
 }
