@@ -1303,6 +1303,15 @@ class TestParallelismReporting:
             _cmd_test(build_parser().parse_args(["test", "--no-config", *extra]))
         return exc.value.code
 
+    def test_no_config_keeps_the_mojox_environment(self, project, monkeypatch, capsys):
+        import json
+
+        from mojox.cli import _cmd_metadata
+
+        monkeypatch.setenv("MOJOX_JOBS", "2")
+        _cmd_metadata(build_parser().parse_args(["metadata", "--no-config"]))
+        assert json.loads(capsys.readouterr().out)["policy"]["jobs"] == 2
+
     @pytest.mark.parametrize(
         ("old", "new", "origin"),
         [

@@ -12,6 +12,7 @@ from mojox_core.options import (
     Merge,
     allowed_in,
     by_key,
+    env_source,
     option,
     origin_under,
     parse_bool_strict,
@@ -498,3 +499,58 @@ class TestParseTable:
 def test_builtin_profiles_cover_every_builtin_entry():
     assert BUILTIN_PROFILES == ("dev", "release")
     assert all(set(opt.builtin) <= set(BUILTIN_PROFILES) for opt in OPTIONS)
+
+
+class TestEnvSource:
+    def test_reads_only_the_variables_of_env_enabled_options(self):
+        env = {
+            "MOJOX_JOBS": "2",
+            "MOJOX_COMPILE_THREADS": "3",
+            "MOJOX_TIMEOUT": "4",
+            "MOJOX_OPTIMIZE": "3",
+            "MOJOX_TEST_BUNDLE": "1",
+            "MOJOX_ENV": "x",
+            "MOJOX_CPU_COUNT": "8",
+            "MOJOX_DEFINES": "A=1",
+            "PATH": "/bin",
+        }
+        assert {key: (v.value, v.origin) for key, v in env_source(env).items()} == {
+            "jobs": (2, "MOJOX_JOBS"),
+            "compile-threads": (3, "MOJOX_COMPILE_THREADS"),
+            "timeout": (4, "MOJOX_TIMEOUT"),
+        }
+
+    @pytest.mark.parametrize(("text", "expected"), [("num-cpus", "num-cpus"), ("-2", -2), (" 3 ", 3)])
+    def test_jobs_text(self, text, expected):
+        assert env_source({"MOJOX_JOBS": text})["jobs"].value == expected
+
+    @pytest.mark.parametrize(
+        ("name", "text"),
+        [
+            ("MOJOX_JOBS", "0"),
+            ("MOJOX_JOBS", "two"),
+            ("MOJOX_JOBS", ""),
+            ("MOJOX_JOBS", "1.5"),
+            ("MOJOX_COMPILE_THREADS", "0"),
+            ("MOJOX_COMPILE_THREADS", "x"),
+            ("MOJOX_COMPILE_THREADS", "-1"),
+            ("MOJOX_COMPILE_THREADS", ""),
+            ("MOJOX_TIMEOUT", "0"),
+            ("MOJOX_TIMEOUT", "-3"),
+            ("MOJOX_TIMEOUT", "1.5"),
+        ],
+    )
+    def test_bad_text_names_the_variable(self, name, text):
+        with pytest.raises(ConfigError) as exc:
+            env_source({name: text})
+        assert exc.value.key_path == name
+
+    def test_append_and_map_values_take_one_element(self):
+        reg = registry(
+            option("x-list", parse_flags, {Layer.ENV}, merge=Merge.APPEND, default=(), parse_text=parse_flag_text),
+            option(
+                "x-map", parse_defines, {Layer.ENV}, merge=Merge.MAP_BY_KEY, default={}, parse_text=parse_define_text
+            ),
+        )
+        src = env_source({"MOJOX_X_LIST": "-a", "MOJOX_X_MAP": "K=v"}, options=reg)
+        assert (src["x-list"].value, src["x-map"].value) == (("-a",), {"K": "v"})

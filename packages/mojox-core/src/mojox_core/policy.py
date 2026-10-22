@@ -8,7 +8,7 @@ turns the layers into fold sources and projects the fold into :class:`Policy`.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from .errors import ConfigError
@@ -16,8 +16,10 @@ from .options import (
     BUILTIN_PROFILES,
     NUM_CPUS,
     OPTIONS,
+    Option,
     Resolution,
     by_key,
+    env_source,
     parse_count,
     parse_count_text,
     parse_jobs,
@@ -27,6 +29,7 @@ from .types import LocalSettings, Manifest, Policy, Profile, Value
 
 __all__ = [
     "check_profile_name",
+    "collect_sources",
     "parse_count",
     "parse_count_text",
     "parse_jobs",
@@ -77,33 +80,40 @@ def check_profile_name(name: str, declared: Mapping[str, Profile], key_path: str
 def resolve(
     manifest: Manifest,
     profile_name: str,
-    cli_overrides: dict[str, Any],
+    cli_overrides: Mapping[str, Any],
     settings: LocalSettings,
+    env: Mapping[str, str],
     *,
     cpu_count: int | None = None,
+    options: Sequence[Option] = OPTIONS,
 ) -> Policy:
     """Resolve the full flag set from all precedence layers.
 
     Args:
         cli_overrides: Overrides from CLI flags (highest precedence), re-validated here.
-        settings: Machine-local settings from .mojox/config.toml + env.
+        env: The process environment; only the ``MOJOX_*`` names of options
+            that allow ENV are read. Pass ``{}`` where the environment must not
+            count (the build backend).
         cpu_count: Host CPU count; only needed when the jobs spec is
             ``"num-cpus"`` or negative.
 
     Raises:
-        ConfigError: Unknown *profile_name*, or an invalid settings or CLI value.
+        ConfigError: Unknown *profile_name*, or an invalid settings, ``MOJOX_*`` or CLI value.
         ValueError: The jobs spec needs *cpu_count* and none was given.
     """
     check_profile_name(profile_name, manifest.profiles, f"profile.{profile_name}")
-    resolution = resolve_values(_legacy_sources(manifest, profile_name, cli_overrides, settings), profile_name)
+    sources = collect_sources(manifest, profile_name, cli_overrides, settings, env, options=options)
+    resolution = resolve_values(sources, profile_name, options=options)
     return _project(resolution, cpu_count, tests_follow_jobs=resolution.values["test-parallel"])
 
 
 def resolve_without_manifest(
-    cli_overrides: dict[str, Any],
+    cli_overrides: Mapping[str, Any],
     settings: LocalSettings,
+    env: Mapping[str, str],
     *,
     cpu_count: int | None = None,
+    options: Sequence[Option] = OPTIONS,
 ) -> Policy:
     """Resolve a policy for a lone file outside any project (``mojox run x.mojo``).
 
@@ -113,8 +123,34 @@ def resolve_without_manifest(
     Raises:
         ConfigError, ValueError: As for :func:`resolve`.
     """
-    sources = _legacy_sources(None, "dev", cli_overrides, settings)
-    return _project(resolve_values(sources, "dev"), cpu_count, tests_follow_jobs=True)
+    sources = collect_sources(None, "dev", cli_overrides, settings, env, options=options)
+    return _project(resolve_values(sources, "dev", options=options), cpu_count, tests_follow_jobs=True)
+
+
+def collect_sources(
+    manifest: Manifest | None,
+    profile_name: str,
+    cli_overrides: Mapping[str, Any],
+    settings: LocalSettings,
+    env: Mapping[str, str],
+    *,
+    options: Sequence[Option] = OPTIONS,
+) -> tuple[Mapping[str, Value], ...]:
+    """Order every layer as fold sources: manifest, named profile, settings, ``MOJOX_*``, CLI.
+
+    Raises:
+        ConfigError: An invalid ``MOJOX_*``, settings or CLI value, named by its origin.
+    """
+    sources: list[Mapping[str, Value]] = []
+    if manifest is not None:
+        sources.append(manifest.values)
+        profile = manifest.profiles.get(profile_name)
+        if profile is not None:
+            sources.append(profile.values)
+    sources.append(_legacy_settings(settings))
+    sources.append(env_source(env, options=options))
+    sources.append(_legacy_cli(cli_overrides))
+    return tuple(sources)
 
 
 def _project(resolution: Resolution, cpu_count: int | None, *, tests_follow_jobs: bool) -> Policy:
@@ -145,24 +181,6 @@ def _project(resolution: Resolution, cpu_count: int | None, *, tests_follow_jobs
         env=dict(values["env"]),
         origins=dict(resolution.origins),
     )
-
-
-def _legacy_sources(
-    manifest: Manifest | None,
-    profile_name: str,
-    cli_overrides: Mapping[str, Any],
-    settings: LocalSettings,
-) -> list[Mapping[str, Value]]:
-    """Order the layers as fold sources: manifest, named profile, settings (with MOJOX_*), CLI."""
-    sources: list[Mapping[str, Value]] = []
-    if manifest is not None:
-        sources.append(manifest.values)
-        profile = manifest.profiles.get(profile_name)
-        if profile is not None:
-            sources.append(profile.values)
-    sources.append(_legacy_settings(settings))
-    sources.append(_legacy_cli(cli_overrides))
-    return sources
 
 
 def _legacy_settings(settings: LocalSettings) -> dict[str, Value]:

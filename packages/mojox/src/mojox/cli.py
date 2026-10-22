@@ -446,7 +446,7 @@ def _resolve_pipeline(
     cli_overrides = _build_cli_overrides(args)
     profile_name = manifest.build_profile if args.profile is None else args.profile
     try:
-        policy = resolve(manifest, profile_name, cli_overrides, settings, cpu_count=host.cpu_count)
+        policy = resolve(manifest, profile_name, cli_overrides, settings, os.environ, cpu_count=host.cpu_count)
     except ConfigError as e:
         print(str(e), file=sys.stderr)
         sys.exit(2)
@@ -975,9 +975,9 @@ def _cmd_run(args: argparse.Namespace) -> None:
         settings = read_settings(root, env=dict(os.environ), no_config=no_config, config_file=config_file)
         host = read_host_facts(root, environ=os.environ)
         if manifest is not None:
-            policy = resolve(manifest, args.profile, cli_overrides, settings, cpu_count=host.cpu_count)
+            policy = resolve(manifest, args.profile, cli_overrides, settings, os.environ, cpu_count=host.cpu_count)
         else:
-            policy = resolve_without_manifest(cli_overrides, settings, cpu_count=host.cpu_count)
+            policy = resolve_without_manifest(cli_overrides, settings, os.environ, cpu_count=host.cpu_count)
         toolchain = resolve_toolchain()
     except ConfigError as e:
         print(str(e), file=sys.stderr)

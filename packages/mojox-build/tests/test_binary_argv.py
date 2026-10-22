@@ -18,7 +18,7 @@ def _policy(root: Path, extra: str = "") -> Policy:
     pyproject = root / "pyproject.toml"
     pyproject.write_text(pyproject.read_text().replace('package-root = "src"\n', f'package-root = "src"\n{extra}'))
     manifest = parse_manifest(read_manifest(pyproject))
-    return resolve(manifest, manifest.build_profile, {}, LocalSettings.EMPTY)
+    return resolve(manifest, manifest.build_profile, {}, LocalSettings.EMPTY, {})
 
 
 def _argv(root: Path, policy: Policy, monkeypatch: pytest.MonkeyPatch) -> list[str]:

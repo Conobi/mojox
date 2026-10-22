@@ -551,3 +551,31 @@ def _unknown_key_message(key: str, layer: Layer, options: Sequence[Option]) -> s
     if match:
         return f"unknown key `{key}`; did you mean `{match[0]}`? (allowed in: {allowed_in(elsewhere[match[0]])})"
     return f"unknown key `{key}`"
+
+
+# -- Environment and CLI sources ------------------------------------------------
+
+
+def env_source(env: Mapping[str, str], *, options: Sequence[Option] = OPTIONS) -> dict[str, Value]:
+    """Read the ``MOJOX_*`` variable of each option that allows ENV; every other variable is ignored.
+
+    Raises:
+        ConfigError: A variable's text does not parse; the error names the variable.
+    """
+    values: dict[str, Value] = {}
+    for opt in options:
+        if opt.env is None or opt.parse_text is None or opt.env not in env:
+            continue
+        parsed = opt.parse_text(env[opt.env], opt.env)
+        values[opt.key] = Value(_as_layer_value(opt, parsed), opt.env)
+    return values
+
+
+def _as_layer_value(opt: Option, parsed: Any) -> Any:
+    """Shape one parsed text value like a TOML value: a 1-tuple for APPEND, a 1-entry dict for MAP_BY_KEY."""
+    if opt.merge is Merge.APPEND:
+        return (parsed,)
+    if opt.merge is Merge.MAP_BY_KEY:
+        key, value = parsed
+        return {key: value}
+    return parsed

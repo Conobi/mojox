@@ -227,16 +227,6 @@ def _parse_path_list_optional(mojox: dict[str, Any], key: str) -> tuple[str, ...
     return _parse_path_list(mojox, key)
 
 
-def _parse_optional_path(mojox: dict[str, Any], key: str) -> str | None:
-    """Parse an optional single path string."""
-    raw = mojox.get(key)
-    if raw is None:
-        return None
-    if not isinstance(raw, str):
-        raise ConfigError(f"tool.mojox.{key}", f"expected a string, got {type(raw).__name__}")
-    return _normalise_path(raw, f"tool.mojox.{key}")
-
-
 def _parse_packages(mojox: dict[str, Any]) -> tuple[str, ...] | None:
     """Parse the packages list, normalising each path."""
     if "packages" not in mojox:

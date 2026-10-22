@@ -3,18 +3,27 @@
 from __future__ import annotations
 
 import pytest
+from mojox_core import policy as policy_module
 from mojox_core.errors import ConfigError
 from mojox_core.manifest import parse_manifest
 from mojox_core.options import OPTIONS, by_key
 from mojox_core.policy import (
     parse_count,
     parse_jobs,
-    resolve,
     resolve_jobs,
-    resolve_without_manifest,
 )
-from mojox_core.settings import parse_settings
 from mojox_core.types import LintConfig, LocalSettings, Manifest, Profile, Value
+
+
+def resolve(manifest, profile_name, cli_overrides, settings, env=None, *, cpu_count=None):
+    """The real resolver, with no MOJOX_* variables unless *env* is given."""
+    return policy_module.resolve(manifest, profile_name, cli_overrides, settings, env or {}, cpu_count=cpu_count)
+
+
+def resolve_without_manifest(cli_overrides, settings, env=None, *, cpu_count=None):
+    """The real lone-file resolver, with no MOJOX_* variables unless *env* is given."""
+    return policy_module.resolve_without_manifest(cli_overrides, settings, env or {}, cpu_count=cpu_count)
+
 
 # Former Manifest/Profile option fields, by the option key that now holds them.
 _OPTION_FIELDS = {
@@ -335,8 +344,7 @@ class TestCompileThreadsPrecedence:
 
     def test_env_beats_named_profile(self):
         m = _minimal_manifest(profiles={"release": _profile(compile_threads=12)})
-        settings = parse_settings(None, None, {"MOJOX_COMPILE_THREADS": "2"})
-        assert resolve(m, "release", {}, settings).compile_threads == 2
+        assert resolve(m, "release", {}, LocalSettings.EMPTY, {"MOJOX_COMPILE_THREADS": "2"}).compile_threads == 2
 
     def test_manifest_beats_default(self):
         m = _minimal_manifest(compile_threads=2)
@@ -480,9 +488,7 @@ class TestTimeoutValidation:
 class TestFoldBackedResolver:
     @pytest.mark.parametrize("name", ["_resolve_parallelism", "_resolve_timeout", "_resolve_scalar"])
     def test_hand_written_resolvers_are_gone(self, name):
-        from mojox_core import policy
-
-        assert not hasattr(policy, name)
+        assert not hasattr(policy_module, name)
 
 
 class TestProvenanceAndEnv:
@@ -525,3 +531,26 @@ class TestManifestOrigins:
         )
         origins = resolve(m, "dev", {}, LocalSettings.EMPTY).origins
         assert (origins["test-parallel"], origins["lints"]) == ("default", "tool.mojox.lints")
+
+
+class TestEnvLayer:
+    def test_env_beats_the_manifest_profile(self):
+        m = _minimal_manifest(compile_threads=2, profiles={"release": _profile(compile_threads=12)})
+        p = resolve(m, "release", {}, LocalSettings.EMPTY, {"MOJOX_COMPILE_THREADS": "3"})
+        assert (p.compile_threads, p.origins["compile-threads"]) == (3, "MOJOX_COMPILE_THREADS")
+
+    def test_cli_beats_env(self):
+        p = resolve(_minimal_manifest(), "dev", {"jobs": 4}, LocalSettings.EMPTY, {"MOJOX_JOBS": "2"})
+        assert (p.jobs, p.origins["jobs"]) == (4, "--jobs")
+
+    def test_bad_env_value_names_the_variable(self):
+        with pytest.raises(ConfigError) as exc:
+            resolve(_minimal_manifest(), "dev", {}, LocalSettings.EMPTY, {"MOJOX_COMPILE_THREADS": "0"})
+        assert exc.value.key_path == "MOJOX_COMPILE_THREADS"
+
+    def test_without_manifest_reads_env(self):
+        assert resolve_without_manifest({}, LocalSettings.EMPTY, {"MOJOX_TIMEOUT": "9"}).timeout_s == 9
+
+    def test_other_mojox_variables_are_ignored(self):
+        p = resolve(_minimal_manifest(), "dev", {}, LocalSettings.EMPTY, {"MOJOX_OPTIMIZE": "3", "MOJOX_ENV": "x"})
+        assert p.optimize == 0

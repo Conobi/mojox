@@ -81,7 +81,7 @@ def hook_build_wheel(
         root = Path.cwd()
         manifest = _load(root)
         toolchain = resolve_toolchain()
-        policy = resolve(manifest, manifest.build_profile, {}, LocalSettings.EMPTY)
+        policy = resolve(manifest, manifest.build_profile, {}, LocalSettings.EMPTY, env={})
         _preflight(root, manifest, toolchain)
         return build_wheel(
             root,
@@ -179,7 +179,7 @@ def hook_build_editable(
         root = Path.cwd()
         manifest = _load(root)
         toolchain = resolve_toolchain()
-        policy = resolve(manifest, manifest.build_profile, {}, LocalSettings.EMPTY)
+        policy = resolve(manifest, manifest.build_profile, {}, LocalSettings.EMPTY, env={})
         _preflight(root, manifest, toolchain)
         return build_editable_wheel(
             root,

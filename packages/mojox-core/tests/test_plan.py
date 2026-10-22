@@ -250,7 +250,7 @@ class TestCompileThreads:
     @staticmethod
     def _resolved_binary_threads(mojox: dict, profile: str, cpu_count: int) -> str:
         manifest = parse_manifest({"project": {"name": "x", "version": "1.0.0"}, "tool": {"mojox": mojox}})
-        policy = resolve(manifest, profile, {}, LocalSettings.EMPTY)
+        policy = resolve(manifest, profile, {}, LocalSettings.EMPTY, {})
         host = HostFacts(cpu_count=cpu_count, available_memory_mb=16384, manifest_dir=PurePosixPath("/project"))
         graph = TargetGraph(targets=(Target(TargetKind.BIN, "src/app.mojo", "bin::app"),), edges=())
         cmds = plan(graph, _make_env(), policy, _make_toolchain(), host)
