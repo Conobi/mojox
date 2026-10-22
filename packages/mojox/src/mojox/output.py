@@ -84,6 +84,36 @@ def render_starting(
     out.write(f"{_c(out, _BOLD, 'Starting')} {count} {label} ({_parallelism(jobs, compile_threads, jobs_detail)})\n")
 
 
+def _counted(count: int, noun: str) -> str:
+    """``1 package``, ``2 packages``."""
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
+def render_bundle_header(
+    *,
+    functions: int,
+    packages: int,
+    examples: int,
+    origin: str,
+    timeout_s: int,
+    timeout_origin: str,
+    stream: IO[str] | None = None,
+) -> None:
+    """Render the line under the 'Starting' header that says what bundle mode builds and where it was chosen.
+
+    Zero counts are left out. The timeout is one budget for the whole
+    harness command (its compile and every test in it), so it is shown with
+    its origin: a local setting overriding the project's budget is visible.
+    """
+    out = stream or sys.stderr
+    counts = ["1 binary"] + [
+        _counted(count, noun)
+        for count, noun in ((functions, "test function"), (packages, "package"), (examples, "example"))
+        if count
+    ]
+    out.write(f"bundle: {', '.join(counts)} ({origin}); timeout {timeout_s} s for the harness ({timeout_origin})\n")
+
+
 def render_parallelism(
     *,
     jobs: int,

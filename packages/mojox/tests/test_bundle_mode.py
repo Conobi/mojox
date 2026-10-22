@@ -311,3 +311,37 @@ class TestJsonMode:
 
         assert _test("--output-format", "json", "--bundle", "tests/nothing_here") == 0
         assert json.loads(capsys.readouterr().out.splitlines()[0])["mode"] == "bundle"
+
+
+class TestHeader:
+    def test_states_mode_counts_timeout_and_origins(self, project, capsys):
+        assert _test("--bundle") == 0
+        err = capsys.readouterr().err
+        assert (
+            "targets (jobs 1, compile threads 1)\n"
+            "bundle: 1 binary, 3 test functions, 1 package (--bundle); timeout 300 s for the harness (default)\n"
+        ) in err
+
+    def test_counts_functions_after_path_filters_and_before_k(self, project, capsys):
+        assert _test("--bundle", "tests/test_b.mojo", "-k", "test_c") == 0
+        assert "bundle: 1 binary, 2 test functions, 1 package (--bundle)" in capsys.readouterr().err
+
+    def test_shows_a_settings_file_timeout_and_a_manifest_mode(self, project, capsys):
+        from mojox.cli import _cmd_test
+
+        proj, _log = project
+        _set_mojox(proj, "test-bundle = true\ntimeout = 900\n")
+        config = proj / "settings.toml"
+        config.write_text("timeout = 60\n")
+        with pytest.raises(SystemExit) as exc:
+            _cmd_test(build_parser().parse_args(["test", "--config-file", str(config)]))
+        assert exc.value.code == 0
+        assert f"(tool.mojox.test-bundle); timeout 60 s for the harness ({config}:timeout)\n" in capsys.readouterr().err
+
+    def test_per_file_mode_has_no_bundle_line(self, project, capsys):
+        assert _test() == 0
+        assert "bundle:" not in capsys.readouterr().err
+
+    def test_json_output_has_no_header(self, project, capsys):
+        assert _test("--bundle", "--output-format", "json") == 0
+        assert "bundle:" not in capsys.readouterr().err

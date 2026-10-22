@@ -288,6 +288,12 @@ def _report_parallelism(policy: Policy, host: HostFacts, jobs: int) -> None:
     render_parallelism(jobs=jobs, compile_threads=policy.compile_threads, jobs_detail=_jobs_detail(policy, host, jobs))
 
 
+def _origin(policy: Policy, key: str) -> str:
+    """Where option *key*'s value came from, as one string (an appended option lists every origin)."""
+    origin = policy.origins[key]
+    return ", ".join(origin) if isinstance(origin, tuple) else origin
+
+
 def _interrupted_summary(commands: tuple[Command, ...]) -> str:
     """Build a short message for Ctrl+C interruption."""
     return f"Interrupted — {len(commands)} targets planned"
@@ -715,6 +721,7 @@ def _run_bundle_test(
     import time
     from dataclasses import replace
 
+    from mojox_core import TargetKind
     from mojox_core.bundle import (
         TestModule,
         discover_test_functions,
@@ -725,6 +732,7 @@ def _run_bundle_test(
     from .exec import run_commands
     from .output import (
         make_progress_callback,
+        render_bundle_header,
         render_final_output,
         render_starting,
         render_summary,
@@ -818,6 +826,14 @@ def _run_bundle_test(
                 jobs=1,
                 compile_threads=policy.compile_threads,
                 jobs_detail=_jobs_detail(policy, host, 1),
+            )
+            render_bundle_header(
+                functions=sum(len(m.functions) for m in bundle_modules),
+                packages=sum(1 for t in graph.targets if t.kind == TargetKind.LIB),
+                examples=0,
+                origin=_origin(policy, "test-bundle"),
+                timeout_s=policy.timeout_s,
+                timeout_origin=_origin(policy, "timeout"),
             )
             on_complete = make_progress_callback(
                 success_output=success_output,

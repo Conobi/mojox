@@ -8,6 +8,7 @@ from pathlib import PurePosixPath
 import pytest
 from mojox.output import (
     describe_jobs,
+    render_bundle_header,
     render_diagnostics,
     render_dry_run,
     render_final_output,
@@ -323,6 +324,39 @@ class TestParallelismHeader:
         buf = io.StringIO()
         render_parallelism(jobs=6, compile_threads=2, jobs_detail="-2 of 8 via affinity", stream=buf)
         assert buf.getvalue() == "Using jobs 6 (-2 of 8 via affinity), compile threads 2\n"
+
+
+class TestBundleHeader:
+    def test_counts_origin_and_timeout(self):
+        buf = io.StringIO()
+        render_bundle_header(
+            functions=12,
+            packages=2,
+            examples=3,
+            origin="--bundle",
+            timeout_s=900,
+            timeout_origin="/p/c.toml:timeout",
+            stream=buf,
+        )
+        assert buf.getvalue() == (
+            "bundle: 1 binary, 12 test functions, 2 packages, 3 examples (--bundle); "
+            "timeout 900 s for the harness (/p/c.toml:timeout)\n"
+        )
+
+    def test_zero_counts_are_left_out_and_one_is_singular(self):
+        buf = io.StringIO()
+        render_bundle_header(
+            functions=1,
+            packages=0,
+            examples=0,
+            origin="tool.mojox.test-bundle",
+            timeout_s=300,
+            timeout_origin="default",
+            stream=buf,
+        )
+        assert buf.getvalue() == (
+            "bundle: 1 binary, 1 test function (tool.mojox.test-bundle); timeout 300 s for the harness (default)\n"
+        )
 
 
 class TestDescribeJobs:
