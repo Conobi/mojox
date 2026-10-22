@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import PurePosixPath
-from typing import ClassVar, Literal
+from typing import Any, ClassVar, Literal
 
 # -- Enums -----------------------------------------------------------------
 
@@ -95,6 +95,18 @@ class DistEntry:
     packages: tuple[str, ...]
     provenance: str
     native_lib_dirs: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Value:
+    """One option value as a single source wrote it, with the origin errors and provenance name.
+
+    For a MAP_BY_KEY option ``value`` is the whole table and each entry's
+    origin is ``<origin>.<map key>``; for APPEND it is the tuple of elements.
+    """
+
+    value: Any
+    origin: str
 
 
 # -- Compound types --------------------------------------------------------

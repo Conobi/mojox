@@ -11,6 +11,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from .errors import ConfigError
+from .options import parse_lints
 from .policy import check_profile_name, parse_count
 from .types import BinaryEntry, LintConfig, Manifest, Profile
 
@@ -257,37 +258,7 @@ def _parse_binaries(items: list[Any]) -> tuple[BinaryEntry, ...]:
 
 def _parse_lints(raw: object) -> LintConfig:
     """Parse the lints table into a LintConfig."""
-    if not isinstance(raw, dict):
-        raise ConfigError("tool.mojox.lints", f"expected a table, got {type(raw).__name__}")
-    _VALID_WARNINGS = frozenset({"error"})
-    _VALID_LINT_LEVELS = frozenset({"warn"})
-    if "warnings" in raw and raw["warnings"] not in _VALID_WARNINGS:
-        raise ConfigError(
-            "tool.mojox.lints.warnings",
-            f"must be 'error', got {raw['warnings']!r}",
-        )
-    _VALID_CHECK_LEVELS = frozenset({"check"})
-    if "check-doc-strings" in raw and raw["check-doc-strings"] not in _VALID_CHECK_LEVELS:
-        raise ConfigError(
-            "tool.mojox.lints.check-doc-strings",
-            f"must be 'check', got {raw['check-doc-strings']!r}",
-        )
-    if "missing-doc-strings" in raw and raw["missing-doc-strings"] not in _VALID_LINT_LEVELS:
-        raise ConfigError(
-            "tool.mojox.lints.missing-doc-strings",
-            f"must be 'warn', got {raw['missing-doc-strings']!r}",
-        )
-    if "unstable-apis" in raw and raw["unstable-apis"] not in _VALID_LINT_LEVELS:
-        raise ConfigError(
-            "tool.mojox.lints.unstable-apis",
-            f"must be 'warn', got {raw['unstable-apis']!r}",
-        )
-    return LintConfig(
-        warnings_as_errors=raw.get("warnings") == "error",
-        check_doc_strings=raw.get("check-doc-strings") == "check",
-        missing_doc_strings=raw.get("missing-doc-strings") == "warn",
-        unstable_apis=raw.get("unstable-apis") == "warn",
-    )
+    return parse_lints(raw, "tool.mojox.lints")
 
 
 def _parse_pre_build(items: list[Any]) -> tuple[tuple[str, ...], ...]:

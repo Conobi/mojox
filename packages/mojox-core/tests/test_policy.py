@@ -451,3 +451,25 @@ class TestTimeoutValidation:
 
     def test_cli_beats_settings(self):
         assert resolve(_minimal_manifest(), "dev", {"timeout": 7}, LocalSettings(timeout_s=50)).timeout_s == 7
+
+
+class TestFoldBackedResolver:
+    @pytest.mark.parametrize("name", ["_resolve_parallelism", "_resolve_timeout", "_resolve_scalar"])
+    def test_hand_written_resolvers_are_gone(self, name):
+        from mojox_core import policy
+
+        assert not hasattr(policy, name)
+
+    @pytest.mark.parametrize(("profile", "builtin"), [("dev", BUILTIN_DEV), ("release", BUILTIN_RELEASE)])
+    def test_builtin_profiles_match_the_registry(self, profile, builtin):
+        from mojox_core.options import OPTIONS, by_key
+
+        table = by_key(OPTIONS)
+        keys = ("optimize", "debug-level", "defines", "flags", "compile-threads")
+        assert tuple(table[key].builtin[profile] for key in keys) == (
+            builtin.optimize,
+            builtin.debug_level,
+            builtin.defines,
+            builtin.flags,
+            builtin.compile_threads,
+        )
