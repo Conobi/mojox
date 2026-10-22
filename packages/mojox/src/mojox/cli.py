@@ -765,6 +765,14 @@ def _run_bundle_test(
 
     if not bundle_modules:
         print("No test functions found for bundling", file=sys.stderr)
+        if output_format == OutputFormat.JSON:
+            from .json import JsonEventWriter, serialize_suite_finished, serialize_suite_started
+
+            writer = JsonEventWriter(sys.stdout)
+            writer.write_event(
+                serialize_suite_started(0, jobs=1, compile_threads=policy.compile_threads, mode="bundle")
+            )
+            writer.write_event(serialize_suite_finished((), elapsed_s=0.0))
         return
 
     for diag in diagnostics:

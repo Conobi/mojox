@@ -312,6 +312,35 @@ class TestJsonMode:
         assert _test("--output-format", "json", "--bundle", "tests/nothing_here") == 0
         assert json.loads(capsys.readouterr().out.splitlines()[0])["mode"] == "bundle"
 
+    def test_no_test_functions_emits_an_empty_suite(self, project, capsys):
+        import json
+
+        proj, log = project
+        for name in ("test_a.mojo", "test_b.mojo"):
+            (proj / "tests" / name).write_text("def main():\n    pass\n")
+        assert _test("--output-format", "json", "--bundle") == 0
+        events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+        assert [(e["type"], e["event"]) for e in events] == [("suite", "started"), ("suite", "ok")]
+        assert (events[0]["mode"], events[0]["test_count"]) == ("bundle", 0)
+        assert _calls(log) == []
+
+    def test_no_test_functions_in_human_output_prints_one_line(self, project, capsys):
+        proj, _log = project
+        for name in ("test_a.mojo", "test_b.mojo"):
+            (proj / "tests" / name).write_text("def main():\n    pass\n")
+        assert _test("--bundle") == 0
+        captured = capsys.readouterr()
+        assert "No test functions found for bundling" in captured.err
+        assert captured.out == ""
+
+    def test_project_config_bundle_mode_is_named(self, project, capsys):
+        import json
+
+        proj, _log = project
+        _set_mojox(proj, "test-bundle = true\n")
+        assert _test("--output-format", "json") == 0
+        assert json.loads(capsys.readouterr().out.splitlines()[0])["mode"] == "bundle"
+
 
 class TestHeader:
     def test_states_mode_counts_timeout_and_origins(self, project, capsys):

@@ -49,7 +49,8 @@ def serialize_suite_started(
     """Build the suite:started event dict; *jobs* is the worker count actually applied.
 
     *mode* ``"bundle"`` means one harness command runs every test function,
-    so the suite reports one command event for all of them.
+    so the test functions share that command's events; precompile and
+    example commands keep their own.
     """
     return {
         "type": "suite",
