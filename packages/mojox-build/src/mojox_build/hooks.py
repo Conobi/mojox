@@ -44,9 +44,12 @@ def _verbose_from(config_settings: dict[str, object] | None) -> bool:
 
 
 def _load(root: Path) -> Manifest:
-    """Load and parse pyproject.toml into a Manifest."""
+    """Load pyproject.toml; unknown [tool.mojox] keys only warn, so a project using a newer key still builds."""
     raw = read_manifest(root / "pyproject.toml")
-    return parse_manifest(raw)
+    manifest = parse_manifest(raw, unknown_keys="warn")
+    for warning in manifest.warnings:
+        print(f"mojox-build: warning: {warning}", file=sys.stderr)
+    return manifest
 
 
 _T = TypeVar("_T")

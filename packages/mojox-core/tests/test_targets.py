@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from mojox_core.errors import ConfigError
 from mojox_core.targets import discover
-from mojox_core.types import BinaryEntry, LintConfig, TargetKind
+from mojox_core.types import BinaryEntry, TargetKind
 
 
 def _make_tree(tmp_path: Path, files: list[str]) -> Path:
@@ -41,12 +41,6 @@ def _minimal_manifest(**overrides):
         "package_root": "src",
         "binaries": (),
         "test_roots": ("tests",),
-        "test_parallel": False,
-        "defines": {},
-        "flags": (),
-        "lints": LintConfig(),
-        "optimize": None,
-        "debug_level": None,
         "pre_build": (),
         "native_libs": (),
         "source_include": None,

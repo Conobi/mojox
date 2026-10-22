@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 from mojox_core.errors import ConfigError
+from mojox_core.manifest import parse_manifest
+from mojox_core.options import OPTIONS, by_key
 from mojox_core.policy import (
-    BUILTIN_DEV,
-    BUILTIN_RELEASE,
     parse_count,
     parse_jobs,
     resolve,
@@ -14,12 +14,42 @@ from mojox_core.policy import (
     resolve_without_manifest,
 )
 from mojox_core.settings import parse_settings
-from mojox_core.types import LintConfig, LocalSettings, Manifest, Profile
+from mojox_core.types import LintConfig, LocalSettings, Manifest, Profile, Value
+
+# Former Manifest/Profile option fields, by the option key that now holds them.
+_OPTION_FIELDS = {
+    "optimize": "optimize",
+    "debug_level": "debug-level",
+    "defines": "defines",
+    "flags": "flags",
+    "compile_threads": "compile-threads",
+    "test_parallel": "test-parallel",
+    "lints": "lints",
+}
+
+
+def _values(prefix: str, fields: dict) -> dict[str, Value]:
+    """Wrap option fields, named as the former dataclass fields, as one source's values; None means unset."""
+    return {
+        _OPTION_FIELDS[name]: Value(value, f"{prefix}.{_OPTION_FIELDS[name]}")
+        for name, value in fields.items()
+        if value is not None
+    }
+
+
+def _profile(**fields) -> Profile:
+    """A profile table setting *fields* (former Profile field names)."""
+    return Profile(values=_values("tool.mojox.profile.p", fields))
+
+
+def _builtin(key: str, profile: str):
+    """The registry's built-in value of *key* for *profile*."""
+    return by_key(OPTIONS)[key].builtin[profile]
 
 
 def _minimal_manifest(**overrides) -> Manifest:
-    """Build a minimal Manifest, overriding specific fields."""
-
+    """Build a minimal Manifest; option fields (former names) become its values."""
+    fields = {name: overrides.pop(name) for name in list(overrides) if name in _OPTION_FIELDS}
     defaults = {
         "name": "x",
         "version": "1.0.0",
@@ -39,12 +69,6 @@ def _minimal_manifest(**overrides) -> Manifest:
         "package_root": "src",
         "binaries": (),
         "test_roots": ("tests",),
-        "test_parallel": False,
-        "defines": {},
-        "flags": (),
-        "lints": LintConfig(),
-        "optimize": None,
-        "debug_level": None,
         "pre_build": (),
         "native_libs": (),
         "source_include": None,
@@ -54,27 +78,27 @@ def _minimal_manifest(**overrides) -> Manifest:
         "build_profile": "release",
     }
     defaults.update(overrides)
-    return Manifest(**defaults)
+    return Manifest(**defaults, values=_values("tool.mojox", fields))
 
 
 class TestBuiltinDefaults:
     def test_dev_assert_is_all(self):
-        assert BUILTIN_DEV.defines["ASSERT"] == "all"
+        assert _builtin("defines", "dev")["ASSERT"] == "all"
 
     def test_dev_optimize_is_zero(self):
-        assert BUILTIN_DEV.optimize == 0
+        assert _builtin("optimize", "dev") == 0
 
     def test_dev_debug_is_line_tables(self):
-        assert BUILTIN_DEV.debug_level == "line-tables"
+        assert _builtin("debug-level", "dev") == "line-tables"
 
     def test_release_assert_is_safe(self):
-        assert BUILTIN_RELEASE.defines["ASSERT"] == "safe"
+        assert _builtin("defines", "release")["ASSERT"] == "safe"
 
     def test_release_optimize_is_three(self):
-        assert BUILTIN_RELEASE.optimize == 3
+        assert _builtin("optimize", "release") == 3
 
     def test_release_debug_is_none(self):
-        assert BUILTIN_RELEASE.debug_level == "none"
+        assert _builtin("debug-level", "release") == "none"
 
 
 class TestPrecedence:
@@ -93,7 +117,7 @@ class TestPrecedence:
     def test_manifest_profile_overrides_toplevel(self):
         m = _minimal_manifest(
             optimize=2,
-            profiles={"dev": Profile(optimize=1, defines={}, flags=())},
+            profiles={"dev": _profile(optimize=1, defines={}, flags=())},
         )
         p = resolve(m, "dev", {}, LocalSettings.EMPTY)
         assert p.optimize == 1
@@ -101,7 +125,7 @@ class TestPrecedence:
     def test_cli_overrides_everything(self):
         m = _minimal_manifest(
             optimize=2,
-            profiles={"dev": Profile(optimize=1, defines={}, flags=())},
+            profiles={"dev": _profile(optimize=1, defines={}, flags=())},
         )
         p = resolve(m, "dev", {"optimize": 0}, LocalSettings.EMPTY)
         assert p.optimize == 0
@@ -128,7 +152,7 @@ class TestMergeSemantics:
     def test_flags_append_higher_layer_last(self):
         m = _minimal_manifest(
             flags=("-Xlinker", "-rpath"),
-            profiles={"dev": Profile(flags=("--extra",), defines={})},
+            profiles={"dev": _profile(flags=("--extra",), defines={})},
         )
         p = resolve(m, "dev", {}, LocalSettings.EMPTY)
         assert p.flags == ("-Xlinker", "-rpath", "--extra")
@@ -269,7 +293,7 @@ class TestCompileThreadsPrecedence:
         assert resolve(_minimal_manifest(), "release", {}, LocalSettings.EMPTY).compile_threads == 8
 
     def test_builtin_values(self):
-        assert (BUILTIN_DEV.compile_threads, BUILTIN_RELEASE.compile_threads) == (1, 8)
+        assert (_builtin("compile-threads", "dev"), _builtin("compile-threads", "release")) == (1, 8)
 
     @pytest.mark.parametrize("profile", ["dev", "release"])
     def test_top_level_overrides_every_builtin(self, profile):
@@ -277,40 +301,40 @@ class TestCompileThreadsPrecedence:
         assert resolve(m, profile, {}, LocalSettings.EMPTY).compile_threads == 3
 
     def test_named_profile_beats_top_level(self):
-        m = _minimal_manifest(compile_threads=3, profiles={"release": Profile(compile_threads=12)})
+        m = _minimal_manifest(compile_threads=3, profiles={"release": _profile(compile_threads=12)})
         assert resolve(m, "release", {}, LocalSettings.EMPTY).compile_threads == 12
 
     def test_named_profile_only_affects_itself(self):
-        m = _minimal_manifest(compile_threads=3, profiles={"release": Profile(compile_threads=12)})
+        m = _minimal_manifest(compile_threads=3, profiles={"release": _profile(compile_threads=12)})
         assert resolve(m, "dev", {}, LocalSettings.EMPTY).compile_threads == 3
 
     def test_profile_without_key_keeps_builtin(self):
-        m = _minimal_manifest(profiles={"release": Profile(optimize=2)})
+        m = _minimal_manifest(profiles={"release": _profile(optimize=2)})
         assert resolve(m, "release", {}, LocalSettings.EMPTY).compile_threads == 8
 
     def test_user_profile_without_key_inherits_top_level(self):
-        m = _minimal_manifest(compile_threads=5, profiles={"bench": Profile(optimize=3)})
+        m = _minimal_manifest(compile_threads=5, profiles={"bench": _profile(optimize=3)})
         assert resolve(m, "bench", {}, LocalSettings.EMPTY).compile_threads == 5
 
     def test_user_profile_without_key_or_top_level_is_one(self):
-        m = _minimal_manifest(profiles={"bench": Profile(optimize=3)})
+        m = _minimal_manifest(profiles={"bench": _profile(optimize=3)})
         assert resolve(m, "bench", {}, LocalSettings.EMPTY).compile_threads == 1
 
     def test_user_profile_value_used(self):
-        m = _minimal_manifest(profiles={"bench": Profile(compile_threads=6)})
+        m = _minimal_manifest(profiles={"bench": _profile(compile_threads=6)})
         assert resolve(m, "bench", {}, LocalSettings.EMPTY).compile_threads == 6
 
     def test_settings_beat_named_profile(self):
-        m = _minimal_manifest(compile_threads=3, profiles={"release": Profile(compile_threads=12)})
+        m = _minimal_manifest(compile_threads=3, profiles={"release": _profile(compile_threads=12)})
         assert resolve(m, "release", {}, LocalSettings(compile_threads=2)).compile_threads == 2
 
     def test_cli_beats_settings_and_profile(self):
-        m = _minimal_manifest(profiles={"release": Profile(compile_threads=12)})
+        m = _minimal_manifest(profiles={"release": _profile(compile_threads=12)})
         p = resolve(m, "release", {"compile_threads": 4}, LocalSettings(compile_threads=2))
         assert p.compile_threads == 4
 
     def test_env_beats_named_profile(self):
-        m = _minimal_manifest(profiles={"release": Profile(compile_threads=12)})
+        m = _minimal_manifest(profiles={"release": _profile(compile_threads=12)})
         settings = parse_settings(None, None, {"MOJOX_COMPILE_THREADS": "2"})
         assert resolve(m, "release", {}, settings).compile_threads == 2
 
@@ -406,11 +430,11 @@ class TestResolveWithoutManifest:
     def test_dev_defaults(self):
         p = resolve_without_manifest({}, LocalSettings.EMPTY)
         assert p.timeout_s == 300
-        assert p.optimize == BUILTIN_DEV.optimize
-        assert p.debug_level == BUILTIN_DEV.debug_level
-        assert p.defines == BUILTIN_DEV.defines
+        assert p.optimize == 0
+        assert p.debug_level == "line-tables"
+        assert p.defines == {"ASSERT": "all"}
         assert p.lints == LintConfig()
-        assert p.compile_threads == BUILTIN_DEV.compile_threads == 1
+        assert p.compile_threads == 1
 
     def test_single_file_runs_with_full_jobs(self):
         p = resolve_without_manifest({"jobs": 3}, LocalSettings.EMPTY)
@@ -460,20 +484,6 @@ class TestFoldBackedResolver:
 
         assert not hasattr(policy, name)
 
-    @pytest.mark.parametrize(("profile", "builtin"), [("dev", BUILTIN_DEV), ("release", BUILTIN_RELEASE)])
-    def test_builtin_profiles_match_the_registry(self, profile, builtin):
-        from mojox_core.options import OPTIONS, by_key
-
-        table = by_key(OPTIONS)
-        keys = ("optimize", "debug-level", "defines", "flags", "compile-threads")
-        assert tuple(table[key].builtin[profile] for key in keys) == (
-            builtin.optimize,
-            builtin.debug_level,
-            builtin.defines,
-            builtin.flags,
-            builtin.compile_threads,
-        )
-
 
 class TestProvenanceAndEnv:
     def test_origins_name_each_winning_layer(self):
@@ -487,3 +497,31 @@ class TestProvenanceAndEnv:
     def test_settings_env_reaches_the_policy(self):
         p = resolve(_minimal_manifest(), "dev", {}, LocalSettings(env={"CC": "clang"}))
         assert p.env == {"CC": "clang"}
+
+
+class TestManifestTimeout:
+    def test_profile_beats_top_level_and_cli_beats_both(self):
+        m = parse_manifest(
+            {
+                "project": {"name": "x", "version": "1.0.0"},
+                "tool": {"mojox": {"timeout": 60, "profile": {"ci": {"timeout": 90}}}},
+            }
+        )
+        assert resolve(m, "dev", {}, LocalSettings.EMPTY).timeout_s == 60
+        assert resolve(m, "ci", {}, LocalSettings.EMPTY).timeout_s == 90
+        assert resolve(m, "ci", {"timeout": 5}, LocalSettings.EMPTY).timeout_s == 5
+
+
+class TestManifestOrigins:
+    def test_test_parallel_from_the_manifest_and_lints_default_when_absent(self):
+        m = parse_manifest({"project": {"name": "x", "version": "1.0.0"}, "tool": {"mojox": {"test-parallel": True}}})
+        origins = resolve(m, "dev", {}, LocalSettings.EMPTY).origins
+        assert origins["test-parallel"] == "tool.mojox.test-parallel"
+        assert origins["lints"] == "default"
+
+    def test_lints_from_the_manifest(self):
+        m = parse_manifest(
+            {"project": {"name": "x", "version": "1.0.0"}, "tool": {"mojox": {"lints": {"warnings": "error"}}}}
+        )
+        origins = resolve(m, "dev", {}, LocalSettings.EMPTY).origins
+        assert (origins["test-parallel"], origins["lints"]) == ("default", "tool.mojox.lints")

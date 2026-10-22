@@ -1303,6 +1303,32 @@ class TestParallelismReporting:
             _cmd_test(build_parser().parse_args(["test", "--no-config", *extra]))
         return exc.value.code
 
+    @pytest.mark.parametrize(
+        ("old", "new", "origin"),
+        [
+            ("test-parallel = true\n", "test-parallel = true\ncompile-thread = 2\n", "tool.mojox.compile-thread"),
+            (
+                "[[tool.mojox.binaries]]",
+                "[tool.mojox.profile.ci]\ncompile-thread = 2\n\n[[tool.mojox.binaries]]",
+                "tool.mojox.profile.ci.compile-thread",
+            ),
+        ],
+        ids=["top", "profile"],
+    )
+    def test_unknown_manifest_key_fails_test_and_run(self, project, capsys, old, new, origin):
+        from mojox.cli import _cmd_run
+
+        pyproject = project / "pyproject.toml"
+        pyproject.write_text(pyproject.read_text().replace(old, new))
+        expected = f"{origin}: unknown key `compile-thread`; did you mean `compile-threads`?"
+        assert self._test() == 2
+        assert expected in capsys.readouterr().err
+        (project / "hello.mojo").write_text("def main():\n    pass\n")
+        with pytest.raises(SystemExit) as exc:
+            _cmd_run(build_parser().parse_args(["run", "--no-config", "hello.mojo"]))
+        assert exc.value.code == 2
+        assert expected in capsys.readouterr().err
+
     def test_header_reports_parallelism(self, project, capsys):
         assert self._test("-j", "2", "--compile-threads", "4") == 0
         assert "targets (jobs 2, compile threads 4)\n" in capsys.readouterr().err

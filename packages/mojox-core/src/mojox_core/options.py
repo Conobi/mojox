@@ -9,6 +9,7 @@ Pure: no environment or file access; every input is passed in.
 
 from __future__ import annotations
 
+import difflib
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -147,6 +148,9 @@ STRUCTURAL_KEYS: frozenset[str] = frozenset(
         "profile",
     }
 )
+
+# Profiles that exist without a [tool.mojox.profile.<name>] table; the registry's builtin entries use these names.
+BUILTIN_PROFILES: tuple[str, ...] = ("dev", "release")
 
 
 def registry(*options: Option) -> tuple[Option, ...]:
@@ -469,3 +473,81 @@ def resolve_values(
             values[opt.key] = {key: item for key, (item, _origin) in entries.items()}
             origins.update({f"{opt.key}.{key}": origin for key, (_item, origin) in entries.items()})
     return Resolution(values=values, origins=origins)
+
+
+# -- Table parsing ------------------------------------------------------------
+
+
+def origin_under(prefix: str, separator: str = ".") -> Callable[[str], str]:
+    """Origins of the keys of one table: ``<prefix><separator><key>`` (``tool.mojox.jobs``, ``<file>:jobs``)."""
+    return lambda key: f"{prefix}{separator}{key}"
+
+
+def allowed_in(opt: Option) -> str:
+    """Name every place *opt* may be set, in precedence order, for allow-list errors."""
+    names: list[str] = []
+    for layer in Layer:
+        if layer not in opt.layers:
+            continue
+        if layer is Layer.ENV:
+            names.append(opt.env or "")
+        elif layer is Layer.CLI:
+            names.append("/".join(opt.cli or ()))
+        else:
+            names.append(layer.value)
+    return ", ".join(names)
+
+
+def parse_table(
+    table: Mapping[str, Any],
+    layer: Layer,
+    origin_of: Callable[[str], str],
+    *,
+    unknown: list[ConfigError],
+    options: Sequence[Option] = OPTIONS,
+) -> dict[str, Value]:
+    """Parse the option keys of one TOML table (``[tool.mojox]``, a profile, a settings file) into a fold source.
+
+    Structural keys are skipped at TOP, where manifest.py parses them, and are
+    allow-list errors anywhere else. Unknown keys are appended to *unknown*
+    with a close-match suggestion, so the caller decides between failing and
+    warning.
+
+    Raises:
+        ConfigError: A key *layer* does not allow, or an invalid value.
+    """
+    table_options = by_key(options)
+    values: dict[str, Value] = {}
+    for key, raw in table.items():
+        origin = origin_of(key)
+        opt = table_options.get(key)
+        if opt is None and key in STRUCTURAL_KEYS:
+            if layer is Layer.TOP:
+                continue
+            raise ConfigError(origin, f"`{key}` cannot be set in {layer.value}; allowed in: {Layer.TOP.value}")
+        if opt is None:
+            unknown.append(ConfigError(origin, _unknown_key_message(key, layer, options)))
+            continue
+        if layer not in opt.layers:
+            raise ConfigError(origin, f"`{key}` cannot be set in {layer.value}; allowed in: {allowed_in(opt)}")
+        values[key] = Value(opt.parse(raw, origin), origin)
+    return values
+
+
+def _unknown_key_message(key: str, layer: Layer, options: Sequence[Option]) -> str:
+    """Say *key* is unknown, suggesting the closest key this layer accepts.
+
+    Failing that, suggest the closest option of any layer and name where it
+    can be set, so a key in the wrong file points at the right one.
+    """
+    candidates = [opt.key for opt in options if layer in opt.layers]
+    if layer is Layer.TOP:
+        candidates.extend(sorted(STRUCTURAL_KEYS))
+    match = difflib.get_close_matches(key, candidates, n=1)
+    if match:
+        return f"unknown key `{key}`; did you mean `{match[0]}`?"
+    elsewhere = by_key(options)
+    match = difflib.get_close_matches(key, list(elsewhere), n=1)
+    if match:
+        return f"unknown key `{key}`; did you mean `{match[0]}`? (allowed in: {allowed_in(elsewhere[match[0]])})"
+    return f"unknown key `{key}`"

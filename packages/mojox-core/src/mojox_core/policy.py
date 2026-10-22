@@ -12,12 +12,20 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from .errors import ConfigError
-from .options import NUM_CPUS, OPTIONS, Resolution, by_key, parse_count, parse_count_text, parse_jobs, resolve_values
+from .options import (
+    BUILTIN_PROFILES,
+    NUM_CPUS,
+    OPTIONS,
+    Resolution,
+    by_key,
+    parse_count,
+    parse_count_text,
+    parse_jobs,
+    resolve_values,
+)
 from .types import LocalSettings, Manifest, Policy, Profile, Value
 
 __all__ = [
-    "BUILTIN_DEV",
-    "BUILTIN_RELEASE",
     "check_profile_name",
     "parse_count",
     "parse_count_text",
@@ -26,27 +34,6 @@ __all__ = [
     "resolve_jobs",
     "resolve_without_manifest",
 ]
-
-BUILTIN_DEV = Profile(
-    optimize=0,
-    debug_level="line-tables",
-    defines={"ASSERT": "all"},
-    flags=(),
-    compile_threads=1,
-)
-
-BUILTIN_RELEASE = Profile(
-    optimize=3,
-    debug_level="none",
-    defines={"ASSERT": "safe"},
-    flags=(),
-    compile_threads=8,
-)
-
-_BUILTINS: dict[str, Profile] = {
-    "dev": BUILTIN_DEV,
-    "release": BUILTIN_RELEASE,
-}
 
 # cli_overrides keys (argparse dests) -> option keys. optimize and debug_level
 # have no flag; tests still pass them.
@@ -81,9 +68,9 @@ def check_profile_name(name: str, declared: Mapping[str, Profile], key_path: str
     Raises:
         ConfigError: At *key_path*, listing every available profile.
     """
-    if name in _BUILTINS or name in declared:
+    if name in BUILTIN_PROFILES or name in declared:
         return
-    available = sorted({*_BUILTINS, *declared})
+    available = sorted({*BUILTIN_PROFILES, *declared})
     raise ConfigError(key_path, f"unknown profile {name!r}. Available: {', '.join(available)}")
 
 
@@ -108,8 +95,8 @@ def resolve(
         ValueError: The jobs spec needs *cpu_count* and none was given.
     """
     check_profile_name(profile_name, manifest.profiles, f"profile.{profile_name}")
-    sources = _legacy_sources(manifest, profile_name, cli_overrides, settings)
-    return _project(resolve_values(sources, profile_name), cpu_count, tests_follow_jobs=manifest.test_parallel)
+    resolution = resolve_values(_legacy_sources(manifest, profile_name, cli_overrides, settings), profile_name)
+    return _project(resolution, cpu_count, tests_follow_jobs=resolution.values["test-parallel"])
 
 
 def resolve_without_manifest(
@@ -169,27 +156,13 @@ def _legacy_sources(
     """Order the layers as fold sources: manifest, named profile, settings (with MOJOX_*), CLI."""
     sources: list[Mapping[str, Value]] = []
     if manifest is not None:
-        sources.append(_typed_layer(manifest, "tool.mojox"))
+        sources.append(manifest.values)
         profile = manifest.profiles.get(profile_name)
         if profile is not None:
-            sources.append(_typed_layer(profile, f"tool.mojox.profile.{profile_name}"))
+            sources.append(profile.values)
     sources.append(_legacy_settings(settings))
     sources.append(_legacy_cli(cli_overrides))
     return sources
-
-
-def _typed_layer(table: Manifest | Profile, prefix: str) -> dict[str, Value]:
-    """Wrap a manifest's or profile's typed option fields as values; unset fields are skipped."""
-    fields: dict[str, Any] = {
-        "optimize": table.optimize,
-        "debug-level": table.debug_level,
-        "defines": table.defines or None,
-        "flags": table.flags or None,
-        "compile-threads": table.compile_threads,
-    }
-    if isinstance(table, Manifest):
-        fields["lints"] = table.lints
-    return {key: Value(value, f"{prefix}.{key}") for key, value in fields.items() if value is not None}
 
 
 def _legacy_settings(settings: LocalSettings) -> dict[str, Value]:

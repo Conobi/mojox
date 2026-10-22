@@ -7,30 +7,40 @@ The IO reader that loads the TOML bytes lives in mojox_core.io.manifest.
 from __future__ import annotations
 
 import posixpath
+from collections.abc import Sequence
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
 from .errors import ConfigError
-from .options import parse_lints
-from .policy import check_profile_name, parse_count
-from .types import BinaryEntry, LintConfig, Manifest, Profile
-
-_VALID_OPTIMIZE = frozenset({0, 1, 2, 3})
-_VALID_DEBUG_LEVELS = frozenset({"none", "line-tables", "full"})
+from .options import OPTIONS, Layer, Option, origin_under, parse_table
+from .policy import check_profile_name
+from .types import BinaryEntry, Manifest, Profile
 
 
-def parse_manifest(data: dict[str, Any]) -> Manifest:
+def parse_manifest(
+    data: dict[str, Any],
+    *,
+    unknown_keys: Literal["error", "warn"] = "error",
+    options: Sequence[Option] = OPTIONS,
+) -> Manifest:
     """Parse a pyproject.toml dict into a frozen Manifest.
 
-    Every rejection is a ConfigError with key path and remediation.
-    No KeyError, no TypeError, no stack trace reaches the user.
+    Option keys of ``[tool.mojox]`` and its profiles go through the registry.
+    A key that is neither an option nor structural raises in ``"error"`` mode;
+    in ``"warn"`` mode it lands in ``Manifest.warnings`` so an older build
+    backend can still build a project that uses a newer key. Every rejection
+    is a ConfigError naming the key's origin.
     """
     project = _require_table(data, "project")
     mojox = _optional_table(_optional_table(data, "tool", "tool"), "mojox", "tool.mojox")
 
     name = _require_str(project, "project", "name")
     version = _parse_version(project)
-    profiles = _parse_profiles(_optional_table(mojox, "profile", "tool.mojox.profile"))
+    unknown: list[ConfigError] = []
+    values = parse_table(mojox, Layer.TOP, origin_under("tool.mojox"), unknown=unknown, options=options)
+    profiles = _parse_profiles(_optional_table(mojox, "profile", "tool.mojox.profile"), options, unknown)
+    if unknown and unknown_keys == "error":
+        raise unknown[0]
 
     return Manifest(
         name=name,
@@ -54,12 +64,6 @@ def parse_manifest(data: dict[str, Any]) -> Manifest:
         ),
         binaries=_parse_binaries(_optional_list(mojox, "binaries", "tool.mojox.binaries")),
         test_roots=_parse_path_list(mojox, "test-roots", ("tests",)),
-        test_parallel=bool(mojox.get("test-parallel", False)),
-        defines=_parse_defines(mojox),
-        flags=_parse_str_list(mojox, "flags"),
-        lints=_parse_lints(mojox.get("lints", {})),
-        optimize=_parse_optimize(mojox.get("optimize"), "tool.mojox.optimize"),
-        debug_level=_parse_debug_level(mojox.get("debug-level"), "tool.mojox.debug-level"),
         pre_build=_parse_pre_build(_optional_list(mojox, "pre-build", "tool.mojox.pre-build")),
         native_libs=_parse_path_list(mojox, "native-libs", ()),
         source_include=_parse_path_list_optional(mojox, "source-include"),
@@ -67,7 +71,8 @@ def parse_manifest(data: dict[str, Any]) -> Manifest:
         wheel_exclude=_parse_str_list(mojox, "wheel-exclude"),
         profiles=profiles,
         build_profile=_parse_build_profile(mojox, profiles),
-        compile_threads=_parse_compile_threads(mojox, "tool.mojox.compile-threads"),
+        values=values,
+        warnings=tuple(str(err) for err in unknown),
     )
 
 
@@ -232,14 +237,6 @@ def _parse_optional_path(mojox: dict[str, Any], key: str) -> str | None:
     return _normalise_path(raw, f"tool.mojox.{key}")
 
 
-def _parse_defines(mojox: dict[str, Any]) -> dict[str, str]:
-    """Parse defines, validating the value is a table."""
-    raw = mojox.get("defines", {})
-    if not isinstance(raw, dict):
-        raise ConfigError("tool.mojox.defines", f"expected a table, got {type(raw).__name__}")
-    return {str(k): str(v) for k, v in raw.items()}
-
-
 def _parse_packages(mojox: dict[str, Any]) -> tuple[str, ...] | None:
     """Parse the packages list, normalising each path."""
     if "packages" not in mojox:
@@ -248,37 +245,6 @@ def _parse_packages(mojox: dict[str, Any]) -> tuple[str, ...] | None:
     if not isinstance(raw, list):
         raise ConfigError("tool.mojox.packages", f"expected a list, got {type(raw).__name__}")
     return tuple(_normalise_path(str(p), "tool.mojox.packages") for p in raw)
-
-
-def _parse_optimize(value: object, key_path: str) -> int | None:
-    """Parse and validate the optimisation level (0--3)."""
-    if value is None:
-        return None
-    if isinstance(value, int):
-        level = value
-    elif isinstance(value, (str, float)):
-        try:
-            level = int(value)
-        except (ValueError, TypeError):
-            raise ConfigError(key_path, f"must be 0–3, got {value!r}")
-    else:
-        raise ConfigError(key_path, f"must be 0–3, got {value!r}")
-    if level not in _VALID_OPTIMIZE:
-        raise ConfigError(key_path, f"must be 0–3, got {value!r}")
-    return level
-
-
-def _parse_debug_level(value: object, key_path: str) -> str | None:
-    """Parse and validate the debug level."""
-    if value is None:
-        return None
-    s = str(value)
-    if s not in _VALID_DEBUG_LEVELS:
-        raise ConfigError(
-            key_path,
-            f"must be one of {sorted(_VALID_DEBUG_LEVELS)}, got {value!r}",
-        )
-    return s
 
 
 def _parse_binaries(items: list[Any]) -> tuple[BinaryEntry, ...]:
@@ -311,11 +277,6 @@ def _parse_binaries(items: list[Any]) -> tuple[BinaryEntry, ...]:
     return tuple(out)
 
 
-def _parse_lints(raw: object) -> LintConfig:
-    """Parse the lints table into a LintConfig."""
-    return parse_lints(raw, "tool.mojox.lints")
-
-
 def _parse_pre_build(items: list[Any]) -> tuple[tuple[str, ...], ...]:
     """Parse pre-build commands (shell strings or argv lists)."""
     out: list[tuple[str, ...]] = []
@@ -331,34 +292,6 @@ def _parse_pre_build(items: list[Any]) -> tuple[tuple[str, ...], ...]:
                 "each entry must be a string (shell command) or a list of strings (argv)",
             )
     return tuple(out)
-
-
-def _parse_defines_for_key(table: dict[str, Any], key_path: str) -> dict[str, str]:
-    """Parse a defines sub-table, validating it is a dict of strings."""
-    raw = table.get("defines", {})
-    if not isinstance(raw, dict):
-        raise ConfigError(key_path, f"expected a table, got {type(raw).__name__}")
-    return {str(k): str(v) for k, v in raw.items()}
-
-
-def _parse_str_list_for_key(table: dict[str, Any], key: str, key_path: str) -> tuple[str, ...]:
-    """Parse a string-list value from *table[key]*, raising on bad types."""
-    raw = table.get(key, ())
-    if isinstance(raw, str):
-        raise ConfigError(key_path, "expected a list, got string")
-    if not isinstance(raw, (list, tuple)):
-        raise ConfigError(key_path, f"expected a list, got {type(raw).__name__}")
-    for i, item in enumerate(raw):
-        if not isinstance(item, str):
-            raise ConfigError(f"{key_path}[{i}]", f"expected a string, got {type(item).__name__}")
-    return tuple(raw)
-
-
-def _parse_compile_threads(table: dict[str, Any], key_path: str) -> int | None:
-    """Parse an optional ``compile-threads`` key; None when absent so lower layers apply."""
-    if "compile-threads" not in table:
-        return None
-    return parse_count(table["compile-threads"], key_path, from_text=False)
 
 
 def _parse_build_profile(mojox: dict[str, Any], profiles: dict[str, Profile]) -> str:
@@ -377,20 +310,13 @@ def _parse_build_profile(mojox: dict[str, Any], profiles: dict[str, Profile]) ->
     return raw
 
 
-def _parse_profiles(raw: dict[str, Any]) -> dict[str, Profile]:
-    """Parse profile tables into Profile objects."""
+def _parse_profiles(raw: dict[str, Any], options: Sequence[Option], unknown: list[ConfigError]) -> dict[str, Profile]:
+    """Parse each ``[tool.mojox.profile.<name>]`` table into the option values it sets."""
     profiles: dict[str, Profile] = {}
     for name, table in raw.items():
+        prefix = f"tool.mojox.profile.{name}"
         if not isinstance(table, dict):
-            raise ConfigError(
-                f"tool.mojox.profile.{name}",
-                f"expected a table, got {type(table).__name__}",
-            )
-        profiles[name] = Profile(
-            optimize=_parse_optimize(table.get("optimize"), f"tool.mojox.profile.{name}.optimize"),
-            debug_level=_parse_debug_level(table.get("debug-level"), f"tool.mojox.profile.{name}.debug-level"),
-            defines=_parse_defines_for_key(table, f"tool.mojox.profile.{name}.defines"),
-            flags=_parse_str_list_for_key(table, "flags", f"tool.mojox.profile.{name}.flags"),
-            compile_threads=_parse_compile_threads(table, f"tool.mojox.profile.{name}.compile-threads"),
-        )
+            raise ConfigError(prefix, f"expected a table, got {type(table).__name__}")
+        values = parse_table(table, Layer.PROFILE, origin_under(prefix), unknown=unknown, options=options)
+        profiles[name] = Profile(values=values)
     return profiles

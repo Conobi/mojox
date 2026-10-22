@@ -19,6 +19,7 @@ from mojox_core.types import (
     Target,
     TargetKind,
     Toolchain,
+    Value,
 )
 
 
@@ -55,12 +56,6 @@ class TestFrozenDataclasses:
             package_root="src",
             binaries=(BinaryEntry(source="main.mojo", name="myapp"),),
             test_roots=("tests",),
-            test_parallel=False,
-            defines={},
-            flags=(),
-            lints=LintConfig(),
-            optimize=None,
-            debug_level=None,
             pre_build=(),
             native_libs=(),
             source_include=None,
@@ -143,9 +138,9 @@ class TestFrozenDataclasses:
         assert t.kind == TargetKind.TEST
 
     def test_profile_defaults(self):
-        p = Profile(optimize=0, debug_level="line-tables", defines={"ASSERT": "all"}, flags=())
-        assert p.optimize == 0
-        assert p.defines["ASSERT"] == "all"
+        assert Profile().values == {}
+        p = Profile(values={"optimize": Value(0, "tool.mojox.profile.dev.optimize")})
+        assert p.values["optimize"].value == 0
 
     def test_resolved_env_include_sequence_is_tuple(self):
         env = ResolvedEnv(

@@ -114,21 +114,19 @@ class Value:
 
 @dataclass(frozen=True)
 class Profile:
-    """A named compilation profile (dev, release, or user-declared).
+    """A ``[tool.mojox.profile.<name>]`` table: only the options it sets; the others fall through."""
 
-    None means "not set here": the value falls through to a lower layer.
-    """
-
-    optimize: int | None = None
-    debug_level: str | None = None
-    defines: dict[str, str] = field(default_factory=dict)
-    flags: tuple[str, ...] = ()
-    compile_threads: int | None = None
+    values: Mapping[str, Value] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class Manifest:
-    """Parsed pyproject.toml -- portable, published, versioned with the code."""
+    """Parsed pyproject.toml -- portable, published, versioned with the code.
+
+    Structural ``[tool.mojox]`` keys keep typed fields; option keys live in
+    ``values`` (see :mod:`mojox_core.options`). ``warnings`` holds unknown-key
+    messages when parsed with ``unknown_keys="warn"``.
+    """
 
     # [project]
     name: str
@@ -151,12 +149,6 @@ class Manifest:
     package_root: str
     binaries: tuple[BinaryEntry, ...]
     test_roots: tuple[str, ...]
-    test_parallel: bool
-    defines: dict[str, str]
-    flags: tuple[str, ...]
-    lints: LintConfig
-    optimize: int | None
-    debug_level: str | None
     pre_build: tuple[tuple[str, ...], ...]
     native_libs: tuple[str, ...]
     source_include: tuple[str, ...] | None
@@ -164,7 +156,8 @@ class Manifest:
     wheel_exclude: tuple[str, ...]
     profiles: dict[str, Profile]
     build_profile: str
-    compile_threads: int | None = None
+    values: Mapping[str, Value] = field(default_factory=dict)
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

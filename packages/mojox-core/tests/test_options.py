@@ -5,12 +5,15 @@ from __future__ import annotations
 import pytest
 from mojox_core.errors import ConfigError
 from mojox_core.options import (
+    BUILTIN_PROFILES,
     OPTIONS,
     STRUCTURAL_KEYS,
     Layer,
     Merge,
+    allowed_in,
     by_key,
     option,
+    origin_under,
     parse_bool_strict,
     parse_bool_text,
     parse_count_toml,
@@ -22,6 +25,7 @@ from mojox_core.options import (
     parse_flags,
     parse_lints,
     parse_optimize,
+    parse_table,
     registry,
     resolve_values,
 )
@@ -384,3 +388,113 @@ class TestFold:
     def test_defaults_are_never_mutated(self):
         resolve_values([{"m": Value({"X": "1"}, "tool.mojox.m")}], "ci", options=_FOLD)
         assert _FOLD[2].default == {}
+
+
+def _parse(table, layer, origin_of):
+    """parse_table with a fresh unknown-key list; returns (values as (value, origin), unknown errors)."""
+    unknown = []
+    values = parse_table(table, layer, origin_of, unknown=unknown)
+    return {key: (v.value, v.origin) for key, v in values.items()}, unknown
+
+
+def _top(key):
+    """Origin of a [tool.mojox] key."""
+    return f"tool.mojox.{key}"
+
+
+def _settings_file(key):
+    """Origin of a key in a project settings file."""
+    return f"/p/.mojox/config.toml:{key}"
+
+
+def _profile_ci(key):
+    """Origin of a key in [tool.mojox.profile.ci]."""
+    return f"tool.mojox.profile.ci.{key}"
+
+
+class TestParseTable:
+    def test_option_keys_become_values_with_origins(self):
+        values, unknown = _parse({"optimize": 2, "defines": {"A": 1}}, Layer.TOP, _top)
+        assert values == {"optimize": (2, "tool.mojox.optimize"), "defines": ({"A": "1"}, "tool.mojox.defines")}
+        assert unknown == []
+
+    def test_structural_keys_are_left_to_the_manifest_parser_at_top(self):
+        assert _parse({"packages": ["src/x"], "profile": {"ci": {}}}, Layer.TOP, _top) == ({}, [])
+
+    @pytest.mark.parametrize(
+        ("layer", "origin_of", "origin"),
+        [
+            (Layer.PROFILE, _profile_ci, "tool.mojox.profile.ci.pre-build"),
+            (Layer.SETTINGS, _settings_file, "/p/.mojox/config.toml:pre-build"),
+        ],
+    )
+    def test_structural_keys_elsewhere_are_allow_list_errors(self, layer, origin_of, origin):
+        with pytest.raises(ConfigError) as exc:
+            _parse({"pre-build": ["make"]}, layer, origin_of)
+        assert exc.value.key_path == origin
+        assert exc.value.message == f"`pre-build` cannot be set in {layer.value}; allowed in: tool.mojox"
+
+    def test_option_outside_its_layers(self):
+        with pytest.raises(ConfigError) as exc:
+            _parse({"defines": {"A": "1"}}, Layer.SETTINGS, _settings_file)
+        assert str(exc.value) == (
+            "/p/.mojox/config.toml:defines: `defines` cannot be set in local settings; "
+            "allowed in: tool.mojox, tool.mojox.profile.<name>, -D/--define"
+        )
+
+    def test_unknown_key_is_collected_with_a_suggestion(self):
+        values, unknown = _parse({"compile-thread": 2, "optimize": 1}, Layer.TOP, _top)
+        assert values == {"optimize": (1, "tool.mojox.optimize")}
+        assert [str(err) for err in unknown] == [
+            "tool.mojox.compile-thread: unknown key `compile-thread`; did you mean `compile-threads`?"
+        ]
+
+    def test_structural_keys_are_suggested_at_top(self):
+        _values, unknown = _parse({"test-root": ["t"]}, Layer.TOP, _top)
+        assert unknown[0].message == "unknown key `test-root`; did you mean `test-roots`?"
+
+    def test_suggestions_prefer_keys_the_layer_accepts(self):
+        _values, unknown = _parse({"time-out": 5, "optimise": 2}, Layer.SETTINGS, _settings_file)
+        assert [err.message for err in unknown] == [
+            "unknown key `time-out`; did you mean `timeout`?",
+            "unknown key `optimise`; did you mean `optimize`? (allowed in: tool.mojox, tool.mojox.profile.<name>)",
+        ]
+
+    def test_misplaced_option_name_points_at_its_layers(self):
+        _values, unknown = _parse({"job": 2}, Layer.TOP, _top)
+        assert [str(err) for err in unknown] == [
+            "tool.mojox.job: unknown key `job`; did you mean `jobs`? (allowed in: local settings, MOJOX_JOBS, --jobs/-j)"
+        ]
+
+    def test_unknown_key_in_a_profile_names_the_profile(self):
+        _values, unknown = _parse({"compile-thread": 2}, Layer.PROFILE, _profile_ci)
+        assert [str(err) for err in unknown] == [
+            "tool.mojox.profile.ci.compile-thread: unknown key `compile-thread`; did you mean `compile-threads`?"
+        ]
+
+    def test_map_entry_error_names_the_entry(self):
+        with pytest.raises(ConfigError) as exc:
+            _parse({"env": {"CC": 1}}, Layer.SETTINGS, _settings_file)
+        assert exc.value.key_path == "/p/.mojox/config.toml:env.CC"
+
+    def test_invalid_value_names_its_origin(self):
+        with pytest.raises(ConfigError) as exc:
+            _parse({"optimize": "2"}, Layer.TOP, _top)
+        assert exc.value.key_path == "tool.mojox.optimize"
+
+    def test_origin_under(self):
+        assert origin_under("tool.mojox.profile.ci")("jobs") == "tool.mojox.profile.ci.jobs"
+        assert origin_under("/p/config.toml", ":")("jobs") == "/p/config.toml:jobs"
+
+    def test_allowed_in_follows_precedence_order(self):
+        table = by_key(OPTIONS)
+        assert allowed_in(table["jobs"]) == "local settings, MOJOX_JOBS, --jobs/-j"
+        assert allowed_in(table["compile-threads"]) == (
+            "tool.mojox, tool.mojox.profile.<name>, local settings, MOJOX_COMPILE_THREADS, --compile-threads"
+        )
+        assert allowed_in(table["test-parallel"]) == "tool.mojox"
+
+
+def test_builtin_profiles_cover_every_builtin_entry():
+    assert BUILTIN_PROFILES == ("dev", "release")
+    assert all(set(opt.builtin) <= set(BUILTIN_PROFILES) for opt in OPTIONS)

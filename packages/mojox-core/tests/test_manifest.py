@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from mojox_core.errors import ConfigError
 from mojox_core.manifest import parse_manifest
-from mojox_core.types import BinaryEntry
+from mojox_core.types import BinaryEntry, LintConfig
 
 
 class TestHappyPath:
@@ -17,10 +17,8 @@ class TestHappyPath:
         assert m.package_root == "src"
         assert m.binaries == ()
         assert m.test_roots == ("tests",)
-        assert m.test_parallel is False
-        assert m.defines == {}
-        assert m.flags == ()
-        assert m.optimize is None
+        assert m.values == {}
+        assert m.warnings == ()
         assert m.profiles == {}
 
     def test_full_manifest(self, full_pyproject):
@@ -30,16 +28,16 @@ class TestHappyPath:
         assert m.packages == ("src/mylib",)
         assert m.binaries == (BinaryEntry(source="main.mojo", name="myapp"),)
         assert m.test_roots == ("tests", "integration")
-        assert m.test_parallel is True
-        assert m.defines == {"FAST": "true"}
-        assert m.flags == ("-Xlinker", "-rpath")
-        assert m.optimize == 2
-        assert m.debug_level == "full"
-        assert m.lints.warnings_as_errors is True
-        assert m.lints.check_doc_strings is True
-        assert m.lints.missing_doc_strings is True
+        assert {key: v.value for key, v in m.values.items()} == {
+            "test-parallel": True,
+            "defines": {"FAST": "true"},
+            "flags": ("-Xlinker", "-rpath"),
+            "optimize": 2,
+            "debug-level": "full",
+            "lints": LintConfig(warnings_as_errors=True, check_doc_strings=True, missing_doc_strings=True),
+        }
         assert "dist" in m.profiles
-        assert m.profiles["dist"].optimize == 3
+        assert m.profiles["dist"].values["optimize"].value == 3
 
     def test_paths_are_lexically_normalised(self):
         d = {
@@ -280,10 +278,10 @@ class TestCompileThreads:
         return {"project": {"name": "x", "version": "1.0.0"}, "tool": {"mojox": mojox}}
 
     def test_absent_is_none(self):
-        assert parse_manifest(self._data()).compile_threads is None
+        assert "compile-threads" not in parse_manifest(self._data()).values
 
     def test_integer_kept(self):
-        assert parse_manifest(self._data(**{"compile-threads": 2})).compile_threads == 2
+        assert parse_manifest(self._data(**{"compile-threads": 2})).values["compile-threads"].value == 2
 
     @pytest.mark.parametrize("raw", [0, -1, True, "2", 2.0])
     def test_invalid_rejected(self, raw):
@@ -299,14 +297,100 @@ class TestProfileCompileThreads:
 
     def test_absent_is_none(self):
         m = parse_manifest(self._data({"fast": {"optimize": 2}}))
-        assert m.profiles["fast"].compile_threads is None
+        assert "compile-threads" not in m.profiles["fast"].values
 
     def test_integer_kept(self):
         m = parse_manifest(self._data({"release": {"compile-threads": 16}}))
-        assert m.profiles["release"].compile_threads == 16
+        assert m.profiles["release"].values["compile-threads"].value == 16
 
     @pytest.mark.parametrize("raw", [0, -1, True, False, "8", 1.5, 8.0, [8]])
     def test_invalid_rejected_with_profile_key_path(self, raw):
         with pytest.raises(ConfigError) as exc:
             parse_manifest(self._data({"ci": {"compile-threads": raw}}))
         assert exc.value.key_path == "tool.mojox.profile.ci.compile-threads"
+
+
+def _data(mojox: dict) -> dict:
+    """A minimal pyproject dict with *mojox* as its [tool.mojox] table."""
+    return {"project": {"name": "x", "version": "1.0.0"}, "tool": {"mojox": mojox}}
+
+
+class TestUnknownKeys:
+    @pytest.mark.parametrize(
+        ("mojox", "origin"),
+        [
+            ({"compile-thread": 2}, "tool.mojox.compile-thread"),
+            ({"profile": {"ci": {"compile-thread": 2}}}, "tool.mojox.profile.ci.compile-thread"),
+        ],
+    )
+    def test_typo_is_an_error_with_a_suggestion(self, mojox, origin):
+        with pytest.raises(ConfigError) as exc:
+            parse_manifest(_data(mojox))
+        assert exc.value.key_path == origin
+        assert exc.value.message == "unknown key `compile-thread`; did you mean `compile-threads`?"
+
+    def test_warn_mode_collects_instead_of_raising(self):
+        m = parse_manifest(_data({"compile-thread": 2, "profile": {"ci": {"optimise": 2}}}), unknown_keys="warn")
+        assert m.warnings == (
+            "tool.mojox.compile-thread: unknown key `compile-thread`; did you mean `compile-threads`?",
+            "tool.mojox.profile.ci.optimise: unknown key `optimise`; did you mean `optimize`?",
+        )
+        assert m.values == {}
+
+    def test_warn_mode_still_rejects_invalid_values(self):
+        with pytest.raises(ConfigError, match="0–3"):
+            parse_manifest(_data({"optimize": 9}), unknown_keys="warn")
+
+    def test_every_known_key_is_accepted(self, full_pyproject):
+        assert parse_manifest(full_pyproject).warnings == ()
+
+    def test_lints_sub_keys_and_binary_entries_are_not_checked(self):
+        mojox = {
+            "lints": {"warnings": "error", "typo": 1},
+            "binaries": [{"source": "a.mojo", "name": "a", "extra": 1}],
+        }
+        assert parse_manifest(_data(mojox)).warnings == ()
+
+
+class TestAllowList:
+    def test_settings_only_option_in_the_manifest(self):
+        with pytest.raises(ConfigError) as exc:
+            parse_manifest(_data({"jobs": 2}))
+        assert str(exc.value) == (
+            "tool.mojox.jobs: `jobs` cannot be set in tool.mojox; allowed in: local settings, MOJOX_JOBS, --jobs/-j"
+        )
+
+    def test_top_only_option_in_a_profile(self):
+        with pytest.raises(ConfigError) as exc:
+            parse_manifest(_data({"profile": {"ci": {"test-parallel": True}}}))
+        assert exc.value.key_path == "tool.mojox.profile.ci.test-parallel"
+        assert exc.value.message == "`test-parallel` cannot be set in tool.mojox.profile.<name>; allowed in: tool.mojox"
+
+    def test_structural_key_in_a_profile(self):
+        with pytest.raises(ConfigError) as exc:
+            parse_manifest(_data({"profile": {"ci": {"pre-build": ["make"]}}}))
+        assert exc.value.message == "`pre-build` cannot be set in tool.mojox.profile.<name>; allowed in: tool.mojox"
+
+
+class TestStrictValues:
+    @pytest.mark.parametrize(
+        ("mojox", "origin"),
+        [
+            ({"test-parallel": "yes"}, "tool.mojox.test-parallel"),
+            ({"optimize": 2.7}, "tool.mojox.optimize"),
+            ({"optimize": "2"}, "tool.mojox.optimize"),
+            ({"optimize": True}, "tool.mojox.optimize"),
+            ({"profile": {"ci": {"optimize": "2"}}}, "tool.mojox.profile.ci.optimize"),
+        ],
+    )
+    def test_rejected_naming_the_origin(self, mojox, origin):
+        with pytest.raises(ConfigError) as exc:
+            parse_manifest(_data(mojox))
+        assert exc.value.key_path == origin
+
+
+class TestTimeoutKey:
+    def test_top_level_and_profile(self):
+        m = parse_manifest(_data({"timeout": 60, "profile": {"ci": {"timeout": 90}}}))
+        assert m.values["timeout"].value == 60
+        assert m.profiles["ci"].values["timeout"].value == 90
