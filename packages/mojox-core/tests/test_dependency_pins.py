@@ -13,7 +13,7 @@ else:  # pragma: no cover
     import tomli as tomllib
 
 PACKAGES = Path(__file__).resolve().parents[2]
-PIN = "mojox-core>=0.6,<0.7"
+PIN = "mojox-core>=0.7,<0.8"
 
 
 @pytest.mark.parametrize("package", ["mojox", "mojox-build"])
