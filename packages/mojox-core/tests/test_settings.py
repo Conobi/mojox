@@ -1,137 +1,132 @@
-"""Settings parser: TOML bytes + env dict -> LocalSettings."""
+"""Settings parser: one source per settings file, checked against the option registry."""
 
 from __future__ import annotations
 
 import pytest
+from mojox_core import settings as settings_module
 from mojox_core.errors import ConfigError
 from mojox_core.settings import parse_settings
 from mojox_core.types import LocalSettings
 
-_FORBIDDEN_KEYS = [
-    "packages",
-    "package-root",
-    "binaries",
-    "native-libs",
-    "source-include",
-    "source-exclude",
-    "wheel-include",
-    "wheel-exclude",
-    "test-roots",
-    "test-parallel",
-    "defines",
-    "lints",
-    "pre-build",
-]
+USER = "/xdg/mojox/config.toml"
+PROJECT = "/work/p/.mojox/config.toml"
+
+
+def _values(settings: LocalSettings) -> list[tuple[str, dict]]:
+    """Each file's parsed values without origins, in precedence order."""
+    return [(path, {key: v.value for key, v in values.items()}) for path, values in settings.sources]
 
 
 class TestHappyPath:
-    def test_empty_settings(self):
-        s = parse_settings(None, None, {})
-        assert s == LocalSettings.EMPTY
+    def test_no_files_is_empty(self):
+        assert parse_settings([]) == LocalSettings.EMPTY
 
-    def test_jobs_from_project(self):
-        s = parse_settings(None, {"jobs": 4}, {})
-        assert s.jobs == 4
+    def test_one_source_per_file_in_order(self):
+        s = parse_settings([(USER, {"jobs": 2}), (PROJECT, {"jobs": 8, "timeout": 600})])
+        assert _values(s) == [(USER, {"jobs": 2}), (PROJECT, {"jobs": 8, "timeout": 600})]
+        assert s.config_paths == (USER, PROJECT)
 
-    def test_env_var_overrides_file(self):
-        s = parse_settings(None, {"jobs": 4}, {"MOJOX_JOBS": "8"})
-        assert s.jobs == 8
+    def test_origin_is_the_file_and_key(self):
+        s = parse_settings([(PROJECT, {"compile-threads": 2})])
+        assert s.sources[0][1]["compile-threads"].origin == f"{PROJECT}:compile-threads"
 
-    def test_timeout_from_settings(self):
-        s = parse_settings(None, {"timeout": 600}, {})
-        assert s.timeout_s == 600
+    def test_env_table(self):
+        assert _values(parse_settings([(PROJECT, {"env": {"CC": "clang"}})])) == [(PROJECT, {"env": {"CC": "clang"}})]
 
-
-class TestForbiddenKeys:
-    @pytest.mark.parametrize("key", _FORBIDDEN_KEYS)
-    def test_forbidden_key_in_settings(self, key):
-        with pytest.raises(ConfigError, match=key):
-            parse_settings(None, {key: "value"}, {})
+    def test_empty_file_is_still_listed(self):
+        assert parse_settings([(PROJECT, {})]).config_paths == (PROJECT,)
 
 
-class TestUserProjectMerge:
-    def test_project_wins_over_user(self):
-        s = parse_settings({"jobs": 2}, {"jobs": 8}, {})
-        assert s.jobs == 8
+class TestAllowList:
+    @pytest.mark.parametrize(
+        ("key", "value", "allowed"),
+        [
+            ("defines", {"A": "1"}, "tool.mojox, tool.mojox.profile.<name>, -D/--define"),
+            ("optimize", 2, "tool.mojox, tool.mojox.profile.<name>"),
+            ("debug-level", "full", "tool.mojox, tool.mojox.profile.<name>"),
+            ("flags", ["-x"], "tool.mojox, tool.mojox.profile.<name>, --flag"),
+            ("test-parallel", True, "tool.mojox"),
+            ("lints", {}, "tool.mojox"),
+        ],
+    )
+    def test_option_not_settable_here(self, key, value, allowed):
+        with pytest.raises(ConfigError) as exc:
+            parse_settings([(PROJECT, {key: value})])
+        assert exc.value.key_path == f"{PROJECT}:{key}"
+        assert exc.value.message == f"`{key}` cannot be set in local settings; allowed in: {allowed}"
 
-    def test_user_used_when_no_project(self):
-        s = parse_settings({"jobs": 2}, None, {})
-        assert s.jobs == 2
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "packages",
+            "package-root",
+            "binaries",
+            "native-libs",
+            "source-include",
+            "source-exclude",
+            "wheel-exclude",
+            "test-roots",
+            "pre-build",
+            "build-profile",
+            "profile",
+        ],
+    )
+    def test_structural_key_is_manifest_only(self, key):
+        with pytest.raises(ConfigError) as exc:
+            parse_settings([(PROJECT, {key: "x"})])
+        assert exc.value.message == f"`{key}` cannot be set in local settings; allowed in: tool.mojox"
+
+    def test_the_deny_list_is_gone(self):
+        assert not hasattr(settings_module, "_FORBIDDEN_KEYS")
 
 
-class TestJobsSpec:
+class TestUnknownKeys:
+    def test_typo_names_the_file_and_suggests(self):
+        with pytest.raises(ConfigError) as exc:
+            parse_settings([(PROJECT, {"compile-thread": 2})])
+        assert (
+            str(exc.value) == f"{PROJECT}:compile-thread: unknown key `compile-thread`; did you mean `compile-threads`?"
+        )
+
+    def test_former_deny_list_entry_is_unknown(self):
+        with pytest.raises(ConfigError, match="unknown key `wheel-include`"):
+            parse_settings([(PROJECT, {"wheel-include": ["x"]})])
+
+
+class TestValues:
     @pytest.mark.parametrize(("raw", "expected"), [("num-cpus", "num-cpus"), (-1, -1), ("4", 4)])
-    def test_toml_spec_accepted(self, raw, expected):
-        assert parse_settings(None, {"jobs": raw}, {}).jobs == expected
+    def test_jobs_spec_accepted(self, raw, expected):
+        assert _values(parse_settings([(PROJECT, {"jobs": raw})])) == [(PROJECT, {"jobs": expected})]
 
     @pytest.mark.parametrize("raw", [0, True, "x", 2.5])
-    def test_toml_spec_rejected(self, raw):
+    def test_jobs_spec_rejected(self, raw):
         with pytest.raises(ConfigError) as exc:
-            parse_settings(None, {"jobs": raw}, {})
-        assert exc.value.key_path == "settings.jobs"
+            parse_settings([(PROJECT, {"jobs": raw})])
+        assert exc.value.key_path == f"{PROJECT}:jobs"
 
-    def test_invalid_user_jobs_not_masked_by_project(self):
-        with pytest.raises(ConfigError, match="settings.jobs"):
-            parse_settings({"jobs": 0}, {"jobs": 4}, {})
-
-    @pytest.mark.parametrize(("raw", "expected"), [("num-cpus", "num-cpus"), ("-2", -2), (" 3 ", 3)])
-    def test_env_spec_accepted(self, raw, expected):
-        assert parse_settings(None, {"jobs": 4}, {"MOJOX_JOBS": raw}).jobs == expected
-
-    @pytest.mark.parametrize("raw", ["0", "two", "", "1.5"])
-    def test_env_spec_rejected(self, raw):
+    def test_invalid_user_value_not_masked_by_project(self):
         with pytest.raises(ConfigError) as exc:
-            parse_settings(None, None, {"MOJOX_JOBS": raw})
-        assert exc.value.key_path == "MOJOX_JOBS"
-
-
-class TestCompileThreads:
-    def test_absent_is_none(self):
-        assert parse_settings(None, {"jobs": 2}, {}).compile_threads is None
-
-    def test_from_project(self):
-        assert parse_settings(None, {"compile-threads": 2}, {}).compile_threads == 2
+            parse_settings([(USER, {"jobs": 0}), (PROJECT, {"jobs": 4})])
+        assert exc.value.key_path == f"{USER}:jobs"
 
     @pytest.mark.parametrize("raw", [0, -1, True, "2", 1.5])
-    def test_toml_rejected(self, raw):
+    def test_compile_threads_rejected(self, raw):
         with pytest.raises(ConfigError) as exc:
-            parse_settings(None, {"compile-threads": raw}, {})
-        assert exc.value.key_path == "settings.compile-threads"
-
-    def test_project_beats_user(self):
-        assert parse_settings({"compile-threads": 2}, {"compile-threads": 5}, {}).compile_threads == 5
-
-    def test_env_beats_project(self):
-        s = parse_settings(None, {"compile-threads": 2}, {"MOJOX_COMPILE_THREADS": "3"})
-        assert s.compile_threads == 3
-
-    def test_env_alone(self):
-        assert parse_settings(None, None, {"MOJOX_COMPILE_THREADS": "3"}).compile_threads == 3
-
-    @pytest.mark.parametrize("raw", ["0", "x", "-1", ""])
-    def test_env_rejected(self, raw):
-        with pytest.raises(ConfigError) as exc:
-            parse_settings(None, None, {"MOJOX_COMPILE_THREADS": raw})
-        assert exc.value.key_path == "MOJOX_COMPILE_THREADS"
-
-    def test_compile_threads_is_not_forbidden(self):
-        assert "compile-threads" not in _FORBIDDEN_KEYS
-
-
-class TestTimeout:
-    """A timeout of 0 or less would kill every command at once, so it is rejected."""
+            parse_settings([(PROJECT, {"compile-threads": raw})])
+        assert exc.value.key_path == f"{PROJECT}:compile-threads"
 
     @pytest.mark.parametrize("raw", [0, -5, True, "600", 1.5])
-    def test_toml_rejected(self, raw):
+    def test_timeout_rejected(self, raw):
         with pytest.raises(ConfigError) as exc:
-            parse_settings(None, {"timeout": raw}, {})
-        assert exc.value.key_path == "settings.timeout"
+            parse_settings([(PROJECT, {"timeout": raw})])
+        assert exc.value.key_path == f"{PROJECT}:timeout"
 
-    def test_env_accepted(self):
-        assert parse_settings(None, {"timeout": 600}, {"MOJOX_TIMEOUT": "60"}).timeout_s == 60
-
-    @pytest.mark.parametrize("raw", ["0", "-3", "x", "", "1.5"])
-    def test_env_rejected(self, raw):
+    def test_env_must_be_a_table(self):
         with pytest.raises(ConfigError) as exc:
-            parse_settings(None, None, {"MOJOX_TIMEOUT": raw})
-        assert exc.value.key_path == "MOJOX_TIMEOUT"
+            parse_settings([(PROJECT, {"env": "x"})])
+        assert str(exc.value) == f"{PROJECT}:env: expected a table of strings, got str"
+
+    def test_env_values_must_be_strings(self):
+        with pytest.raises(ConfigError) as exc:
+            parse_settings([(PROJECT, {"env": {"CC": 1}})])
+        assert exc.value.key_path == f"{PROJECT}:env.CC"

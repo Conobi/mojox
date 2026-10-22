@@ -15,6 +15,12 @@ from mojox.settings_reader import (
 )
 
 
+def _get(settings, key):
+    """The effective value of settings *key* across the loaded files (later file wins), or None."""
+    found = [values[key].value for _path, values in settings.sources if key in values]
+    return found[-1] if found else None
+
+
 class TestDiscovery:
     def test_finds_project_config_at_git_root(self, tmp_path):
         """Config in the same dir as .git is found."""
@@ -24,7 +30,7 @@ class TestDiscovery:
         (config_dir / "config.toml").write_text("jobs = 4\n")
 
         settings = read_settings(tmp_path, env={})
-        assert settings.jobs == 4
+        assert _get(settings, "jobs") == 4
 
     def test_parallelism_keys_round_trip(self, tmp_path):
         """A TOML jobs spec and compile-threads survive discovery and parsing."""
@@ -34,8 +40,8 @@ class TestDiscovery:
         (config_dir / "config.toml").write_text('jobs = "num-cpus"\ncompile-threads = 2\n')
 
         settings = read_settings(tmp_path, env={})
-        assert settings.jobs == "num-cpus"
-        assert settings.compile_threads == 2
+        assert _get(settings, "jobs") == "num-cpus"
+        assert _get(settings, "compile-threads") == 2
 
     def test_walks_up_to_git_boundary(self, tmp_path):
         """Config at repo root found when starting from a subdirectory."""
@@ -47,7 +53,7 @@ class TestDiscovery:
         (config_dir / "config.toml").write_text("jobs = 2\n")
 
         settings = read_settings(subdir, env={})
-        assert settings.jobs == 2
+        assert _get(settings, "jobs") == 2
 
     def test_nearest_config_wins(self, tmp_path):
         """When multiple configs exist, the one nearest to manifest_dir wins."""
@@ -64,7 +70,7 @@ class TestDiscovery:
         (sub_config / "config.toml").write_text("jobs = 8\n")
 
         settings = read_settings(subdir, env={})
-        assert settings.jobs == 8
+        assert _get(settings, "jobs") == 8
 
     def test_stops_at_inner_git_boundary(self, tmp_path):
         """A nested .git stops the walk -- outer config not found."""
@@ -80,7 +86,7 @@ class TestDiscovery:
         (inner / ".git").mkdir()
 
         settings = read_settings(inner, env={})
-        assert settings.jobs is None
+        assert _get(settings, "jobs") is None
 
     def test_no_git_means_no_project_config(self, tmp_path):
         """Without a .git ancestor, project-level config is not loaded."""
@@ -89,7 +95,7 @@ class TestDiscovery:
         (config_dir / "config.toml").write_text("jobs = 4\n")
 
         settings = read_settings(tmp_path, env={})
-        assert settings.jobs is None
+        assert _get(settings, "jobs") is None
 
     def test_git_file_counts_as_boundary(self, tmp_path):
         """A .git file (worktree) is treated as a repo root."""
@@ -99,7 +105,7 @@ class TestDiscovery:
         (config_dir / "config.toml").write_text("jobs = 4\n")
 
         settings = read_settings(tmp_path, env={})
-        assert settings.jobs == 4
+        assert _get(settings, "jobs") == 4
 
     def test_user_config_included(self, tmp_path):
         """User-level config from XDG_CONFIG_HOME is loaded via env dict."""
@@ -114,7 +120,7 @@ class TestDiscovery:
             no_project,
             env={"XDG_CONFIG_HOME": str(tmp_path / "xdg")},
         )
-        assert settings.timeout_s == 600
+        assert _get(settings, "timeout") == 600
 
     def test_project_wins_over_user(self, tmp_path):
         """Project config takes precedence over user config for the same key."""
@@ -131,7 +137,7 @@ class TestDiscovery:
             tmp_path,
             env={"XDG_CONFIG_HOME": str(tmp_path / "xdg")},
         )
-        assert settings.jobs == 4
+        assert _get(settings, "jobs") == 4
 
     def test_no_config_flag(self, tmp_path):
         """--no-config skips all config file discovery."""
@@ -141,7 +147,7 @@ class TestDiscovery:
         (config_dir / "config.toml").write_text("jobs = 4\n")
 
         settings = read_settings(tmp_path, env={}, no_config=True)
-        assert settings.jobs is None
+        assert _get(settings, "jobs") is None
 
     def test_explicit_config_file(self, tmp_path):
         """--config-file replaces all discovery."""
@@ -149,8 +155,8 @@ class TestDiscovery:
         custom.write_text("jobs = 16\ntimeout = 120\n")
 
         settings = read_settings(tmp_path, env={}, config_file=custom)
-        assert settings.jobs == 16
-        assert settings.timeout_s == 120
+        assert _get(settings, "jobs") == 16
+        assert _get(settings, "timeout") == 120
 
     def test_explicit_config_file_missing_raises(self, tmp_path):
         """--config-file pointing to a nonexistent file raises ConfigError."""
@@ -165,8 +171,8 @@ class TestDiscovery:
         monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
         monkeypatch.delenv("HOME", raising=False)
         settings = read_settings(tmp_path, env={})
-        assert settings.jobs is None
-        assert settings.timeout_s is None
+        assert _get(settings, "jobs") is None
+        assert _get(settings, "timeout") is None
 
 
 class TestSecurity:
@@ -179,8 +185,163 @@ class TestSecurity:
         config_dir.chmod(0o777)
 
         settings = read_settings(tmp_path, env={})
-        assert settings.jobs is None
+        assert _get(settings, "jobs") is None
         config_dir.chmod(0o755)
+
+
+class TestInvalidToml:
+    """A discovered settings file that is not valid TOML is a ConfigError naming the file."""
+
+    @staticmethod
+    def _project(tmp_path, content: bytes):
+        (tmp_path / ".git").mkdir()
+        config_dir = tmp_path / ".mojox"
+        config_dir.mkdir()
+        config = config_dir / "config.toml"
+        config.write_bytes(content)
+        return config
+
+    def test_project_file_with_syntax_error_raises(self, tmp_path):
+        from mojox_core import ConfigError
+
+        config = self._project(tmp_path, b"jobs = 4\njobs =\n")
+        with pytest.raises(ConfigError) as exc:
+            read_settings(tmp_path, env={})
+        assert exc.value.key_path == str(config)
+        assert exc.value.message.startswith("not valid TOML: ")
+        assert "line 2" in exc.value.message
+        assert str(exc.value).startswith(f"{config}: not valid TOML: ")
+
+    def test_project_file_with_invalid_utf8_raises(self, tmp_path):
+        from mojox_core import ConfigError
+
+        config = self._project(tmp_path, b"jobs = 4\n\xff\n")
+        with pytest.raises(ConfigError) as exc:
+            read_settings(tmp_path, env={})
+        assert exc.value.key_path == str(config)
+        assert exc.value.message.startswith("not valid TOML: ")
+
+    def test_user_file_with_syntax_error_raises(self, tmp_path):
+        from mojox_core import ConfigError
+
+        user_dir = tmp_path / "xdg" / "mojox"
+        user_dir.mkdir(parents=True)
+        config = user_dir / "config.toml"
+        config.write_text("[unclosed\n")
+        no_project = tmp_path / "noproject"
+        no_project.mkdir()
+
+        with pytest.raises(ConfigError) as exc:
+            read_settings(no_project, env={"XDG_CONFIG_HOME": str(tmp_path / "xdg")})
+        assert exc.value.key_path == str(config)
+        assert exc.value.message.startswith("not valid TOML: ")
+        assert "line 1" in exc.value.message
+
+    def test_explicit_config_file_with_syntax_error_raises(self, tmp_path):
+        from mojox_core import ConfigError
+
+        custom = tmp_path / "custom.toml"
+        custom.write_text("jobs = = 2\n")
+        with pytest.raises(ConfigError) as exc:
+            read_settings(tmp_path, env={}, config_file=custom)
+        assert exc.value.key_path == str(custom)
+        assert exc.value.message.startswith("not valid TOML: ")
+
+    def test_deeply_nested_file_raises(self, tmp_path):
+        from mojox_core import ConfigError
+
+        config = self._project(tmp_path, b"a = " + b"[" * 2000)
+        with pytest.raises(ConfigError) as exc:
+            read_settings(tmp_path, env={})
+        assert exc.value.key_path == str(config)
+        assert exc.value.message == "not valid TOML: nested too deeply"
+
+    def test_explicit_config_file_missing_names_the_path(self, tmp_path):
+        from mojox_core import ConfigError
+
+        missing = tmp_path / "nonexistent.toml"
+        with pytest.raises(ConfigError) as exc:
+            read_settings(tmp_path, env={}, config_file=missing)
+        assert (exc.value.key_path, exc.value.message) == (str(missing), "does not exist")
+
+    def test_explicit_config_file_vanished_before_open(self, tmp_path):
+        from mojox_core import ConfigError
+
+        custom = tmp_path / "custom.toml"
+        custom.write_text("jobs = 2\n")
+        with (
+            patch("mojox.settings_reader.os.open", side_effect=FileNotFoundError(2, "gone")),
+            pytest.raises(ConfigError) as exc,
+        ):
+            read_settings(tmp_path, env={}, config_file=custom)
+        assert (exc.value.key_path, exc.value.message) == (str(custom), "could not be read: does not exist")
+
+    @pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="O_NOFOLLOW not available on this platform")
+    def test_explicit_config_file_symlink_refused(self, tmp_path):
+        from mojox_core import ConfigError
+
+        target = tmp_path / "real.toml"
+        target.write_text("jobs = 2\n")
+        link = tmp_path / "link.toml"
+        link.symlink_to(target)
+        with pytest.raises(ConfigError) as exc:
+            read_settings(tmp_path, env={}, config_file=link)
+        assert (exc.value.key_path, exc.value.message) == (str(link), "could not be read: symlinks are refused")
+
+    def test_discovered_file_vanished_before_open_is_skipped(self, tmp_path):
+        self._project(tmp_path, b"jobs = 4\n")
+        real_open = os.open
+
+        def vanish(path, flags, *args, **kwargs):
+            if str(path).endswith("config.toml"):
+                raise FileNotFoundError(2, "gone")
+            return real_open(path, flags, *args, **kwargs)
+
+        with patch("mojox.settings_reader.os.open", side_effect=vanish):
+            settings = read_settings(tmp_path, env={})
+        assert settings.config_paths == ()
+
+    def test_insecure_file_with_syntax_error_is_skipped(self, tmp_path):
+        self._project(tmp_path, b"jobs =\n")
+        config_dir = tmp_path / ".mojox"
+        config_dir.chmod(0o777)
+        try:
+            settings = read_settings(tmp_path, env={})
+        finally:
+            config_dir.chmod(0o755)
+        assert settings.config_paths == ()
+
+    def test_wrongly_owned_file_with_syntax_error_is_skipped(self, tmp_path):
+        self._project(tmp_path, b"jobs =\n")
+        with patch("mojox.settings_reader.os.getuid", return_value=os.getuid() + 1):
+            settings = read_settings(tmp_path, env={})
+        assert settings.config_paths == ()
+
+    @pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="O_NOFOLLOW not available on this platform")
+    def test_symlinked_file_with_syntax_error_is_skipped(self, tmp_path):
+        (tmp_path / ".git").mkdir()
+        config_dir = tmp_path / ".mojox"
+        config_dir.mkdir()
+        target = tmp_path / "elsewhere.toml"
+        target.write_text("jobs =\n")
+        (config_dir / "config.toml").symlink_to(target)
+
+        settings = read_settings(tmp_path, env={})
+        assert settings.config_paths == ()
+
+    @pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() == 0, reason="root reads any file")
+    def test_unreadable_secure_file_raises(self, tmp_path):
+        from mojox_core import ConfigError
+
+        config = self._project(tmp_path, b"jobs = 4\n")
+        config.chmod(0o000)
+        try:
+            with pytest.raises(ConfigError) as exc:
+                read_settings(tmp_path, env={})
+        finally:
+            config.chmod(0o644)
+        assert exc.value.key_path == str(config)
+        assert exc.value.message.startswith("could not be read: ")
 
 
 # ── Finding #1: TOCTOU — openat(O_NOFOLLOW) + fstat ──────────────────────
@@ -389,7 +550,7 @@ class TestUserConfigPathEnv:
             tmp_path,
             env={"XDG_CONFIG_HOME": str(tmp_path / "xdg")},
         )
-        assert settings.timeout_s == 300
+        assert _get(settings, "timeout") == 300
 
 
 # ── Finding #4: Walk doesn't stop at $HOME or mount boundary ──────────────
@@ -420,7 +581,7 @@ class TestWalkBoundaries:
             env={"HOME": str(home)},
         )
         # Should not pick up config from above $HOME
-        assert settings.jobs is None
+        assert _get(settings, "jobs") is None
 
     def test_finds_config_under_home(self, tmp_path):
         """Walk should still find config under $HOME."""
@@ -437,7 +598,7 @@ class TestWalkBoundaries:
             project_dir,
             env={"HOME": str(home)},
         )
-        assert settings.jobs == 4
+        assert _get(settings, "jobs") == 4
 
     def test_walk_stops_at_home_before_git(self, tmp_path):
         """If $HOME is between manifest_dir and .git, walk stops at $HOME."""

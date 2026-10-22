@@ -16,18 +16,22 @@ output" a structural guarantee.
 
 from __future__ import annotations
 
+import errno
 import os
 import stat
 import sys
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from mojox_core import LocalSettings, parse_settings
+from mojox_core import ConfigError, LocalSettings, parse_settings
 
 # Platform gate: O_NOFOLLOW prevents following symlinks on open.
 # Not available on Windows; fall back to plain open() there.
 _HAS_O_NOFOLLOW: bool = hasattr(os, "O_NOFOLLOW")
+
+# ELOOP/EMLINK: O_NOFOLLOW refused a symlink (EMLINK on FreeBSD). ENOENT: the
+# file vanished between discovery and open.
+_SKIPPED_OPEN_ERRNOS = frozenset({errno.ELOOP, errno.EMLINK, errno.ENOENT})
 
 
 def read_settings(
@@ -37,60 +41,42 @@ def read_settings(
     no_config: bool = False,
     config_file: Path | None = None,
 ) -> LocalSettings:
-    """Read settings from config files and environment variables.
+    """Discover and parse the settings files: the user file, then the nearest project file.
 
-    Discovers config files by walking from *manifest_dir* up to the
-    nearest ``.git`` boundary, and by checking the XDG user config
-    directory.  The ``--no-config`` flag disables all discovery;
-    ``--config-file`` replaces discovery with an explicit path.
+    *env* only locates the user file (``$XDG_CONFIG_HOME``, ``$HOME``) and the
+    walk boundary; it is never read from ``os.environ`` directly. ``MOJOX_*``
+    variables are read later by :func:`mojox_core.policy.resolve`, so
+    ``--no-config`` (*no_config*) keeps them. *config_file* replaces discovery
+    with one explicit file.
 
-    The ``env`` dict is threaded through to ``_user_config_path`` and
-    ``_find_project_config`` so that ``$XDG_CONFIG_HOME``, ``$HOME``,
-    and other environment variables are never read from ``os.environ``
-    directly --- keeping the reader testable and pure.
+    A discovered file is skipped silently only when unsafe to trust (insecure
+    owner or permissions, or a symlink); one that cannot be read or parsed is
+    an error, as a misspelled key is.
 
-    After parsing, ``config_paths`` on the returned ``LocalSettings``
-    is populated with the resolved paths of every config file that was
-    actually loaded, so ``mojox check`` and ``--dry-run`` can print them.
-
-    Args:
-        manifest_dir: The directory containing pyproject.toml.
-        env: Environment variables (typically ``os.environ``).
-        no_config: If True, skip all config file discovery.
-        config_file: Explicit config file path (replaces discovery).
-
-    Returns:
-        A parsed ``LocalSettings`` instance with ``config_paths`` set.
+    Raises:
+        ConfigError: *config_file* is missing, a symlink or unreadable, a settings
+            file is unreadable or not valid TOML, or it sets an invalid, misplaced
+            or unknown key.
     """
     if no_config:
-        return parse_settings(None, None, env)
+        return LocalSettings.EMPTY
 
     if config_file is not None:
-        from mojox_core import ConfigError
-
         if not config_file.is_file():
-            raise ConfigError(
-                "config-file",
-                f"--config-file {config_file} does not exist",
-            )
+            raise ConfigError(str(config_file), "does not exist")
         data = _safe_read_toml(config_file)
         if data is None:
-            raise ConfigError(
-                "config-file",
-                f"--config-file {config_file} could not be read",
-            )
-        result = parse_settings(None, data, env)
-        return replace(result, config_paths=(str(config_file),))
+            reason = "symlinks are refused" if config_file.is_symlink() else "does not exist"
+            raise ConfigError(str(config_file), f"could not be read: {reason}")
+        return parse_settings([(str(config_file), data)])
 
-    user_data: dict[str, Any] | None = None
-    project_data: dict[str, Any] | None = None
-    loaded_paths: list[str] = []
+    files: list[tuple[str, dict[str, Any]]] = []
 
     user_path, user_boundary = _user_config_path(env)
     if user_path is not None and user_path.is_file() and _is_path_secure(user_path, stop_at=user_boundary):
         user_data = _safe_read_toml(user_path)
         if user_data is not None:
-            loaded_paths.append(str(user_path))
+            files.append((str(user_path), user_data))
 
     # Resolve $HOME for the walk boundary
     home_str = env.get("HOME")
@@ -100,10 +86,9 @@ def read_settings(
     if project_path is not None and _is_path_secure(project_path, stop_at=repo_root):
         project_data = _safe_read_toml(project_path)
         if project_data is not None:
-            loaded_paths.append(str(project_path))
+            files.append((str(project_path), project_data))
 
-    result = parse_settings(user_data, project_data, env)
-    return replace(result, config_paths=tuple(loaded_paths))
+    return parse_settings(files)
 
 
 def _user_config_path(
@@ -364,47 +349,38 @@ def _is_path_secure_fallback(
 
 
 def _safe_read_toml(path: Path) -> dict[str, Any] | None:
-    """Read a TOML file, returning ``None`` on any error.
+    """Parse the TOML file at *path*, or return ``None`` when it is skipped for safety.
 
-    On platforms with ``O_NOFOLLOW``, opens the file with
-    ``os.open(path, O_RDONLY | O_NOFOLLOW)`` and wraps the fd with
-    ``os.fdopen()`` so the file opened is exactly the one checked --
-    no symlink race between security check and read.
+    Opens with ``O_NOFOLLOW`` where available, so the file read is exactly the
+    one checked by :func:`_is_path_secure`: a symlinked file is refused
+    (``None``), as is a file that vanished after discovery. Any other failure
+    means the user's configuration would silently not apply, so it is an error.
 
-    On platforms without ``O_NOFOLLOW``, falls back to plain
-    ``open(path, 'rb')``.
-
-    Uses ``tomllib`` on Python 3.11+ and ``tomli`` on older versions.
-
-    Args:
-        path: Path to the TOML config file.
-
-    Returns:
-        Parsed dict on success, ``None`` on any error (missing file,
-        parse error, symlink on a ``O_NOFOLLOW`` platform, etc.).
+    Raises:
+        ConfigError: The file is not valid TOML (UTF-8 included), or could not
+            be read for another reason (e.g. permission denied); ``key_path``
+            is the file path.
     """
     if sys.version_info >= (3, 11):
         import tomllib
     else:
         import tomli as tomllib  # type: ignore[import-not-found,no-redef]
 
+    opener = _open_nofollow if _HAS_O_NOFOLLOW else None
     try:
-        if _HAS_O_NOFOLLOW:
-            o_nofollow = os.O_NOFOLLOW
-            fd = os.open(str(path), os.O_RDONLY | o_nofollow)
-            f = None
-            try:
-                f = os.fdopen(fd, "rb")
-                return tomllib.load(f)
-            except Exception:
-                if f is None:
-                    os.close(fd)
-                return None
-            finally:
-                if f is not None:
-                    f.close()
-        else:
-            with open(path, "rb") as f:
-                return tomllib.load(f)
-    except Exception:
-        return None
+        with open(path, "rb", opener=opener) as f:
+            return tomllib.load(f)
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
+        raise ConfigError(str(path), f"not valid TOML: {e}") from None
+    except RecursionError:
+        # tomllib recurses per nesting level; tomli raises a RecursionError subclass at 400.
+        raise ConfigError(str(path), "not valid TOML: nested too deeply") from None
+    except OSError as e:
+        if e.errno in _SKIPPED_OPEN_ERRNOS:
+            return None
+        raise ConfigError(str(path), f"could not be read: {e.strerror or e}") from None
+
+
+def _open_nofollow(path: str, flags: int) -> int:
+    """``open()`` opener that refuses to follow a symlinked final component."""
+    return os.open(path, flags | os.O_NOFOLLOW)

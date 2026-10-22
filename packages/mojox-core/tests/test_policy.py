@@ -12,6 +12,7 @@ from mojox_core.policy import (
     parse_jobs,
     resolve_jobs,
 )
+from mojox_core.settings import parse_settings
 from mojox_core.types import LintConfig, LocalSettings, Manifest, Profile, Value
 
 
@@ -88,6 +89,15 @@ def _minimal_manifest(**overrides) -> Manifest:
     }
     defaults.update(overrides)
     return Manifest(**defaults, values=_values("tool.mojox", fields))
+
+
+# Former LocalSettings fields, by the settings key that now holds them.
+_SETTINGS_KEYS = {"jobs": "jobs", "compile_threads": "compile-threads", "timeout_s": "timeout", "env": "env"}
+
+
+def _settings(**fields) -> LocalSettings:
+    """One parsed settings file holding *fields* (former LocalSettings field names)."""
+    return parse_settings([("config.toml", {_SETTINGS_KEYS[name]: value for name, value in fields.items()})])
 
 
 class TestBuiltinDefaults:
@@ -335,11 +345,11 @@ class TestCompileThreadsPrecedence:
 
     def test_settings_beat_named_profile(self):
         m = _minimal_manifest(compile_threads=3, profiles={"release": _profile(compile_threads=12)})
-        assert resolve(m, "release", {}, LocalSettings(compile_threads=2)).compile_threads == 2
+        assert resolve(m, "release", {}, _settings(compile_threads=2)).compile_threads == 2
 
     def test_cli_beats_settings_and_profile(self):
         m = _minimal_manifest(profiles={"release": _profile(compile_threads=12)})
-        p = resolve(m, "release", {"compile_threads": 4}, LocalSettings(compile_threads=2))
+        p = resolve(m, "release", {"compile_threads": 4}, _settings(compile_threads=2))
         assert p.compile_threads == 4
 
     def test_env_beats_named_profile(self):
@@ -352,11 +362,11 @@ class TestCompileThreadsPrecedence:
 
     def test_settings_beat_manifest(self):
         m = _minimal_manifest(compile_threads=2)
-        assert resolve(m, "dev", {}, LocalSettings(compile_threads=3)).compile_threads == 3
+        assert resolve(m, "dev", {}, _settings(compile_threads=3)).compile_threads == 3
 
     def test_cli_beats_settings(self):
         m = _minimal_manifest(compile_threads=2)
-        p = resolve(m, "dev", {"compile_threads": 4}, LocalSettings(compile_threads=3))
+        p = resolve(m, "dev", {"compile_threads": 4}, _settings(compile_threads=3))
         assert p.compile_threads == 4
 
     def test_none_falls_through(self):
@@ -391,18 +401,18 @@ class TestJobsResolution:
         assert p.jobs_spec == "-3"
 
     def test_cli_beats_settings(self):
-        p = resolve(_minimal_manifest(), "dev", {"jobs": 2}, LocalSettings(jobs="num-cpus"))
+        p = resolve(_minimal_manifest(), "dev", {"jobs": 2}, _settings(jobs="num-cpus"))
         assert p.jobs == 2
         assert p.jobs_spec == "2"
 
     def test_settings_spec_used(self):
-        p = resolve(_minimal_manifest(), "dev", {}, LocalSettings(jobs=-1), cpu_count=8)
+        p = resolve(_minimal_manifest(), "dev", {}, _settings(jobs=-1), cpu_count=8)
         assert p.jobs == 7
 
     @pytest.mark.parametrize("spec", ["num-cpus", -1])
     def test_cpu_spec_without_cpu_count_is_programmer_error(self, spec):
         with pytest.raises(ValueError):
-            resolve(_minimal_manifest(), "dev", {}, LocalSettings(jobs=spec))
+            resolve(_minimal_manifest(), "dev", {}, _settings(jobs=spec))
 
     @pytest.mark.parametrize("raw", [0, True, "abc"])
     def test_invalid_cli_jobs_rejected(self, raw):
@@ -420,9 +430,9 @@ class TestResolveWithoutManifest:
         [
             ({}, LocalSettings.EMPTY),
             ({"jobs": "num-cpus"}, LocalSettings.EMPTY),
-            ({"jobs": -2}, LocalSettings(jobs=4)),
-            ({}, LocalSettings(jobs="num-cpus", compile_threads=3)),
-            ({"compile_threads": 5}, LocalSettings(compile_threads=3)),
+            ({"jobs": -2}, _settings(jobs=4)),
+            ({}, _settings(jobs="num-cpus", compile_threads=3)),
+            ({"compile_threads": 5}, _settings(compile_threads=3)),
         ],
     )
     def test_matches_resolve(self, cli, settings):
@@ -451,7 +461,7 @@ class TestResolveWithoutManifest:
     def test_cli_and_settings_layers(self):
         p = resolve_without_manifest(
             {"optimize": 2, "defines": {"X": "1"}, "flags": ("--f",), "timeout": 9},
-            LocalSettings(timeout_s=50),
+            _settings(timeout_s=50),
         )
         assert p.optimize == 2
         assert p.defines["X"] == "1"
@@ -465,24 +475,22 @@ class TestResolveWithoutManifest:
 
 class TestTimeoutValidation:
     @pytest.mark.parametrize("resolver", ["resolve", "without_manifest"])
-    @pytest.mark.parametrize(
-        ("cli", "settings", "key_path"),
-        [
-            ({"timeout": 0}, LocalSettings.EMPTY, "--timeout"),
-            ({"timeout": -1}, LocalSettings.EMPTY, "--timeout"),
-            ({}, LocalSettings(timeout_s=0), "settings.timeout"),
-        ],
-    )
-    def test_non_positive_rejected(self, resolver, cli, settings, key_path):
+    @pytest.mark.parametrize("cli", [{"timeout": 0}, {"timeout": -1}])
+    def test_non_positive_cli_value_rejected(self, resolver, cli):
         with pytest.raises(ConfigError) as exc:
             if resolver == "resolve":
-                resolve(_minimal_manifest(), "dev", cli, settings)
+                resolve(_minimal_manifest(), "dev", cli, LocalSettings.EMPTY)
             else:
-                resolve_without_manifest(cli, settings)
-        assert exc.value.key_path == key_path
+                resolve_without_manifest(cli, LocalSettings.EMPTY)
+        assert exc.value.key_path == "--timeout"
+
+    def test_non_positive_setting_rejected(self):
+        with pytest.raises(ConfigError) as exc:
+            _settings(timeout_s=0)
+        assert exc.value.key_path == "config.toml:timeout"
 
     def test_cli_beats_settings(self):
-        assert resolve(_minimal_manifest(), "dev", {"timeout": 7}, LocalSettings(timeout_s=50)).timeout_s == 7
+        assert resolve(_minimal_manifest(), "dev", {"timeout": 7}, _settings(timeout_s=50)).timeout_s == 7
 
 
 class TestFoldBackedResolver:
@@ -501,7 +509,7 @@ class TestProvenanceAndEnv:
         assert p.origins["flags"] == ()
 
     def test_settings_env_reaches_the_policy(self):
-        p = resolve(_minimal_manifest(), "dev", {}, LocalSettings(env={"CC": "clang"}))
+        p = resolve(_minimal_manifest(), "dev", {}, _settings(env={"CC": "clang"}))
         assert p.env == {"CC": "clang"}
 
 

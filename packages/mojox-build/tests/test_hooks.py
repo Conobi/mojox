@@ -75,3 +75,19 @@ def test_environment_never_reaches_the_wheel_policy(sample_pyproject, monkeypatc
     mojox_build.build_wheel(str(tmp_path / "dist"))
     assert fake_backend[0] == fake_backend[1]
     assert fake_backend[1].compile_threads == 8
+
+
+def test_environment_never_reaches_the_editable_policy(sample_pyproject, monkeypatch, tmp_path, fake_backend):
+    def fake_build_editable_wheel(root, manifest, policy, toolchain, **kwargs):
+        fake_backend.append(policy)
+        return "my_lib-1.0.0-py3-none-any.whl"
+
+    monkeypatch.setattr("mojox_build.hooks.build_editable_wheel", fake_build_editable_wheel)
+    monkeypatch.chdir(sample_pyproject)
+    mojox_build.build_editable(str(tmp_path / "dist"))
+    monkeypatch.setenv("MOJOX_COMPILE_THREADS", "3")
+    monkeypatch.setenv("MOJOX_JOBS", "5")
+    monkeypatch.setenv("MOJOX_TIMEOUT", "7")
+    mojox_build.build_editable(str(tmp_path / "dist"))
+    assert fake_backend[0] == fake_backend[1]
+    assert fake_backend[1].compile_threads == 8

@@ -155,7 +155,7 @@ class TestFrozenDataclasses:
 
     def test_local_settings_empty(self):
         s = LocalSettings.EMPTY
-        assert s.jobs is None
+        assert s.sources == ()
         assert s.config_paths == ()
 
     def test_policy_fields(self):

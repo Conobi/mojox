@@ -57,8 +57,8 @@ _CLI = {"jobs": 5, "compile_threads": 7, "timeout": 90, "defines": {"C": "x"}, "
 def _policy(mojox, profile, *, user=None, project=None, env=None, cli=None, cpu_count=None) -> dict:
     """Resolve through the public parsers and keep only the fields pinned here."""
     manifest = parse_manifest({"project": {"name": "x", "version": "1.0.0"}, "tool": {"mojox": mojox}})
-    settings = parse_settings(user, project, env or {})
-    policy = resolve(manifest, profile, cli or {}, settings, env or {}, cpu_count=cpu_count)
+    files = [(name, table) for name, table in (("user.toml", user), ("project.toml", project)) if table is not None]
+    policy = resolve(manifest, profile, cli or {}, parse_settings(files), env or {}, cpu_count=cpu_count)
     return {name: getattr(policy, name) for name in _FIELDS}
 
 
@@ -165,7 +165,7 @@ def test_tests_run_serially_without_test_parallel():
 
 
 def test_without_manifest():
-    settings = parse_settings(None, {"compile-threads": 2}, {"MOJOX_TIMEOUT": "9"})
+    settings = parse_settings([("project.toml", {"compile-threads": 2})])
     policy = resolve_without_manifest(
         {"jobs": 3, "defines": {"X": "1"}, "flags": ("--f",)}, settings, {"MOJOX_TIMEOUT": "9"}
     )

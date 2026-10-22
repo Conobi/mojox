@@ -213,19 +213,21 @@ class HostFacts:
 
 @dataclass(frozen=True)
 class LocalSettings:
-    """Machine-local settings (from .mojox/config.toml + env vars).
+    """Machine-local settings: one parsed source per settings file, lowest precedence first.
 
-    ``jobs`` is an unresolved spec: an int (negative = CPUs to leave free)
-    or ``"num-cpus"``; :func:`mojox_core.policy.resolve` turns it into a count.
+    Each entry is ``(file path, option values)``. The resolver folds them in
+    order, so the project file beats the user file key by key and the ``env``
+    tables merge user then project.
     """
 
-    jobs: int | str | None = None
-    compile_threads: int | None = None
-    timeout_s: int | None = None
-    config_paths: tuple[str, ...] = ()
-    env: dict[str, str] = field(default_factory=dict)
+    sources: tuple[tuple[str, Mapping[str, Value]], ...] = ()
 
     EMPTY: ClassVar[LocalSettings]  # set below
+
+    @property
+    def config_paths(self) -> tuple[str, ...]:
+        """The settings files that were loaded, for ``mojox check`` and ``--dry-run``."""
+        return tuple(path for path, _values in self.sources)
 
 
 # Bootstrap the EMPTY sentinel after the class is defined.

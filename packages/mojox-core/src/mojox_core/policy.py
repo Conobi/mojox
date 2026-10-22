@@ -98,7 +98,7 @@ def resolve(
             ``"num-cpus"`` or negative.
 
     Raises:
-        ConfigError: Unknown *profile_name*, or an invalid settings, ``MOJOX_*`` or CLI value.
+        ConfigError: Unknown *profile_name*, or an invalid ``MOJOX_*`` or CLI value.
         ValueError: The jobs spec needs *cpu_count* and none was given.
     """
     check_profile_name(profile_name, manifest.profiles, f"profile.{profile_name}")
@@ -139,7 +139,7 @@ def collect_sources(
     """Order every layer as fold sources: manifest, named profile, settings, ``MOJOX_*``, CLI.
 
     Raises:
-        ConfigError: An invalid ``MOJOX_*``, settings or CLI value, named by its origin.
+        ConfigError: An invalid ``MOJOX_*`` or CLI value, named by its origin.
     """
     sources: list[Mapping[str, Value]] = []
     if manifest is not None:
@@ -147,7 +147,7 @@ def collect_sources(
         profile = manifest.profiles.get(profile_name)
         if profile is not None:
             sources.append(profile.values)
-    sources.append(_legacy_settings(settings))
+    sources.extend(values for _path, values in settings.sources)
     sources.append(env_source(env, options=options))
     sources.append(_legacy_cli(cli_overrides))
     return tuple(sources)
@@ -181,17 +181,6 @@ def _project(resolution: Resolution, cpu_count: int | None, *, tests_follow_jobs
         env=dict(values["env"]),
         origins=dict(resolution.origins),
     )
-
-
-def _legacy_settings(settings: LocalSettings) -> dict[str, Value]:
-    """Settings fields (files and MOJOX_* already merged), re-validated as the old resolver did."""
-    raw = {
-        "jobs": settings.jobs,
-        "compile-threads": settings.compile_threads,
-        "timeout": settings.timeout_s,
-        "env": settings.env or None,
-    }
-    return _checked(raw, lambda key: f"settings.{key}")
 
 
 def _legacy_cli(cli_overrides: Mapping[str, Any]) -> dict[str, Value]:

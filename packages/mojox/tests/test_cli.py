@@ -1308,9 +1308,47 @@ class TestParallelismReporting:
 
         from mojox.cli import _cmd_metadata
 
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(project / "no-user-config"))
+        (project / ".git").mkdir()
+        (project / ".mojox").mkdir()
+        (project / ".mojox" / "config.toml").write_text("compile-threads = 5\n")
         monkeypatch.setenv("MOJOX_JOBS", "2")
+        _cmd_metadata(build_parser().parse_args(["metadata"]))
+        assert json.loads(capsys.readouterr().out)["policy"]["compile_threads"] == 5
         _cmd_metadata(build_parser().parse_args(["metadata", "--no-config"]))
-        assert json.loads(capsys.readouterr().out)["policy"]["jobs"] == 2
+        policy = json.loads(capsys.readouterr().out)["policy"]
+        assert (policy["jobs"], policy["compile_threads"]) == (2, 1)
+
+    @pytest.mark.parametrize("argv", [["test"], ["run", "hello.mojo"]], ids=["test", "run"])
+    def test_unknown_settings_key_fails(self, project, capsys, argv):
+        from mojox import cli
+
+        config = project / "settings.toml"
+        config.write_text("compile-thread = 2\n")
+        (project / "hello.mojo").write_text("def main():\n    pass\n")
+        handler = {"test": cli._cmd_test, "run": cli._cmd_run}[argv[0]]
+        with pytest.raises(SystemExit) as exc:
+            handler(build_parser().parse_args([argv[0], "--config-file", str(config), *argv[1:]]))
+        assert exc.value.code == 2
+        assert f"{config}:compile-thread: unknown key `compile-thread`; did you mean `compile-threads`?" in (
+            capsys.readouterr().err
+        )
+
+    @pytest.mark.parametrize("command", ["test", "metadata"])
+    def test_invalid_toml_settings_file_exits_2(self, project, monkeypatch, capsys, command):
+        from mojox import cli
+
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(project / "no-user-config"))
+        monkeypatch.setenv("HOME", str(project))
+        (project / ".git").mkdir()
+        (project / ".mojox").mkdir()
+        config = project / ".mojox" / "config.toml"
+        config.write_text("compile-threads = \n")
+        handler = {"test": cli._cmd_test, "metadata": cli._cmd_metadata}[command]
+        with pytest.raises(SystemExit) as exc:
+            handler(build_parser().parse_args([command]))
+        assert exc.value.code == 2
+        assert f"{config}: not valid TOML: " in capsys.readouterr().err
 
     @pytest.mark.parametrize(
         ("old", "new", "origin"),
@@ -1557,6 +1595,34 @@ class TestCheckConfigErrors:
         assert "compile-threads" in err
         assert "OK" not in err
         assert "compiler not available" not in err
+
+    @pytest.mark.parametrize(
+        ("body", "message"),
+        [
+            ("compile-thread = 2\n", ":compile-thread: unknown key `compile-thread`; did you mean `compile-threads`?"),
+            (
+                'pre-build = ["make"]\n',
+                ":pre-build: `pre-build` cannot be set in local settings; allowed in: tool.mojox",
+            ),
+            (
+                '[defines]\nA = "1"\n',
+                (
+                    ":defines: `defines` cannot be set in local settings; "
+                    "allowed in: tool.mojox, tool.mojox.profile.<name>, -D/--define"
+                ),
+            ),
+            ("compile-threads = 0\n", ":compile-threads: expected an integer >= 1, got 0"),
+        ],
+        ids=["unknown", "structural", "defines", "invalid"],
+    )
+    def test_settings_errors_name_the_file(self, project, monkeypatch, capsys, body, message):
+        self._toolchain(monkeypatch, installed=True)
+        config = project / "settings.toml"
+        config.write_text(body)
+        with pytest.raises(SystemExit) as exc:
+            self._check("--config-file", str(config))
+        assert exc.value.code == 2
+        assert f"{config}{message}" in capsys.readouterr().err
 
     @pytest.mark.parametrize("installed", [True, False])
     def test_bad_env_exits_2(self, project, monkeypatch, capsys, installed):
