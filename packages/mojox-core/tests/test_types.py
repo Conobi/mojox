@@ -194,3 +194,10 @@ class TestFrozenDataclasses:
             jobs_spec="1",
         )
         assert (p.env, p.origins) == ({}, {})
+
+
+def test_value_is_exported_with_the_types_it_appears_in():
+    import mojox_core
+
+    assert mojox_core.Value is Value
+    assert "Value" in mojox_core.__all__

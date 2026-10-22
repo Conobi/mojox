@@ -12,8 +12,8 @@ uv add mojox-core
 ```
 
 Requires Python 3.10+. Only runtime dependency is `packaging>=23.0`
-(plus `tomli` on Python < 3.11). `mojox` and `mojox-build` 0.6 require
-`mojox-core` 0.6.x.
+(plus `tomli` on Python < 3.11). `mojox` and `mojox-build` 0.7 require
+`mojox-core` 0.7.x.
 
 ## Pipeline
 
@@ -59,7 +59,7 @@ manifest = parse_manifest(raw)
 targets = discover(manifest, Path("."))
 
 # 4. Resolve build policy from all precedence layers (pure)
-policy = resolve(manifest, "dev", {}, LocalSettings.EMPTY)
+policy = resolve(manifest, "dev", {}, LocalSettings.EMPTY, env={})
 
 # 5. Detect toolchain and build environment (I/O)
 toolchain = resolve_toolchain()
@@ -103,20 +103,28 @@ All exported from `mojox_core`. Every type is a frozen dataclass or enum.
 | `DistEntry` | Distribution metadata entry |
 | `DistKind` | Enum of distribution kinds |
 | `BinaryEntry` | Binary entry in a distribution |
+| `mojox_core.options.OPTIONS` | The option registry: every option's layers, merge kind, built-ins, `MOJOX_*` name and flags |
 
 ### Transformers
 
 Pure functions. No side effects, no I/O.
 
 ```python
-parse_manifest(data: dict) -> Manifest
+parse_manifest(data: dict, *, unknown_keys: Literal["error", "warn"] = "error") -> Manifest
 discover(manifest: Manifest, root: Path) -> TargetGraph
-resolve(manifest: Manifest, profile_name: str, cli_overrides: dict, settings: LocalSettings) -> Policy
+resolve(manifest: Manifest, profile_name: str, cli_overrides: Mapping[str, Any], settings: LocalSettings, env: Mapping[str, str], *, cpu_count: int | None = None) -> Policy
 plan(graph: TargetGraph, env: ResolvedEnv, policy: Policy, toolchain: Toolchain, host: HostFacts) -> tuple[Command, ...]
 build_env(dists: list[dict], lock_data: dict | None, mojo_path: str, mojo_version: str) -> ResolvedEnv
 serialize(graph: TargetGraph, env: ResolvedEnv, policy: Policy, commands: tuple[Command, ...], toolchain: Toolchain, diagnostics: tuple[Diagnostic, ...]) -> dict
-parse_settings(user: dict | None, project: dict | None, env: dict[str, str]) -> LocalSettings
+parse_settings(files: Sequence[tuple[str, Mapping[str, Any]]]) -> LocalSettings
 ```
+
+`parse_manifest` rejects unknown keys by default; with `unknown_keys="warn"` it
+collects them in `Manifest.warnings` instead. `parse_settings` takes
+`(path, table)` pairs, user file first, and rejects keys a settings file cannot
+set. `resolve` reads `MOJOX_*` variables from `env` only, so pass `{}` to
+ignore the environment. `resolve`, `parse_manifest` and `parse_settings` also
+accept a keyword-only `options=` registry (default `OPTIONS`).
 
 ### I/O readers
 
@@ -140,12 +148,12 @@ includes the host locale.
 
 ```python
 class ConfigError(Exception):
-    key_path: str  # dotted path to the offending key
+    key_path: str  # origin of the bad value: TOML key path, `<settings file>:<key>`, `MOJOX_*` name or flag
     message: str  # human-readable explanation
 ```
 
 Raised on invalid manifest or settings. No `KeyError` or `TypeError` reaches
-the caller -- every rejection is a `ConfigError` with a structured key path.
+the caller -- every rejection is a `ConfigError` whose `key_path` is the value's origin; it renders as `<origin>: <message>`.
 
 ## Testing without I/O
 

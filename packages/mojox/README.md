@@ -62,7 +62,7 @@ mojox run src/main.mojo
 mojox run --no-cache src/main.mojo            # always rebuild
 ```
 
-The binary goes through the same `.mojox/cache/bin` cache as `mojox test`, so a second run of an unchanged file skips the build. Editing the file, a sibling module or a dependency triggers a rebuild. Output is captured and replayed once the program exits, not streamed. `--timeout` (or the profile's timeout) covers the build and the run.
+The binary goes through the same `.mojox/cache/bin` cache as `mojox test`, so a second run of an unchanged file skips the build. Editing the file, a sibling module or a dependency triggers a rebuild. Output is captured and replayed once the program exits, not streamed. The timeout (`--timeout`, `MOJOX_TIMEOUT`, local settings, or `timeout` in `[tool.mojox]` or the profile) covers the build and the run.
 
 Exit code: the program's own code; `128 + N` if it is killed by signal `N`; `1` if the build fails (compiler crash included) or the timeout is hit.
 
@@ -106,13 +106,16 @@ These flags are available on every subcommand except `cache`:
 |------|-------------|
 | `--profile PROFILE` | Build profile (`dev`, `release`, or user-defined); `build` defaults to `build-profile` |
 | `-j` / `--jobs N` | Maximum concurrent compilations |
-| `--timeout SECONDS` | Per-target timeout |
+| `--compile-threads N` | Threads each `mojo build` may use (overrides `compile-threads` from `[tool.mojox]`, the profile, settings and `MOJOX_COMPILE_THREADS`) |
+| `--timeout SECONDS` | Per-target timeout (overrides `timeout` from `[tool.mojox]`, the profile, settings and `MOJOX_TIMEOUT`) |
 | `--dry-run` | Show planned commands without executing |
 | `-v` / `--verbose` | Expand grouped output |
 | `--no-config` | Disable `.mojox/config.toml` discovery |
 | `--config-file PATH` | Explicit config file path |
 | `-D` / `--define KEY=VALUE` | Define a compile-time variable (repeatable) |
 | `--flag VALUE` | Extra flag passed through to the compiler (repeatable; use `--flag=VALUE` for dash-prefixed flags) |
+
+Unknown keys in `[tool.mojox]`, its profile tables and `.mojox/config.toml` are errors that suggest the closest valid key, or name where a misplaced key belongs. A settings file rejects keys it cannot set (such as `optimize` or `defines`), and a settings file that is not valid TOML is an error naming the file. The `env` tables of the user and project settings files merge key by key. `mojox metadata` reports where each resolved value came from under `policy.origins` (unstable).
 
 ## How it works
 

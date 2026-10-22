@@ -86,6 +86,19 @@ class TestOptionFactory:
         assert opt.is_bool
         assert opt.parse_text is parse_bool_text
 
+    def test_wrapped_bool_parser_needs_the_explicit_marker(self):
+        def wrapped(value, origin):
+            return parse_bool_strict(value, origin)
+
+        assert not option("x-flag", wrapped, {Layer.TOP}).is_bool
+        opt = option("x-flag", wrapped, {Layer.TOP, Layer.ENV, Layer.CLI}, is_bool=True)
+        assert opt.is_bool
+        assert opt.parse_text is parse_bool_text
+        assert env_source({"MOJOX_X_FLAG": " TRUE "}, options=(opt,))["x-flag"].value is True
+
+    def test_real_registry_bool_options_are_unchanged(self):
+        assert [opt.key for opt in OPTIONS if opt.is_bool] == ["test-parallel"]
+
     @pytest.mark.parametrize("layer", [Layer.ENV, Layer.CLI])
     def test_env_or_cli_without_parse_text_is_rejected(self, layer):
         with pytest.raises(ValueError, match="parse_text"):

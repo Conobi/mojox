@@ -1554,7 +1554,9 @@ class TestParallelismReporting:
         with pytest.raises(SystemExit) as exc:
             self._build_verbose(capsys, "--profile", "nope")
         assert exc.value.code == 2
-        assert "profile.nope: unknown profile 'nope'" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "--profile: unknown profile 'nope'. Available: dev, release" in err
+        assert "tool.mojox.profile.nope" not in err
 
     def test_other_commands_ignore_build_profile(self, project, capsys):
         import json

@@ -92,7 +92,7 @@ def resolve(
         ValueError: The jobs spec needs *cpu_count* and none was given, or a
             *cli_overrides* key is not a command-line option.
     """
-    check_profile_name(profile_name, manifest.profiles, f"profile.{profile_name}")
+    check_profile_name(profile_name, manifest.profiles, "--profile")
     sources = collect_sources(manifest, profile_name, cli_overrides, settings, env, options=options)
     resolution = resolve_values(sources, profile_name, options=options)
     return _project(resolution, cpu_count, tests_follow_jobs=resolution.values["test-parallel"])

@@ -32,6 +32,7 @@ from .types import (
     TargetGraph,
     TargetKind,
     Toolchain,
+    Value,
 )
 
 __all__ = [
@@ -53,6 +54,7 @@ __all__ = [
     "TargetGraph",
     "TargetKind",
     "Toolchain",
+    "Value",
     "build_env",
     "discover",
     "parse_manifest",

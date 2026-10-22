@@ -90,6 +90,20 @@ class TestAddingTheCliLayer:
         assert build_cli_overrides(args, command="build", options=reg) == {}
 
 
+def _wrapped_bool(value, origin):
+    """A bool parser that is not parse_bool_strict itself, so only the explicit marker makes it a bool."""
+    return parse_bool_strict(value, origin)
+
+
+class TestExplicitBool:
+    REG = registry(*OPTIONS, option("x-flag", _wrapped_bool, {Layer.ENV, Layer.CLI}, default=False, is_bool=True))
+
+    @pytest.mark.parametrize(("argv", "expected"), [(["--x-flag"], True), (["--no-x-flag"], False)])
+    def test_wrapped_parser_keeps_the_negative_form(self, argv, expected):
+        args = _parser(options=self.REG).parse_args(argv)
+        assert build_cli_overrides(args, options=self.REG) == {"x-flag": expected}
+
+
 class TestRealRegistry:
     def test_define_pairs_and_last_repeat_wins(self):
         args = _parser().parse_args(["-D", "A=1", "--define", "B", "-D", "A=2"])

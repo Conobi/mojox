@@ -49,6 +49,15 @@ class Option:
     ``(key, value)`` pair for MAP_BY_KEY. The fold starts from
     ``builtin[profile]`` for a built-in profile, else from ``default``.
     Both are left out of the hash, since they may hold dicts.
+
+    A CLI value is parsed twice: by ``parse_text`` in argparse, then by
+    ``parse`` in :func:`cli_source`, which also guards hand-built overrides.
+    So ``parse`` must accept its own output: a tuple for APPEND, a dict for
+    MAP_BY_KEY, an already-parsed scalar for REPLACE.
+
+    ``is_bool`` makes the option a ``--x/--no-x`` flag that reads
+    ``true``/``false``/``1``/``0`` from the environment. It is explicit
+    rather than inferred from ``parse``, so wrapping the parser keeps it.
     """
 
     key: str
@@ -63,11 +72,7 @@ class Option:
     env: str | None = None
     metavar: str | None = None
     doc: str = ""
-
-    @property
-    def is_bool(self) -> bool:
-        """Bool options become ``--x/--no-x`` flags and read ``true``/``false``/``1``/``0`` from the environment."""
-        return self.parse is parse_bool_strict
+    is_bool: bool = False
 
     @property
     def cli_origin(self) -> str:
@@ -95,12 +100,15 @@ def option(
     commands: Iterable[str] | None = None,
     metavar: str | None = None,
     doc: str = "",
+    is_bool: bool | None = None,
 ) -> Option:
     """Build an :class:`Option`, deriving its ``MOJOX_*`` name and default ``--<key>`` flag.
 
     The env name exists only when ENV is allowed. *cli*, when given, is the
     complete flag list: ``--<key>`` is not added. *commands* None means every
-    subcommand that takes option flags.
+    subcommand that takes option flags. *is_bool* None means "the parser is
+    :func:`parse_bool_strict`"; pass True when wrapping it. A bool option
+    without *parse_text* gets :func:`parse_bool_text`.
 
     Raises:
         ValueError: ENV or CLI is allowed but a non-bool option has no
@@ -108,7 +116,9 @@ def option(
             is an empty tuple.
     """
     allowed = frozenset(layers)
-    if parse is parse_bool_strict and parse_text is None:
+    if is_bool is None:
+        is_bool = parse is parse_bool_strict
+    if is_bool and parse_text is None:
         parse_text = parse_bool_text
     if (Layer.ENV in allowed or Layer.CLI in allowed) and parse_text is None:
         raise ValueError(f"option {key!r} can be set from the environment or CLI but has no parse_text")
@@ -129,6 +139,7 @@ def option(
         env=f"MOJOX_{key.upper().replace('-', '_')}" if Layer.ENV in allowed else None,
         metavar=metavar,
         doc=doc,
+        is_bool=is_bool,
     )
 
 
@@ -217,7 +228,7 @@ def _int_from_text(text: str) -> int | None:
         return None
 
 
-def parse_jobs(value: object, key_path: str) -> int | Literal["num-cpus"]:
+def parse_jobs(value: object, origin: str) -> int | Literal["num-cpus"]:
     """Validate a jobs spec from TOML, the environment, or the CLI.
 
     Accepts an int other than 0, its decimal text, or ``"num-cpus"``
@@ -225,10 +236,10 @@ def parse_jobs(value: object, key_path: str) -> int | Literal["num-cpus"]:
     "all CPUs but k" and are resolved later by :func:`mojox_core.policy.resolve_jobs`.
 
     Raises:
-        ConfigError: At *key_path* for 0, bools, floats and anything else.
+        ConfigError: At *origin* for 0, bools, floats and anything else.
     """
     if isinstance(value, bool):  # bool is an int subclass: reject first
-        raise ConfigError(key_path, f"expected {_JOBS_FORMS}, got {value!r}")
+        raise ConfigError(origin, f"expected {_JOBS_FORMS}, got {value!r}")
     if isinstance(value, int):
         jobs: int | None = value
     elif isinstance(value, str):
@@ -238,37 +249,37 @@ def parse_jobs(value: object, key_path: str) -> int | Literal["num-cpus"]:
     else:
         jobs = None
     if jobs is None:
-        raise ConfigError(key_path, f"expected {_JOBS_FORMS}, got {value!r}")
+        raise ConfigError(origin, f"expected {_JOBS_FORMS}, got {value!r}")
     if jobs == 0:
-        raise ConfigError(key_path, 'jobs must not be 0; use 1 for serial or "num-cpus"')
+        raise ConfigError(origin, 'jobs must not be 0; use 1 for serial or "num-cpus"')
     return jobs
 
 
-def parse_count(value: object, key_path: str, *, from_text: bool) -> int:
+def parse_count(value: object, origin: str, *, from_text: bool) -> int:
     """Validate a count that must be an integer >= 1 (compile-threads, timeout).
 
     With *from_text* (environment, CLI) the value is decimal text; otherwise
     (TOML) it must be a real int, so a quoted ``"2"`` is rejected.
 
     Raises:
-        ConfigError: At *key_path* for anything but an integer >= 1.
+        ConfigError: At *origin* for anything but an integer >= 1.
     """
     if from_text and isinstance(value, str):
-        return parse_count_text(value, key_path)
+        return parse_count_text(value, origin)
     if not from_text and isinstance(value, int) and not isinstance(value, bool) and value >= 1:
         return value
-    raise ConfigError(key_path, f"expected an integer >= 1, got {value!r}")
+    raise ConfigError(origin, f"expected an integer >= 1, got {value!r}")
 
 
-def parse_count_text(text: str, key_path: str) -> int:
+def parse_count_text(text: str, origin: str) -> int:
     """Parse decimal text (environment, CLI) naming an integer >= 1; surrounding whitespace is ignored.
 
     Raises:
-        ConfigError: At *key_path* for anything else, including ``""``.
+        ConfigError: At *origin* for anything else, including ``""``.
     """
     count = _int_from_text(text)
     if count is None or count < 1:
-        raise ConfigError(key_path, f"expected an integer >= 1, got {text!r}")
+        raise ConfigError(origin, f"expected an integer >= 1, got {text!r}")
     return count
 
 
@@ -584,8 +595,10 @@ def _as_layer_value(opt: Option, parsed: Any) -> Any:
 def cli_source(cli_overrides: Mapping[str, Any], *, options: Sequence[Option] = OPTIONS) -> dict[str, Value]:
     """Re-validate CLI values (keyed by option key, TOML-shaped) and name each by its first long flag.
 
-    None means "flag not given". Hand-built overrides get the same checks as
-    parsed flags.
+    None means "flag not given". Each value goes through the option's
+    ``parse`` even though argparse already ran ``parse_text`` on it, so
+    hand-built overrides get the same checks as parsed flags (see
+    :class:`Option` for what that asks of ``parse``).
 
     Raises:
         ConfigError: An invalid value, named by the flag.

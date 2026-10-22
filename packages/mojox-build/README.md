@@ -48,6 +48,8 @@ The full `[tool.mojox]` table is owned by `mojox-core` and shared with the CLI. 
 | `source-exclude` | list[str] | `[]` | Glob patterns to exclude from the sdist |
 | `wheel-exclude` | list[str] | `[]` | Glob patterns to exclude from the wheel |
 
+Unknown keys print a warning during builds instead of failing, so a project using a newer key still builds with an older mojox-build.
+
 ## How it works
 
 1. A PEP 517 frontend (`uv build`, `pip wheel`) calls `build_wheel()`, `build_sdist()`, or `build_editable()`.
@@ -66,7 +68,7 @@ Five modules, roughly 1100 lines total:
 - `_metadata.py` renders PEP 621 / PEP 643 METADATA and PEP 427 WHEEL files.
 - `_preflight.py` validates the build environment before compilation starts.
 
-Config parsing, policy resolution, and toolchain detection live in `mojox-core` (0.6.x required, installed automatically). The only other runtime dependency beyond the stdlib is `packaging` (for platform tags).
+Config parsing, policy resolution, and toolchain detection live in `mojox-core` (0.7.x required, installed automatically). The only other runtime dependency beyond the stdlib is `packaging` (for platform tags).
 
 ## Features
 

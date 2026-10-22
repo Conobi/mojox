@@ -207,7 +207,7 @@ class TestErrors:
         m = _minimal_manifest()
         with pytest.raises(ConfigError) as exc:
             resolve(m, "nonexistent", {}, LocalSettings.EMPTY)
-        assert exc.value.key_path == "profile.nonexistent"
+        assert exc.value.key_path == "--profile"
         assert exc.value.message == "unknown profile 'nonexistent'. Available: dev, release"
 
 
