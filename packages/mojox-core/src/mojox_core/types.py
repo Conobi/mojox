@@ -245,7 +245,11 @@ class Policy:
 
     ``compile_threads`` is the ``--num-threads`` for each compile, fixed
     regardless of host or jobs. ``jobs_spec`` is the jobs value as written
-    (``"num-cpus"``, ``"-2"``, ``"4"``), kept for display.
+    (``"num-cpus"``, ``"-2"``, ``"4"``), kept for display. ``env`` is the
+    settings ``[env]`` table, added to every command mojox runs. ``origins``
+    says where each option's value came from (see
+    :class:`mojox_core.options.Resolution`). Both default to empty so
+    hand-built policies stay valid.
     """
 
     optimize: int
@@ -260,6 +264,8 @@ class Policy:
     timeout_s: int
     compile_threads: int
     jobs_spec: str
+    env: Mapping[str, str] = field(default_factory=dict)
+    origins: Mapping[str, str | tuple[str, ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

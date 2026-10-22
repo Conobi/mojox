@@ -182,3 +182,20 @@ class TestFrozenDataclasses:
         assert p.jobs == 1
         assert p.compile_threads == 1
         assert p.jobs_spec == "1"
+
+    def test_policy_env_and_origins_default_to_empty(self):
+        p = Policy(
+            optimize=0,
+            debug_level="none",
+            defines={},
+            flags=(),
+            include_paths=(),
+            lints=LintConfig(),
+            jobs=1,
+            jobs_compile=1,
+            jobs_tests=1,
+            timeout_s=300,
+            compile_threads=1,
+            jobs_spec="1",
+        )
+        assert (p.env, p.origins) == ({}, {})

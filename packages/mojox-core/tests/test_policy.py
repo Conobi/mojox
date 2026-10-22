@@ -473,3 +473,17 @@ class TestFoldBackedResolver:
             builtin.flags,
             builtin.compile_threads,
         )
+
+
+class TestProvenanceAndEnv:
+    def test_origins_name_each_winning_layer(self):
+        p = resolve(_minimal_manifest(compile_threads=3), "dev", {"jobs": 2}, LocalSettings.EMPTY)
+        assert p.origins["compile-threads"] == "tool.mojox.compile-threads"
+        assert p.origins["jobs"] == "--jobs"
+        assert p.origins["timeout"] == "default"
+        assert p.origins["defines.ASSERT"] == "builtin:dev"
+        assert p.origins["flags"] == ()
+
+    def test_settings_env_reaches_the_policy(self):
+        p = resolve(_minimal_manifest(), "dev", {}, LocalSettings(env={"CC": "clang"}))
+        assert p.env == {"CC": "clang"}

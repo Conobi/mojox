@@ -18,4 +18,4 @@ def test_unknown_build_profile_names_the_key(sample_pyproject: Path, monkeypatch
     with pytest.raises(SystemExit) as exc:
         hook(str(tmp_path / "dist"))
     assert exc.value.code == 1
-    assert "[tool.mojox.build-profile] unknown profile 'nope'. Available: dev, release" in capsys.readouterr().err
+    assert "tool.mojox.build-profile: unknown profile 'nope'. Available: dev, release" in capsys.readouterr().err

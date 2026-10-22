@@ -621,7 +621,7 @@ class TestCacheInvalidatesOnDependencyChange:
         _dep, log = project
         monkeypatch.setenv("MOJOX_CPU_COUNT", "0")
         assert self._run() == 2
-        assert "[MOJOX_CPU_COUNT]" in capsys.readouterr().err
+        assert "MOJOX_CPU_COUNT: " in capsys.readouterr().err
         assert log.read_text() == ""
 
     @pytest.mark.parametrize("mode", [(), ("--bundle",)], ids=["per-file", "bundle"])
@@ -792,7 +792,7 @@ class TestRunExecutesProgram:
         (proj / "hello.mojo").write_text("# out: hi\n")
         monkeypatch.setenv("MOJOX_CPU_COUNT", "two")
         assert self._run("hello.mojo") == 2
-        assert "[MOJOX_CPU_COUNT]" in capsys.readouterr().err
+        assert "MOJOX_CPU_COUNT: " in capsys.readouterr().err
         assert log.read_text() == ""
 
     @pytest.mark.parametrize("code", [0, 3])
@@ -932,7 +932,7 @@ class TestRunExecutesProgram:
         assert exc.value.code == 2
         monkeypatch.setenv("MOJOX_JOBS", "0")
         assert self._run("--dry-run", "hello.mojo") == 2
-        assert "[MOJOX_JOBS]" in capsys.readouterr().err
+        assert "MOJOX_JOBS: " in capsys.readouterr().err
         assert log.read_text() == ""
 
 
@@ -1360,7 +1360,7 @@ class TestParallelismReporting:
         with pytest.raises(SystemExit) as exc:
             self._build_verbose(capsys)
         assert exc.value.code == 2
-        assert "[tool.mojox.build-profile] unknown profile 'nope'" in capsys.readouterr().err
+        assert "tool.mojox.build-profile: unknown profile 'nope'" in capsys.readouterr().err
 
     def test_profile_flag_does_not_excuse_unknown_build_profile(self, project, capsys):
         """An unknown build-profile makes the manifest invalid, whatever profile is asked for."""
@@ -1368,13 +1368,13 @@ class TestParallelismReporting:
         with pytest.raises(SystemExit) as exc:
             self._build_verbose(capsys, "--profile", "release")
         assert exc.value.code == 2
-        assert "[tool.mojox.build-profile] unknown profile 'nope'" in capsys.readouterr().err
+        assert "tool.mojox.build-profile: unknown profile 'nope'" in capsys.readouterr().err
 
     def test_unknown_profile_flag_names_the_profile(self, project, capsys):
         with pytest.raises(SystemExit) as exc:
             self._build_verbose(capsys, "--profile", "nope")
         assert exc.value.code == 2
-        assert "[profile.nope] unknown profile 'nope'" in capsys.readouterr().err
+        assert "profile.nope: unknown profile 'nope'" in capsys.readouterr().err
 
     def test_other_commands_ignore_build_profile(self, project, capsys):
         import json
@@ -1391,6 +1391,33 @@ class TestParallelismReporting:
         assert "--num-threads 1" in capsys.readouterr().err
         assert self._test() == 0
         assert "compile threads 1)\n" in capsys.readouterr().err
+
+    @pytest.mark.parametrize(
+        "argv",
+        [["test"], ["test", "--bundle"], ["build"], ["check"], ["run", "hello.mojo"]],
+        ids=["test", "bundle", "build", "check", "run"],
+    )
+    def test_settings_env_reaches_every_command(self, project, monkeypatch, argv):
+        from mojox import cli
+        from mojox.types import Outcome, OutcomeKind
+
+        seen = []
+
+        def fake_run_commands(commands, **kwargs):
+            seen.append(kwargs.get("extra_env"))
+            return tuple(Outcome(c, OutcomeKind.PASS, 0, "", "", (), 0.0) for c in commands)
+
+        monkeypatch.setattr("mojox.exec.run_commands", fake_run_commands)
+        (project / "hello.mojo").write_text("def main():\n    pass\n")
+        (project / "env.toml").write_text('[env]\nCC = "clang"\n')
+        handler = {"test": cli._cmd_test, "build": cli._cmd_build, "check": cli._cmd_check, "run": cli._cmd_run}
+        args = build_parser().parse_args([argv[0], "--config-file", str(project / "env.toml"), *argv[1:]])
+        try:
+            handler[argv[0]](args)
+        except SystemExit as exc:
+            assert exc.code == 0
+        assert seen
+        assert all(env == {"CC": "clang"} for env in seen)
 
 
 class TestCheckConfigErrors:

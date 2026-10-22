@@ -543,7 +543,7 @@ def _cmd_test(args: argparse.Namespace) -> None:
     )
     from .types import OutputFormat, OutputMode
 
-    manifest, graph, env, policy, toolchain, host, settings, commands, include_paths = _resolve_pipeline(args)
+    manifest, graph, env, policy, toolchain, host, _settings, commands, include_paths = _resolve_pipeline(args)
 
     if env.diagnostics:
         render_diagnostics(env.diagnostics)
@@ -633,7 +633,6 @@ def _cmd_test(args: argparse.Namespace) -> None:
             policy=policy,
             toolchain=toolchain,
             host=host,
-            settings=settings,
             commands=commands,
             include_paths=include_paths,
             cache_ctx=cache_ctx,
@@ -679,7 +678,7 @@ def _cmd_test(args: argparse.Namespace) -> None:
         outcomes = run_commands(
             commands,
             max_workers=policy.jobs_tests,
-            extra_env=settings.env if settings.env else None,
+            extra_env=dict(policy.env) or None,
             include_paths=include_paths,
             on_start=on_start,
             on_complete=on_complete,
@@ -712,7 +711,6 @@ def _run_bundle_test(
     policy: Policy,
     toolchain: Toolchain,
     host: HostFacts,
-    settings: LocalSettings,
     commands: tuple[Command, ...],
     include_paths: tuple[str, ...],
     cache_ctx: CacheContext,
@@ -888,7 +886,7 @@ def _run_bundle_test(
             outcomes = run_commands(
                 bundle_commands,
                 max_workers=1,
-                extra_env=settings.env if settings.env else None,
+                extra_env=dict(policy.env) or None,
                 include_paths=bundle_include,
                 on_start=on_start,
                 on_complete=on_complete,
@@ -1029,7 +1027,7 @@ def _cmd_run(args: argparse.Namespace) -> None:
     )
     outcomes = run_commands(
         commands,
-        extra_env=settings.env if settings.env else None,
+        extra_env=dict(policy.env) or None,
         include_paths=include_paths,
         cache_context=cache_ctx,
     )
@@ -1066,7 +1064,7 @@ def _cmd_build(args: argparse.Namespace) -> None:
     )
     from .types import OutputMode
 
-    _manifest, _graph, env, policy, toolchain, host, settings, commands, include_paths = _resolve_pipeline(args)
+    _manifest, _graph, env, policy, toolchain, host, _settings, commands, include_paths = _resolve_pipeline(args)
 
     build_commands = tuple(c for c in commands if c.kind in (CommandKind.COMPILE_PACKAGE, CommandKind.COMPILE_BINARY))
 
@@ -1089,7 +1087,7 @@ def _cmd_build(args: argparse.Namespace) -> None:
         outcomes = run_commands(
             build_commands,
             max_workers=policy.jobs_compile,
-            extra_env=settings.env if settings.env else None,
+            extra_env=dict(policy.env) or None,
             include_paths=include_paths,
             on_complete=make_progress_callback(
                 success_output=OutputMode.IMMEDIATE if args.verbose else OutputMode.NEVER,
@@ -1145,7 +1143,7 @@ def _cmd_check(args: argparse.Namespace) -> None:
 
     # --- Compiler check: resolve pipeline and precompile ---
     try:
-        _manifest, _graph, env, policy, toolchain, host, settings, commands, include_paths = _resolve_pipeline(args)
+        _manifest, _graph, env, policy, toolchain, host, _settings, commands, include_paths = _resolve_pipeline(args)
     except _ToolchainUnavailable:
         print(_c(sys.stderr, _DIM, "compiler not available, skipping compilation check"), file=sys.stderr)
         if findings:
@@ -1182,7 +1180,7 @@ def _cmd_check(args: argparse.Namespace) -> None:
         outcomes = run_commands(
             compile_commands,
             max_workers=policy.jobs_compile,
-            extra_env=settings.env if settings.env else None,
+            extra_env=dict(policy.env) or None,
             include_paths=include_paths,
             cache_context=_precompile_cache_context(toolchain.version),
         )

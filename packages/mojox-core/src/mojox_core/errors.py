@@ -4,13 +4,15 @@ from __future__ import annotations
 
 
 class ConfigError(Exception):
-    """A configuration error carrying the offending key path and a remediation.
+    """A configuration error naming where the bad value came from, plus a remediation.
 
-    No KeyError, no TypeError, no stack trace reaches the user — every
-    rejection produces one of these with a human-readable message.
+    ``key_path`` is the origin (``tool.mojox.optimize``, ``<settings file>:jobs``,
+    ``MOJOX_JOBS``, ``--jobs``), and the error renders as ``<origin>: <message>``
+    so it reads the same in every layer. No KeyError, no TypeError, no stack
+    trace reaches the user — every rejection produces one of these.
     """
 
     def __init__(self, key_path: str, message: str) -> None:
         self.key_path = key_path
         self.message = message
-        super().__init__(f"[{key_path}] {message}")
+        super().__init__(f"{key_path}: {message}")

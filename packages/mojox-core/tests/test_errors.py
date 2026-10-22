@@ -18,4 +18,8 @@ def test_config_error_is_an_exception():
 
 def test_config_error_without_remediation():
     err = ConfigError("tool.mojox.packages", "expected a list of strings")
-    assert str(err).startswith("[tool.mojox.packages]")
+    assert str(err) == "tool.mojox.packages: expected a list of strings"
+
+
+def test_config_error_renders_origin_then_message():
+    assert str(ConfigError("MOJOX_JOBS", "jobs must not be 0")) == "MOJOX_JOBS: jobs must not be 0"

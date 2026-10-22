@@ -155,6 +155,8 @@ def _project(resolution: Resolution, cpu_count: int | None, *, tests_follow_jobs
         timeout_s=values["timeout"],
         compile_threads=values["compile-threads"],
         jobs_spec=str(spec),
+        env=dict(values["env"]),
+        origins=dict(resolution.origins),
     )
 
 
@@ -192,7 +194,12 @@ def _typed_layer(table: Manifest | Profile, prefix: str) -> dict[str, Value]:
 
 def _legacy_settings(settings: LocalSettings) -> dict[str, Value]:
     """Settings fields (files and MOJOX_* already merged), re-validated as the old resolver did."""
-    raw = {"jobs": settings.jobs, "compile-threads": settings.compile_threads, "timeout": settings.timeout_s}
+    raw = {
+        "jobs": settings.jobs,
+        "compile-threads": settings.compile_threads,
+        "timeout": settings.timeout_s,
+        "env": settings.env or None,
+    }
     return _checked(raw, lambda key: f"settings.{key}")
 
 
