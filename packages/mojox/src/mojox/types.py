@@ -7,6 +7,7 @@ exec-layer concerns, not planner concerns.
 
 from __future__ import annotations
 
+import signal
 from dataclasses import dataclass
 from enum import Enum
 
@@ -19,9 +20,18 @@ class OutcomeKind(Enum):
     PASS = "pass"
     FAIL = "fail"
     COMPILE_ERROR = "compile-error"
+    COMPILE_KILLED = "compile-killed"
     TIMEOUT = "timeout"
     CRASH = "crash"
     SKIPPED = "skipped"
+
+
+def signal_name(returncode: int) -> str:
+    """Name of the signal behind a negative *returncode*, e.g. ``SIGKILL``; ``SIG<n>`` if unnamed."""
+    try:
+        return signal.Signals(-returncode).name
+    except ValueError:
+        return f"SIG{-returncode}"
 
 
 class OutputMode(Enum):

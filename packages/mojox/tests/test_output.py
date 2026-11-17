@@ -372,3 +372,32 @@ class TestDescribeJobs:
     )
     def test_detail_only_for_cpu_relative_specs(self, spec, cpu_count, source, expected):
         assert describe_jobs(spec, cpu_count, source) == expected
+
+
+class TestCompileKilledRendering:
+    @staticmethod
+    def _killed(sig: int = -9) -> Outcome:
+        return _outcome(
+            "lib",
+            OutcomeKind.COMPILE_KILLED,
+            exit_code=sig,
+            stderr="mojox: compile killed by signal 9 (SIGKILL)",
+            cmd_kind=CommandKind.COMPILE_PACKAGE,
+        )
+
+    def test_label_names_the_signal(self):
+        buf = io.StringIO()
+        render_outcome(self._killed(), stream=buf)
+        assert buf.getvalue().startswith("KILLED (SIGKILL) ")
+        assert "COMPILE ERROR" not in buf.getvalue()
+
+    def test_final_output_label_names_the_signal(self):
+        buf = io.StringIO()
+        render_final_output((self._killed(),), stream=buf, failure_output=OutputMode.FINAL)
+        assert "KILLED (SIGKILL) lib" in buf.getvalue()
+
+    def test_summary_counts_killed(self):
+        buf = io.StringIO()
+        render_summary((self._killed(), _outcome("a", OutcomeKind.PASS)), stream=buf)
+        assert "1 killed" in buf.getvalue()
+        assert "compile error" not in buf.getvalue()

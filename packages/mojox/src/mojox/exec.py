@@ -12,6 +12,7 @@ import fcntl
 import hashlib
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -37,7 +38,7 @@ from .cache import (
     write_cache_meta,
 )
 from .diagnostics import parse_diagnostics
-from .types import Outcome, OutcomeKind
+from .types import Outcome, OutcomeKind, signal_name
 
 
 @dataclass(frozen=True)
@@ -409,6 +410,11 @@ def _spawn(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
     return subprocess.run(argv, **kwargs)
 
 
+_COMPILE_KINDS = frozenset(
+    {CommandKind.COMPILE_PACKAGE, CommandKind.COMPILE_BINARY, CommandKind.BUILD_TEST, CommandKind.CHECK_EXAMPLE}
+)
+
+
 def run_command(
     cmd: Command,
     *,
@@ -499,7 +505,12 @@ def run_command(
 
     elapsed = time.monotonic() - start
 
-    if result.returncode < 0:
+    stderr = result.stderr
+    if result.returncode < 0 and cmd.kind in _COMPILE_KINDS:
+        kind = OutcomeKind.COMPILE_KILLED
+        exit_code = result.returncode
+        stderr = _append_killed_note(stderr, result.returncode)
+    elif result.returncode < 0:
         kind = OutcomeKind.CRASH
         exit_code = result.returncode
     elif result.returncode == 0:
@@ -514,10 +525,23 @@ def run_command(
         kind=kind,
         exit_code=exit_code,
         stdout=result.stdout,
-        stderr=result.stderr,
+        stderr=stderr,
         diagnostics=parse_diagnostics(result.stderr),
         elapsed_s=elapsed,
     )
+
+
+def _append_killed_note(stderr: str, returncode: int) -> str:
+    """Append the killed-by-signal explanation to a killed compiler's *stderr*.
+
+    SIGKILL is almost always the kernel OOM killer or a userspace one such
+    as earlyoom, so the note says so.
+    """
+    note = f"mojox: compile killed by signal {-returncode} ({signal_name(returncode)})"
+    if returncode == -signal.SIGKILL:
+        note += "; usually memory pressure (out-of-memory killer), not a code error"
+    sep = "" if not stderr or stderr.endswith("\n") else "\n"
+    return f"{stderr}{sep}{note}\n"
 
 
 def _run_with_start(
@@ -1018,7 +1042,9 @@ def run_cached_test(
         if build_outcome.kind != OutcomeKind.PASS:
             return Outcome(
                 command=cmd,
-                kind=OutcomeKind.COMPILE_ERROR,
+                kind=OutcomeKind.COMPILE_KILLED
+                if build_outcome.kind == OutcomeKind.COMPILE_KILLED
+                else OutcomeKind.COMPILE_ERROR,
                 exit_code=build_outcome.exit_code,
                 stdout=build_outcome.stdout,
                 stderr=build_outcome.stderr,

@@ -121,6 +121,58 @@ class TestRunCommand:
         assert outcome.exit_code < 0
 
 
+class TestCompilerKilledBySignal:
+    """A compiler the OS kills is reported as killed, not as a code error."""
+
+    _KILL = "import os, signal; os.kill(os.getpid(), signal.{sig})"
+
+    @pytest.mark.parametrize(
+        "kind",
+        [CommandKind.COMPILE_PACKAGE, CommandKind.COMPILE_BINARY, CommandKind.BUILD_TEST, CommandKind.CHECK_EXAMPLE],
+    )
+    def test_compile_kinds_report_compile_killed(self, kind: CommandKind):
+        outcome = run_command(_cmd((sys.executable, "-c", self._KILL.format(sig="SIGKILL")), kind=kind))
+        assert outcome.kind == OutcomeKind.COMPILE_KILLED
+        assert outcome.exit_code == -9
+        assert "killed by signal 9 (SIGKILL)" in outcome.stderr
+        assert "out-of-memory" in outcome.stderr
+
+    def test_sigterm_has_no_memory_hint(self):
+        cmd = _cmd((sys.executable, "-c", self._KILL.format(sig="SIGTERM")), kind=CommandKind.COMPILE_BINARY)
+        outcome = run_command(cmd)
+        assert outcome.kind == OutcomeKind.COMPILE_KILLED
+        assert "killed by signal 15 (SIGTERM)" in outcome.stderr
+        assert "out-of-memory" not in outcome.stderr
+
+    def test_killed_compiler_keeps_its_partial_stderr(self):
+        script = "import os, signal, sys; sys.stderr.write('partial\\n'); sys.stderr.flush(); os.kill(os.getpid(), 9)"
+        outcome = run_command(_cmd((sys.executable, "-c", script), kind=CommandKind.COMPILE_BINARY))
+        assert outcome.stderr.startswith("partial\n")
+
+    def test_run_test_signal_death_stays_crash(self):
+        outcome = run_command(_cmd((sys.executable, "-c", self._KILL.format(sig="SIGKILL"))))
+        assert outcome.kind == OutcomeKind.CRASH
+        assert "killed by signal" not in outcome.stderr
+
+    def test_cached_test_build_killed(self, tmp_path: Path):
+        cmd = _build_test_cmd((sys.executable, "-c", self._KILL.format(sig="SIGKILL")), str(tmp_path / "t"))
+        outcome = run_cached_test(cmd, cache_key="k", meta_dir=tmp_path / "meta", compiler_version="v")
+        assert outcome.kind == OutcomeKind.COMPILE_KILLED
+        assert outcome.exit_code == -9
+
+    def test_cached_precompile_killed(self, tmp_path: Path):
+        from mojox.exec import _execute
+
+        out = tmp_path / "p.mojopkg"
+        cmd = _cmd(
+            (sys.executable, "-c", self._KILL.format(sig="SIGKILL"), "-o", str(out)),
+            cwd=PurePosixPath(tmp_path),
+            kind=CommandKind.COMPILE_PACKAGE,
+            outputs=("p.mojopkg",),
+        )
+        assert _execute(cmd, None, (), None).kind == OutcomeKind.COMPILE_KILLED
+
+
 class TestRunCommands:
     def test_empty_command_list(self):
         """Empty input returns empty output."""

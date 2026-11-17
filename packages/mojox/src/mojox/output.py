@@ -13,7 +13,7 @@ from typing import IO
 from mojox_core import Command, CommandKind, Diagnostic
 from mojox_core.errors import escape_for_display
 
-from .types import Outcome, OutcomeKind, OutputMode
+from .types import Outcome, OutcomeKind, OutputMode, signal_name
 
 # -- ANSI helpers -----------------------------------------------------------
 
@@ -49,6 +49,7 @@ _OUTCOME_LABELS: dict[OutcomeKind, tuple[str, str]] = {
     OutcomeKind.TIMEOUT: (_RED_BOLD, "TIMEOUT"),
     OutcomeKind.CRASH: (_RED_BOLD, "CRASH"),
     OutcomeKind.COMPILE_ERROR: (_RED_BOLD, "COMPILE ERROR"),
+    OutcomeKind.COMPILE_KILLED: (_RED_BOLD, "KILLED"),
     OutcomeKind.SKIPPED: (_DIM, "SKIP"),
 }
 
@@ -132,6 +133,14 @@ def render_parallelism(
     out.write(f"{_c(out, _BOLD, 'Using')} {_parallelism(jobs, compile_threads, jobs_detail)}\n")
 
 
+def _outcome_label(outcome: Outcome) -> tuple[str, str]:
+    """Colour and label text for *outcome*; a killed compile names its signal."""
+    code, text = _OUTCOME_LABELS[outcome.kind]
+    if outcome.kind == OutcomeKind.COMPILE_KILLED and outcome.exit_code is not None:
+        text = f"{text} ({signal_name(outcome.exit_code)})"
+    return code, text
+
+
 def _write_output_block(out: IO[str], outcome: Outcome) -> None:
     """Write full stdout + stderr block for an outcome."""
     if outcome.stdout:
@@ -154,11 +163,11 @@ def render_outcome(
     Output visibility is controlled per outcome category:
 
     - *success_output* governs PASS outcomes.
-    - *failure_output* governs FAIL / TIMEOUT / CRASH / COMPILE_ERROR.
+    - *failure_output* governs FAIL / TIMEOUT / CRASH / COMPILE_ERROR / COMPILE_KILLED.
     - SKIPPED outcomes never display output.
     """
     out = stream or sys.stderr
-    code, text = _OUTCOME_LABELS[outcome.kind]
+    code, text = _outcome_label(outcome)
     label = _c(out, code, text)
     timing = _c(out, _DIM, f"[{outcome.elapsed_s:.1f}s]")
     out.write(f"{label} {timing} {outcome.command.target_id}\n")
@@ -217,12 +226,12 @@ def render_final_output(
     successes = [o for o in outcomes if o.kind == OutcomeKind.PASS and success_output == OutputMode.FINAL]
 
     for o in failures:
-        code, text = _OUTCOME_LABELS[o.kind]
+        code, text = _outcome_label(o)
         out.write(f"\n{_c(out, code, text)} {o.command.target_id}\n")
         _write_output_block(out, o)
 
     for o in successes:
-        code, text = _OUTCOME_LABELS[o.kind]
+        code, text = _outcome_label(o)
         out.write(f"\n{_c(out, code, text)} {o.command.target_id}\n")
         _write_output_block(out, o)
 
@@ -246,6 +255,7 @@ def render_summary(
     failed = sum(1 for o in outcomes if o.kind == OutcomeKind.FAIL)
     timed_out = sum(1 for o in outcomes if o.kind == OutcomeKind.TIMEOUT)
     crashed = sum(1 for o in outcomes if o.kind == OutcomeKind.CRASH)
+    killed = sum(1 for o in outcomes if o.kind == OutcomeKind.COMPILE_KILLED)
     compile_errors = sum(1 for o in outcomes if o.kind == OutcomeKind.COMPILE_ERROR)
     skipped = sum(1 for o in outcomes if o.kind == OutcomeKind.SKIPPED)
     total_time = sum(o.elapsed_s for o in outcomes)
@@ -261,6 +271,8 @@ def render_summary(
         parts.append(_c(out, _RED_BOLD, f"{crashed} crashed"))
     if compile_errors:
         parts.append(_c(out, _RED_BOLD, f"{compile_errors} compile error(s)"))
+    if killed:
+        parts.append(_c(out, _RED_BOLD, f"{killed} killed"))
     if skipped:
         parts.append(_c(out, _DIM, f"{skipped} skipped"))
 

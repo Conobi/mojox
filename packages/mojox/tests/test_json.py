@@ -137,6 +137,7 @@ class TestSerializeCommandCompleted:
             OutcomeKind.TIMEOUT: "timeout",
             OutcomeKind.CRASH: "crash",
             OutcomeKind.COMPILE_ERROR: "compile-error",
+            OutcomeKind.COMPILE_KILLED: "compile-killed",
             OutcomeKind.SKIPPED: "skipped",
         }
         for kind, event_name in expected.items():
@@ -146,6 +147,16 @@ class TestSerializeCommandCompleted:
 
 
 class TestSerializeSuiteFinished:
+    def test_compile_killed_counts_as_failure(self):
+        outcomes = (
+            _outcome(kind=OutcomeKind.COMPILE_KILLED, cmd_kind=CommandKind.COMPILE_PACKAGE, target_id="lib"),
+            _outcome(kind=OutcomeKind.COMPILE_KILLED, cmd_kind=CommandKind.BUILD_TEST, target_id="t1"),
+        )
+        event = serialize_suite_finished(outcomes, elapsed_s=1.0)
+        assert event["event"] == "failed"
+        assert event["compile_failed"] == 1
+        assert event["failed"] == 1
+
     def test_all_pass(self):
         outcomes = (
             _outcome(kind=OutcomeKind.PASS, cmd_kind=CommandKind.COMPILE_PACKAGE, target_id="lib"),

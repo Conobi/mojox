@@ -22,6 +22,7 @@ _EVENT_MAP: dict[OutcomeKind, str] = {
     OutcomeKind.TIMEOUT: "timeout",
     OutcomeKind.CRASH: "crash",
     OutcomeKind.COMPILE_ERROR: "compile-error",
+    OutcomeKind.COMPILE_KILLED: "compile-killed",
     OutcomeKind.SKIPPED: "skipped",
 }
 
@@ -112,7 +113,9 @@ def serialize_suite_finished(
     compile_outcomes = [o for o in outcomes if o.command.kind in _COMPILE_KINDS]
 
     passed = sum(1 for o in test_outcomes if o.kind == OutcomeKind.PASS)
-    failed = sum(1 for o in test_outcomes if o.kind in (OutcomeKind.FAIL, OutcomeKind.COMPILE_ERROR))
+    failed = sum(
+        1 for o in test_outcomes if o.kind in (OutcomeKind.FAIL, OutcomeKind.COMPILE_ERROR, OutcomeKind.COMPILE_KILLED)
+    )
     timed_out = sum(1 for o in test_outcomes if o.kind == OutcomeKind.TIMEOUT)
     crashed = sum(1 for o in test_outcomes if o.kind == OutcomeKind.CRASH)
     skipped = sum(1 for o in test_outcomes if o.kind == OutcomeKind.SKIPPED)
