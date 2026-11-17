@@ -48,7 +48,7 @@ uv run mojox test --examples                       # also compile-check examples
 uv run mojox test --no-cache                       # rebuild every test binary
 ```
 
-Each test file is compiled to a binary under `.mojox/cache/` and reused until its sources, dependencies, flags, environment or compiler change. Examples are only checked with `--examples` or an `examples/` path. Add `.mojox/` to your `.gitignore`.
+Each test file is compiled to a binary under `.mojox/cache/` and reused until its sources, dependencies, flags, settings `env` table or toolchain (compiler and `cc`) change. Examples are only checked with `--examples` or an `examples/` path. Add `.mojox/` to your `.gitignore`.
 
 ### `mojox run`
 

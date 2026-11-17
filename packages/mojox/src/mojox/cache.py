@@ -139,8 +139,8 @@ def compute_cache_key(
     mojo_path: str,
     flags: tuple[str, ...],
     env: Mapping[str, str],
-    cc_realpath: str = "",
-    nix_cc: str = "",
+    cc_realpath: str,
+    nix_cc: str,
 ) -> str:
     """Build a composite SHA-256 cache key from all compilation inputs.
 
@@ -161,8 +161,8 @@ def compute_cache_key(
         compiler_version: Mojo compiler version string.
         mojo_path: The compiler binary the build invokes.
         flags: Build argv after the output path, in argv order.
-        env: The user's extra environment (the resolved ``Policy.env``),
-            not the environment the child process receives.
+        env: The settings ``env`` table (``extra_env``), not the
+            environment the child process receives.
         cc_realpath: Real path of the ``cc`` mojo links with; empty when none.
         nix_cc: The plain ``NIX_CC`` value; empty when unset.
     """
@@ -193,8 +193,8 @@ def compute_precompile_key(
     mojo_path: str,
     args: tuple[str, ...],
     env: Mapping[str, str],
-    cc_realpath: str = "",
-    nix_cc: str = "",
+    cc_realpath: str,
+    nix_cc: str,
 ) -> str:
     """Build the cache key of one ``mojo precompile`` invocation.
 
@@ -206,7 +206,7 @@ def compute_precompile_key(
         lib_hash: :func:`hash_directory_tree` of the lib package.
         deps_stamp: :func:`stamp_include_dirs` of its ``-I`` dirs, in order.
         args: The argv after the compiler binary, in order.
-        env: The user's extra environment (the resolved ``Policy.env``).
+        env: The settings ``env`` table (``extra_env``).
         cc_realpath: Real path of the ``cc`` mojo links with; empty when none.
         nix_cc: The plain ``NIX_CC`` value; empty when unset.
     """

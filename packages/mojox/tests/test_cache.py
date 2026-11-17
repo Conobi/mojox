@@ -134,6 +134,8 @@ class TestComputeCacheKey:
             mojo_path="/usr/bin/mojo",
             env={},
             flags=("-O2",),
+            cc_realpath="",
+            nix_cc="",
         )
         k2 = compute_cache_key(
             test_source=src,
@@ -144,6 +146,8 @@ class TestComputeCacheKey:
             mojo_path="/usr/bin/mojo",
             env={},
             flags=("-O2",),
+            cc_realpath="",
+            nix_cc="",
         )
         assert k1 == k2
 
@@ -160,6 +164,8 @@ class TestComputeCacheKey:
             mojo_path="/usr/bin/mojo",
             env={},
             flags=(),
+            cc_realpath="",
+            nix_cc="",
         )
 
         src.write_text("fn main(): return 1")
@@ -172,6 +178,8 @@ class TestComputeCacheKey:
             mojo_path="/usr/bin/mojo",
             env={},
             flags=(),
+            cc_realpath="",
+            nix_cc="",
         )
         assert k1 != k2
 
@@ -189,6 +197,8 @@ class TestComputeCacheKey:
             mojo_path="/usr/bin/mojo",
             env={},
             flags=(),
+            cc_realpath="",
+            nix_cc="",
         )
         k2 = compute_cache_key(
             test_source=src,
@@ -199,6 +209,8 @@ class TestComputeCacheKey:
             mojo_path="/usr/bin/mojo",
             env={},
             flags=(),
+            cc_realpath="",
+            nix_cc="",
         )
         assert k1 != k2
 
@@ -216,6 +228,8 @@ class TestComputeCacheKey:
             mojo_path="/usr/bin/mojo",
             env={},
             flags=("-O2",),
+            cc_realpath="",
+            nix_cc="",
         )
         k2 = compute_cache_key(
             test_source=src,
@@ -226,6 +240,8 @@ class TestComputeCacheKey:
             mojo_path="/usr/bin/mojo",
             env={},
             flags=("-O0",),
+            cc_realpath="",
+            nix_cc="",
         )
         assert k1 != k2
 
@@ -241,6 +257,8 @@ def _key(src: Path, **overrides) -> str:
         "mojo_path": "/usr/bin/mojo",
         "env": {"A": "1"},
         "flags": ("-I", "/x", "-I", "/y"),
+        "cc_realpath": "",
+        "nix_cc": "",
     }
     inputs.update(overrides)
     return compute_cache_key(**inputs)
@@ -562,7 +580,6 @@ class TestToolchainIdentityInKey:
             "args": ("precompile", "src/lib"),
             "env": {},
         }
-        key = compute_precompile_key(**base)
-        assert compute_precompile_key(**base, cc_realpath="/nix/store/a/bin/gcc") != key
-        assert compute_precompile_key(**base, nix_cc="/nix/store/a") != key
-        assert compute_precompile_key(**base, cc_realpath="", nix_cc="") == key
+        key = compute_precompile_key(**base, cc_realpath="", nix_cc="")
+        assert compute_precompile_key(**base, cc_realpath="/nix/store/a/bin/gcc", nix_cc="") != key
+        assert compute_precompile_key(**base, cc_realpath="", nix_cc="/nix/store/a") != key

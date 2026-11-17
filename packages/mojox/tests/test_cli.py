@@ -1224,6 +1224,13 @@ class TestPrecompileCache:
         assert self._run() == 0
         assert self._precompiles(log) == 1
 
+    def test_nix_cc_change_reprecompiles(self, project, monkeypatch):
+        _proj, _dep, log = project
+        assert self._run() == 0
+        monkeypatch.setenv("NIX_CC", "/nix/store/other-gcc-wrapper")
+        assert self._run() == 0
+        assert self._precompiles(log) == 2
+
     def test_profile_and_flags_do_not_reprecompile(self, project):
         """``mojo precompile`` takes no -O/-D/--flag, so its output ignores them."""
         _proj, _dep, log = project

@@ -23,6 +23,8 @@ from mojox.exec import (
 from mojox.types import Outcome, OutcomeKind
 from mojox_core import Command, CommandKind
 
+_NO_CC = {"cc_realpath": "", "nix_cc": ""}
+
 
 def _cmd(argv: tuple[str, ...], **overrides) -> Command:
     """Build a test command with sensible defaults."""
@@ -596,6 +598,16 @@ class TestRunCachedTest:
 class TestCacheContext:
     """Tests for the CacheContext dataclass."""
 
+    def test_construction_without_the_c_compiler_identity_is_a_type_error(self, tmp_path: Path):
+        with pytest.raises(TypeError):
+            CacheContext(  # type: ignore[call-arg]
+                project_hash="abc",
+                tests_tree_hash="def",
+                deps_stamp="ccc",
+                compiler_version="25.4.0",
+                meta_dir=tmp_path / "meta",
+            )
+
     def test_construction_with_defaults(self, tmp_path: Path):
         """CacheContext can be constructed; enabled defaults to True."""
         ctx = CacheContext(
@@ -604,6 +616,7 @@ class TestCacheContext:
             deps_stamp="ccc",
             compiler_version="25.4.0",
             meta_dir=tmp_path / "meta",
+            **_NO_CC,
         )
         assert ctx.project_hash == "abc"
         assert ctx.tests_tree_hash == "def"
@@ -620,6 +633,7 @@ class TestCacheContext:
             compiler_version="25.4.0",
             meta_dir=tmp_path / "meta",
             enabled=False,
+            **_NO_CC,
         )
         assert ctx.enabled is False
 
@@ -631,6 +645,7 @@ class TestCacheContext:
             deps_stamp="ccc",
             compiler_version="25.4.0",
             meta_dir=tmp_path / "meta",
+            **_NO_CC,
         )
         with pytest.raises(AttributeError):
             ctx.project_hash = "new"  # type: ignore[misc]
@@ -705,6 +720,7 @@ def _ctx(tmp_path: Path, include_dirs: tuple[str, ...]) -> CacheContext:
         deps_stamp=stamp_include_dirs(include_dirs),
         compiler_version="1.0.0",
         meta_dir=tmp_path / "meta",
+        **_NO_CC,
     )
 
 
@@ -887,6 +903,7 @@ class TestRunCommandsWithCache:
             deps_stamp="ccc",
             compiler_version="25.4.0",
             meta_dir=meta_dir,
+            **_NO_CC,
         )
 
         results = run_commands((cmd,), cache_context=ctx)
@@ -949,6 +966,7 @@ class TestRunCommandsWithCache:
             compiler_version="25.4.0",
             meta_dir=meta_dir,
             enabled=False,
+            **_NO_CC,
         )
 
         results = run_commands((cmd,), cache_context=ctx)
@@ -989,6 +1007,7 @@ class TestRunCommandsWithCache:
             deps_stamp="ccc",
             compiler_version="25.4.0",
             meta_dir=meta_dir,
+            **_NO_CC,
         )
 
         started: list[str] = []
@@ -1012,6 +1031,7 @@ class TestRunCommandsWithCache:
             deps_stamp="ccc",
             compiler_version="25.4.0",
             meta_dir=Path("/tmp/meta"),
+            **_NO_CC,
         )
         results = run_commands((cmd,), cache_context=ctx)
         assert results[0].kind == OutcomeKind.PASS
@@ -1029,6 +1049,7 @@ class TestRuntimeArgs:
             deps_stamp="ccc",
             compiler_version="1.0.0",
             meta_dir=Path("/meta"),
+            **_NO_CC,
         )
         assert ctx.runtime_args == ()
 
@@ -1041,6 +1062,7 @@ class TestRuntimeArgs:
             compiler_version="1.0.0",
             meta_dir=Path("/meta"),
             runtime_args=("--filter", "test_foo"),
+            **_NO_CC,
         )
         assert ctx.runtime_args == ("--filter", "test_foo")
 
@@ -1141,6 +1163,7 @@ class TestRuntimeArgs:
             compiler_version="25.4.0",
             meta_dir=meta_dir,
             runtime_args=("-k", "test_something"),
+            **_NO_CC,
         )
 
         results = run_commands((cmd,), cache_context=ctx)
@@ -1506,64 +1529,68 @@ class TestPrecompileCacheKey:
 
     def test_unchanged_inputs_give_identical_key(self, tmp_path: Path):
         cmd = _precompile_cmd(tmp_path, "-I", str(tmp_path / "dep"))
-        assert _precompile_cache_key(cmd, None, "1.0.0") == _precompile_cache_key(cmd, None, "1.0.0")
+        assert _precompile_cache_key(cmd, None, "1.0.0", **_NO_CC) == _precompile_cache_key(
+            cmd, None, "1.0.0", **_NO_CC
+        )
 
     def test_lib_edit_changes_key(self, tmp_path: Path):
         cmd = _precompile_cmd(tmp_path)
-        before = _precompile_cache_key(cmd, None, "1.0.0")
+        before = _precompile_cache_key(cmd, None, "1.0.0", **_NO_CC)
         (tmp_path / "src" / "mylib" / "__init__.mojo").write_text("fn lib(): return\n")
-        assert _precompile_cache_key(cmd, None, "1.0.0") != before
+        assert _precompile_cache_key(cmd, None, "1.0.0", **_NO_CC) != before
 
     def test_include_dir_edit_changes_key(self, tmp_path: Path):
         dep = tmp_path / "dep"
         (dep / "navette").mkdir(parents=True)
         (dep / "navette" / "__init__.mojo").write_text("a")
         cmd = _precompile_cmd(tmp_path, "-I", str(dep))
-        before = _precompile_cache_key(cmd, None, "1.0.0")
+        before = _precompile_cache_key(cmd, None, "1.0.0", **_NO_CC)
         (dep / "navette" / "__init__.mojo").write_text("ab")
-        assert _precompile_cache_key(cmd, None, "1.0.0") != before
+        assert _precompile_cache_key(cmd, None, "1.0.0", **_NO_CC) != before
 
     def test_relative_include_dir_is_resolved_against_cwd(self, tmp_path: Path, monkeypatch):
         (tmp_path / "vendored").mkdir()
         cmd = _precompile_cmd(tmp_path, "-I", "vendored")
-        before = _precompile_cache_key(cmd, None, "1.0.0")
+        before = _precompile_cache_key(cmd, None, "1.0.0", **_NO_CC)
         monkeypatch.chdir("/")
         (tmp_path / "vendored" / "x.mojo").write_text("")
-        assert _precompile_cache_key(cmd, None, "1.0.0") != before
+        assert _precompile_cache_key(cmd, None, "1.0.0", **_NO_CC) != before
 
     def test_include_reorder_changes_key(self, tmp_path: Path):
         a, b = str(tmp_path / "a"), str(tmp_path / "b")
-        first = _precompile_cache_key(_precompile_cmd(tmp_path, "-I", a, "-I", b), None, "1.0.0")
-        assert _precompile_cache_key(_precompile_cmd(tmp_path, "-I", b, "-I", a), None, "1.0.0") != first
+        first = _precompile_cache_key(_precompile_cmd(tmp_path, "-I", a, "-I", b), None, "1.0.0", **_NO_CC)
+        assert _precompile_cache_key(_precompile_cmd(tmp_path, "-I", b, "-I", a), None, "1.0.0", **_NO_CC) != first
 
     def test_extra_flag_changes_key(self, tmp_path: Path):
-        base = _precompile_cache_key(_precompile_cmd(tmp_path), None, "1.0.0")
-        assert _precompile_cache_key(_precompile_cmd(tmp_path, "--Werror"), None, "1.0.0") != base
+        base = _precompile_cache_key(_precompile_cmd(tmp_path), None, "1.0.0", **_NO_CC)
+        assert _precompile_cache_key(_precompile_cmd(tmp_path, "--Werror"), None, "1.0.0", **_NO_CC) != base
 
     def test_settings_env_changes_key_but_the_planner_env_does_not(self, tmp_path: Path):
         cmd = _precompile_cmd(tmp_path)
-        base = _precompile_cache_key(cmd, None, "1.0.0")
-        assert _precompile_cache_key(cmd, {"MODULAR_X": "1"}, "1.0.0") != base
+        base = _precompile_cache_key(cmd, None, "1.0.0", **_NO_CC)
+        assert _precompile_cache_key(cmd, {"MODULAR_X": "1"}, "1.0.0", **_NO_CC) != base
         other = _precompile_cmd(tmp_path, env={"PATH": "/usr/bin", "HOME": "", "LANG": "fr_FR.UTF-8"})
-        assert _precompile_cache_key(other, None, "1.0.0") == base
+        assert _precompile_cache_key(other, None, "1.0.0", **_NO_CC) == base
 
     def test_mojo_path_changes_key(self, tmp_path: Path):
-        base = _precompile_cache_key(_precompile_cmd(tmp_path), None, "1.0.0")
-        assert _precompile_cache_key(_precompile_cmd(tmp_path, mojo="/other/mojo"), None, "1.0.0") != base
+        base = _precompile_cache_key(_precompile_cmd(tmp_path), None, "1.0.0", **_NO_CC)
+        assert _precompile_cache_key(_precompile_cmd(tmp_path, mojo="/other/mojo"), None, "1.0.0", **_NO_CC) != base
 
     def test_compiler_version_changes_key(self, tmp_path: Path):
         cmd = _precompile_cmd(tmp_path)
-        assert _precompile_cache_key(cmd, None, "1.0.0") != _precompile_cache_key(cmd, None, "1.0.1")
+        assert _precompile_cache_key(cmd, None, "1.0.0", **_NO_CC) != _precompile_cache_key(
+            cmd, None, "1.0.1", **_NO_CC
+        )
 
     def test_missing_lib_dir_is_uncacheable(self, tmp_path: Path):
         cmd = _precompile_cmd(tmp_path)
         (tmp_path / "src" / "mylib" / "__init__.mojo").unlink()
         (tmp_path / "src" / "mylib").rmdir()
-        assert _precompile_cache_key(cmd, None, "1.0.0") is None
+        assert _precompile_cache_key(cmd, None, "1.0.0", **_NO_CC) is None
 
     def test_malformed_argv_is_uncacheable(self, tmp_path: Path):
         cmd = _cmd(("/opt/mojo", "precompile", "src/mylib"), kind=CommandKind.COMPILE_PACKAGE)
-        assert _precompile_cache_key(cmd, None, "1.0.0") is None
+        assert _precompile_cache_key(cmd, None, "1.0.0", **_NO_CC) is None
 
 
 # Fake precompiler: logs each call, writes ``pkg:<n>`` to the -o path, or
@@ -1689,7 +1716,12 @@ class TestRunCachedPrecompile:
         cmd, meta_dir, log, _package = setup
         test = _cmd((sys.executable, "-c", "pass"), target_id="t.mojo", depends_on=(cmd.target_id,))
         ctx = CacheContext(
-            project_hash="a", tests_tree_hash="b", deps_stamp="c", compiler_version="1.0.0", meta_dir=meta_dir
+            project_hash="a",
+            tests_tree_hash="b",
+            deps_stamp="c",
+            compiler_version="1.0.0",
+            meta_dir=meta_dir,
+            **_NO_CC,
         )
         for _ in range(2):
             results = run_commands((cmd, test), cache_context=ctx)
@@ -1705,6 +1737,7 @@ class TestRunCachedPrecompile:
             compiler_version="1.0.0",
             meta_dir=meta_dir,
             enabled=False,
+            **_NO_CC,
         )
         run_commands((cmd,), cache_context=ctx)
         run_commands((cmd,), cache_context=ctx)
@@ -1763,7 +1796,7 @@ class TestSettingsLocalePrecedence:
         seen: dict[str, object] = {}
         monkeypatch.setattr(exec_mod, "compute_precompile_key", lambda **kw: seen.update(kw) or "k")
         cmd = _precompile_cmd(tmp_path, env={"PATH": "/usr/bin", "HOME": "", "LC_ALL": "C.UTF-8", "TMPDIR": "/run/t"})
-        _precompile_cache_key(cmd, {"LANG": "fr_FR.UTF-8"}, "1.0.0")
+        _precompile_cache_key(cmd, {"LANG": "fr_FR.UTF-8"}, "1.0.0", **_NO_CC)
         assert seen["env"] == {"LANG": "fr_FR.UTF-8"}
 
     def test_settings_locale_change_changes_key(self, tmp_path: Path):
@@ -1787,7 +1820,7 @@ class TestKeyIgnoresPerRunHostEnv:
     def test_per_run_variables_keep_the_precompile_key(self, tmp_path: Path):
         a = _precompile_cmd(tmp_path, env={**_HOST_ENV, "TMPDIR": "/tmp/a"})
         b = _precompile_cmd(tmp_path, env={**_HOST_ENV, "TMPDIR": "/tmp/b", "NIX_BUILD_CORES": "8"})
-        assert _precompile_cache_key(a, None, "1.0.0") == _precompile_cache_key(b, None, "1.0.0")
+        assert _precompile_cache_key(a, None, "1.0.0", **_NO_CC) == _precompile_cache_key(b, None, "1.0.0", **_NO_CC)
 
     def test_cc_realpath_changes_the_test_key(self, tmp_path: Path):
         cmd = _planner_cmd(tmp_path)
@@ -1803,9 +1836,9 @@ class TestKeyIgnoresPerRunHostEnv:
 
     def test_cc_identity_changes_the_precompile_key(self, tmp_path: Path):
         cmd = _precompile_cmd(tmp_path)
-        base = _precompile_cache_key(cmd, None, "1.0.0")
-        assert _precompile_cache_key(cmd, None, "1.0.0", "/nix/store/a/bin/gcc", "") != base
-        assert _precompile_cache_key(cmd, None, "1.0.0", "", "/nix/store/a") != base
+        base = _precompile_cache_key(cmd, None, "1.0.0", **_NO_CC)
+        assert _precompile_cache_key(cmd, None, "1.0.0", cc_realpath="/nix/store/a/bin/gcc", nix_cc="") != base
+        assert _precompile_cache_key(cmd, None, "1.0.0", cc_realpath="", nix_cc="/nix/store/a") != base
 
     def test_compiler_binary_and_version_still_change_the_key(self, tmp_path: Path):
         ctx = _ctx(tmp_path, ())
@@ -1813,14 +1846,18 @@ class TestKeyIgnoresPerRunHostEnv:
             _planner_cmd(tmp_path, mojo="/opt/b/mojo"), ctx, None
         )
         cmd = _precompile_cmd(tmp_path)
-        assert _precompile_cache_key(cmd, None, "1.0.0") != _precompile_cache_key(cmd, None, "1.0.1")
+        assert _precompile_cache_key(cmd, None, "1.0.0", **_NO_CC) != _precompile_cache_key(
+            cmd, None, "1.0.1", **_NO_CC
+        )
 
     def test_settings_env_still_changes_both_keys(self, tmp_path: Path):
         ctx = _ctx(tmp_path, ())
         cmd = _planner_cmd(tmp_path)
         assert _build_test_cache_key(cmd, ctx, {"X": "1"}) != _build_test_cache_key(cmd, ctx, {"X": "2"})
         pre = _precompile_cmd(tmp_path)
-        assert _precompile_cache_key(pre, {"X": "1"}, "1.0.0") != _precompile_cache_key(pre, {"X": "2"}, "1.0.0")
+        assert _precompile_cache_key(pre, {"X": "1"}, "1.0.0", **_NO_CC) != _precompile_cache_key(
+            pre, {"X": "2"}, "1.0.0", **_NO_CC
+        )
 
 
 class TestForwardedEnvPrecedence:

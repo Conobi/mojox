@@ -47,9 +47,11 @@ With `--bundle`, test files without `test_*` functions are left out of the bundl
 
 #### Binary cache
 
-Build outputs live under `.mojox/cache/`: test binaries in `bin/`, their cache keys in `meta/`, example builds in `examples/`. A test is rebuilt only when its key changes. The key covers the test source, the project's library and test trees, every include dir passed via `-I`, including dependency dirs and `-I` entries in manifest, profile or `--flag` flags (file size and mtime, not content), the compiler flags, the build environment and the compiler. `mojox cache clean` deletes `.mojox/cache/`.
+Build outputs live under `.mojox/cache/`: test binaries in `bin/`, their cache keys in `meta/`, example builds in `examples/`. A test is rebuilt only when its key changes. The key covers the test source, the project's library and test trees, every include dir passed via `-I`, including dependency dirs and `-I` entries in manifest, profile or `--flag` flags (file size and mtime, not content), the compiler flags, the settings `env` table and the toolchain (the compiler, and the real path of the `cc` it links with and `NIX_CC`). Host variables such as `TMPDIR` or the locale never enter the key. `mojox cache clean` deletes `.mojox/cache/`.
 
-Precompiled library packages (`.mojox/build/pkg/`) are cached too, by `test`, `build` and `check` alike: a lib is precompiled again only when its sources, the dependency include dirs, the precompile arguments, the environment or the compiler change, or when its package is missing.
+Precompiled library packages (`.mojox/build/pkg/`) are cached too, by `test`, `build` and `check` alike: a lib is precompiled again only when its sources, the dependency include dirs, the precompile arguments, the settings `env` table or the toolchain change, or when its package is missing.
+
+`mojo` and the test binaries run with an allowlisted environment, not yours. Forwarded: the process `PATH` (absolute entries only, none inside the project, the mojo directory first), `CC`, `CXX`, `AR`, `LD`, `PKG_CONFIG_PATH`, `CARGO_HOME`, `CARGO_TARGET_DIR`, `RUSTFLAGS`, `SSL_CERT_FILE`, `TMPDIR`, `SOURCE_DATE_EPOCH` and the Nix compiler-wrapper variables (`NIX_CC`, `NIX_LDFLAGS`, ...). `LD_LIBRARY_PATH`, `PYTHONPATH`, `NIX_CONFIG` and everything else are not. A value in a settings file's `env` table wins over a forwarded one. `mojox metadata` lists the forwarded names, never the values.
 
 Add `.mojox/` to your `.gitignore`.
 

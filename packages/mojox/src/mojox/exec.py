@@ -48,8 +48,8 @@ class CacheContext:
     (dependency, manifest or profile flags, CLI flags) put it there. That
     stamp is memoised per dir list, since most commands share one.
     ``COMPILE_PACKAGE`` commands only use ``compiler_version``, the
-    toolchain identity, ``meta_dir`` and ``enabled``: their key is computed per command (see
-    :func:`_precompile_cache_key`).
+    toolchain identity, ``meta_dir`` and ``enabled``: their key is computed
+    per command (see :func:`_precompile_cache_key`).
 
     Attributes:
         project_hash: Hash of the project's library source trees.
@@ -82,8 +82,8 @@ class CacheContext:
     enabled: bool = True
     runtime_args: tuple[str, ...] = ()
     unstamped_dirs: frozenset[str] = frozenset()
-    cc_realpath: str = ""
-    nix_cc: str = ""
+    cc_realpath: str = field(kw_only=True)
+    nix_cc: str = field(kw_only=True)
     _stamps: dict[tuple[str, ...], str] = field(default_factory=dict, init=False, compare=False, repr=False)
     _stamps_lock: threading.Lock = field(default_factory=threading.Lock, init=False, compare=False, repr=False)
 
@@ -272,8 +272,9 @@ def _precompile_cache_key(
     cmd: Command,
     extra_env: dict[str, str] | None,
     compiler_version: str,
-    cc_realpath: str = "",
-    nix_cc: str = "",
+    *,
+    cc_realpath: str,
+    nix_cc: str,
 ) -> str | None:
     """Return the cache key for a COMPILE_PACKAGE command, or ``None`` if uncacheable.
 
@@ -282,8 +283,8 @@ def _precompile_cache_key(
     of each ``-I`` dir in argv order (relative ones resolved against
     ``cmd.cwd``, as the compiler resolves them), the whole argv, the
     compiler binary and version, the settings env (*extra_env*) and the
-    toolchain identity (*cc_realpath*, *nix_cc*). Another layout, or a lib that is not a
-    readable directory, is uncacheable: it always precompiles.
+    toolchain identity (*cc_realpath*, *nix_cc*). Another layout, or a lib
+    that is not a readable directory, is uncacheable: it always precompiles.
     """
     argv = cmd.argv
     if len(argv) < 5 or argv[3] != "-o":
@@ -318,7 +319,11 @@ def _resolve_cache_for_precompile(
     """Route a COMPILE_PACKAGE command through :func:`run_cached_precompile`."""
     cache_key = (
         _precompile_cache_key(
-            cmd, extra_env, cache_context.compiler_version, cache_context.cc_realpath, cache_context.nix_cc
+            cmd,
+            extra_env,
+            cache_context.compiler_version,
+            cc_realpath=cache_context.cc_realpath,
+            nix_cc=cache_context.nix_cc,
         )
         if cache_context.enabled
         else None

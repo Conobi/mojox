@@ -392,6 +392,10 @@ def _resolve_pipeline(
         print(str(e), file=sys.stderr)
         raise _ToolchainUnavailable(2) from None
 
+    # The policy needed the CPU count before the toolchain was looked up; the
+    # PATH and `cc` facts need the compiler's directory, so read them again.
+    host = read_host_facts(root, environ=os.environ, mojo_path=toolchain.mojo_path)
+
     dists = read_distributions()
     lock_data = read_lockfile(root)
     try:
@@ -419,6 +423,7 @@ def _make_cache_context(
     implicit_dirs: Iterable[str],
     compiler_version: str,
     no_cache: bool,
+    host: HostFacts,
 ) -> CacheContext:
     """Compute the per-invocation inputs of the AOT binary cache key.
 
@@ -430,6 +435,8 @@ def _make_cache_context(
     (``.mojox/build/pkg``): its packages are a function of the lib sources,
     the include dirs, the environment and the compiler, which this key
     covers too, and each is only replaced under its own precompile cache key.
+    *host* supplies the C toolchain identity (``cc_realpath``, ``nix_cc``) that
+    both keys hash.
     """
     import hashlib
 
@@ -447,10 +454,12 @@ def _make_cache_context(
         meta_dir=root / ".mojox" / "cache" / "meta",
         enabled=not no_cache,
         unstamped_dirs=frozenset({os.path.normpath(root / ".mojox" / "build" / "pkg")}),
+        cc_realpath=host.cc_realpath,
+        nix_cc=host.nix_cc,
     )
 
 
-def _precompile_cache_context(compiler_version: str) -> CacheContext:
+def _precompile_cache_context(compiler_version: str, host: HostFacts) -> CacheContext:
     """Cache context for subcommands that plan no test: only precompiles consult it.
 
     ``build`` and ``check`` rewrite the same ``.mojox/build/pkg`` packages as
@@ -459,7 +468,12 @@ def _precompile_cache_context(compiler_version: str) -> CacheContext:
     Precompile keys are computed per command, so the tree hashes are skipped.
     """
     return _make_cache_context(
-        lib_paths=(), test_roots=(), implicit_dirs=(), compiler_version=compiler_version, no_cache=False
+        lib_paths=(),
+        test_roots=(),
+        implicit_dirs=(),
+        compiler_version=compiler_version,
+        no_cache=False,
+        host=host,
     )
 
 
@@ -563,6 +577,7 @@ def _cmd_test(args: argparse.Namespace) -> None:
         implicit_dirs=(),
         compiler_version=toolchain.version,
         no_cache=no_cache,
+        host=host,
     )
 
     # --- Bundle mode ---
@@ -987,6 +1002,9 @@ def _cmd_run(args: argparse.Namespace) -> None:
         print(str(e), file=sys.stderr)
         sys.exit(2)
 
+    # Read again now that the compiler's directory is known.
+    host = read_host_facts(root, environ=os.environ, mojo_path=toolchain.mojo_path)
+
     dists = read_distributions()
     lock_data = read_lockfile(root)
     env = build_env(dists, lock_data, mojo_path=toolchain.mojo_path, mojo_version=toolchain.version)
@@ -1030,6 +1048,7 @@ def _cmd_run(args: argparse.Namespace) -> None:
         implicit_dirs=(str((root / args.file).parent),),
         compiler_version=toolchain.version,
         no_cache=args.no_cache,
+        host=host,
     )
     outcomes = run_commands(
         commands,
@@ -1099,7 +1118,7 @@ def _cmd_build(args: argparse.Namespace) -> None:
                 success_output=OutputMode.IMMEDIATE if args.verbose else OutputMode.NEVER,
                 failure_output=OutputMode.IMMEDIATE,
             ),
-            cache_context=_precompile_cache_context(toolchain.version),
+            cache_context=_precompile_cache_context(toolchain.version, host),
         )
     except KeyboardInterrupt:
         print(f"\n{_interrupted_summary(build_commands)}", file=sys.stderr)
@@ -1188,7 +1207,7 @@ def _cmd_check(args: argparse.Namespace) -> None:
             max_workers=policy.jobs_compile,
             extra_env=dict(policy.env) or None,
             include_paths=include_paths,
-            cache_context=_precompile_cache_context(toolchain.version),
+            cache_context=_precompile_cache_context(toolchain.version, host),
         )
     except KeyboardInterrupt:
         print(f"\n{_interrupted_summary(compile_commands)}", file=sys.stderr)
