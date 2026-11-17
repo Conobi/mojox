@@ -8,3 +8,7 @@ __pycache__/
 dist/
 *.egg-info/
 .venv/
+
+# Local secrets and research notes
+/.env
+/research/
