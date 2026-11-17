@@ -858,6 +858,10 @@ def _run_bundle_test(
     ``__init__.mojo`` stubs, and compiles+executes the harness as a
     single ``BUILD_TEST`` command through the existing cache pipeline.
 
+    With no test function in scope, the harness is skipped and only the
+    requested examples run (their cache context carries neither the staging
+    dir nor the ``-k`` pattern).
+
     Pattern A test files (no ``test_*`` functions) are excluded with
     a diagnostic printed to stderr.
 
@@ -920,37 +924,6 @@ def _run_bundle_test(
         module_path = file_path_to_module_path(cmd.target_id)
         bundle_modules.append(TestModule(module_path, cmd.target_id, funcs))
 
-    if not bundle_modules:
-        print("No test functions found for bundling", file=sys.stderr)
-        if output_format == OutputFormat.JSON:
-            from .json import JsonEventWriter, serialize_suite_finished, serialize_suite_started
-
-            writer = JsonEventWriter(sys.stdout)
-            writer.write_event(
-                serialize_suite_started(0, jobs=1, compile_threads=policy.compile_threads, mode="bundle")
-            )
-            writer.write_event(serialize_suite_finished((), elapsed_s=0.0))
-        return
-
-    for diag in diagnostics:
-        print(f"bundle: {diag}", file=sys.stderr)
-
-    # --- Generate harness and staging area ---
-    harness_source = generate_harness(bundle_modules)
-    test_file_paths = [m.file_path for m in bundle_modules]
-    staging_result = create_bundle_staging(root, test_file_paths, harness_source)
-
-    bundle_commands = _plan_bundle(
-        root=root,
-        graph=graph,
-        env=env,
-        policy=policy,
-        toolchain=toolchain,
-        host=host,
-        harness_rel=str(staging_result.harness_path.relative_to(root)),
-        staging_include=staging_result.include_path,
-    )
-
     example_commands = _plan_bundle_examples(
         graph=graph,
         env=env,
@@ -959,26 +932,55 @@ def _run_bundle_test(
         host=host,
         example_ids=frozenset(c.target_id for c in commands if c.kind == CommandKind.CHECK_EXAMPLE),
     )
+    # The harness is one command; -j only matters for the example checks.
+    jobs = policy.jobs_compile if example_commands else 1
+
+    if not bundle_modules:
+        print("No test functions found for bundling", file=sys.stderr)
+        if not example_commands:
+            if output_format == OutputFormat.JSON:
+                from .json import JsonEventWriter, serialize_suite_finished, serialize_suite_started
+
+                writer = JsonEventWriter(sys.stdout)
+                writer.write_event(
+                    serialize_suite_started(0, jobs=1, compile_threads=policy.compile_threads, mode="bundle")
+                )
+                writer.write_event(serialize_suite_finished((), elapsed_s=0.0))
+            return
+
+    for diag in diagnostics:
+        print(f"bundle: {diag}", file=sys.stderr)
+
+    # --- Generate harness and staging area (none when no test function is in scope) ---
+    bundle_commands: tuple[Command, ...] = ()
+    bundle_include = include_paths
+    cache_ctx = _test_cache_context(manifest, graph, toolchain, host, no_cache=no_cache)
+    example_ctx = cache_ctx
+    if bundle_modules:
+        harness_source = generate_harness(bundle_modules)
+        test_file_paths = [m.file_path for m in bundle_modules]
+        staging_result = create_bundle_staging(root, test_file_paths, harness_source)
+        bundle_commands = _plan_bundle(
+            root=root,
+            graph=graph,
+            env=env,
+            policy=policy,
+            toolchain=toolchain,
+            host=host,
+            harness_rel=str(staging_result.harness_path.relative_to(root)),
+            staging_include=staging_result.include_path,
+        )
+        bundle_include = (staging_result.include_path, *include_paths)
+        cache_ctx = replace(
+            cache_ctx,
+            runtime_args=(filter_pattern,) if filter_pattern else (),
+            unstamped_dirs=cache_ctx.unstamped_dirs | {os.path.normpath(staging_result.include_path)},
+        )
+
     all_commands = (*bundle_commands, *example_commands)
     if dry_run:
         _print_dry_run(all_commands, output_format, verbose=verbose)
         return
-    # The harness is one command; -j only matters for the example checks.
-    jobs = policy.jobs_compile if example_commands else 1
-
-    # Runtime -k filter passed as argv to the binary
-    runtime_args: tuple[str, ...] = ()
-    if filter_pattern:
-        runtime_args = (filter_pattern,)
-
-    bundle_include = (staging_result.include_path, *include_paths)
-
-    cache_ctx = _test_cache_context(manifest, graph, toolchain, host, no_cache=no_cache)
-    cache_ctx = replace(
-        cache_ctx,
-        runtime_args=runtime_args,
-        unstamped_dirs=cache_ctx.unstamped_dirs | {os.path.normpath(staging_result.include_path)},
-    )
 
     # --- Callbacks ---
     on_start = None
@@ -1007,38 +1009,41 @@ def _run_bundle_test(
             compile_threads=policy.compile_threads,
             jobs_detail=_jobs_detail(policy, host, jobs),
         )
-        render_bundle_header(
-            functions=sum(len(m.functions) for m in bundle_modules),
-            examples=sum(1 for c in example_commands if c.kind == CommandKind.CHECK_EXAMPLE),
-            origin=_origin(policy, "test-bundle"),
-            timeout_s=policy.timeout_s,
-            timeout_origin=_origin(policy, "timeout"),
-        )
+        if bundle_modules:
+            render_bundle_header(
+                functions=sum(len(m.functions) for m in bundle_modules),
+                examples=sum(1 for c in example_commands if c.kind == CommandKind.CHECK_EXAMPLE),
+                origin=_origin(policy, "test-bundle"),
+                timeout_s=policy.timeout_s,
+                timeout_origin=_origin(policy, "timeout"),
+            )
         on_complete = make_progress_callback(
             success_output=success_output,
             failure_output=failure_output,
         )
 
-    # --- Execute: the harness, then the example checks ---
-    def run(batch: tuple[Command, ...], workers: int) -> tuple[Outcome, ...]:
+    # --- Execute: the harness, then the example checks (without the harness's staging and -k) ---
+    def run(
+        batch: tuple[Command, ...], workers: int, include: tuple[str, ...], ctx: CacheContext
+    ) -> tuple[Outcome, ...]:
         return run_commands(
             batch,
             max_workers=workers,
             extra_env=dict(policy.env) or None,
-            include_paths=bundle_include,
+            include_paths=include,
             on_start=on_start,
             on_complete=on_complete,
             fail_fast=fail_fast,
-            cache_context=cache_ctx,
+            cache_context=ctx,
         )
 
     wall_start = time.monotonic()
     try:
-        outcomes = run(bundle_commands, 1)
+        outcomes = run(bundle_commands, 1, bundle_include, cache_ctx) if bundle_commands else ()
         if example_commands:
             blocked = _examples_blocked(outcomes, fail_fast=fail_fast)
             if blocked is None:
-                outcomes += run(example_commands, jobs)
+                outcomes += run(example_commands, jobs, include_paths, example_ctx)
             else:
                 outcomes += _skipped(example_commands, blocked, on_complete)
     except KeyboardInterrupt:

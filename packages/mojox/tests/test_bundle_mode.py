@@ -644,3 +644,34 @@ class TestFilterWithNoMatch:
         assert _test("--bundle", "-k", "no_such_test") == 0
         assert _harness_built(log)
         assert "No tests match the filter" not in capsys.readouterr().err
+
+
+class TestExamplesWithoutTestFunctions:
+    def test_asked_examples_are_still_checked_without_a_harness(self, project, capsys):
+        _proj, log = project
+        assert _test("--bundle", "--examples", "examples/hello", "--output-format", "json") == 0
+        assert _calls(log) == [_EXAMPLE_BUILD]
+        assert _events(capsys.readouterr().out) == {"examples/hello/main.mojo": "ok"}
+
+    def test_a_broken_example_fails_the_run(self, project):
+        proj, _log = project
+        (proj / "examples" / "hello" / "main.mojo").write_text("COMPILE_ERROR\n")
+        assert _test("--bundle", "--examples", "examples/hello") == 2
+
+    def test_header_does_not_claim_a_binary(self, project, capsys):
+        assert _test("--bundle", "--examples", "examples/hello") == 0
+        err = capsys.readouterr().err
+        assert "No test functions found for bundling" in err
+        assert "1 binary" not in err
+
+    def test_dry_run_lists_the_examples(self, project, capsys):
+        import json
+
+        assert _test("--bundle", "--examples", "examples/hello", "--dry-run", "--output-format", "json") == 0
+        listed = json.loads(capsys.readouterr().out)["commands"]
+        assert [(c["kind"], c["target_id"]) for c in listed] == [("check-example", "examples/hello/main.mojo")]
+
+    def test_without_examples_nothing_runs(self, project, capsys):
+        _proj, log = project
+        assert _test("--bundle", "tests/nothing_here") == 0
+        assert _calls(log) == []
