@@ -516,7 +516,6 @@ def _cmd_test(args: argparse.Namespace) -> None:
     from .output import (
         make_progress_callback,
         render_diagnostics,
-        render_dry_run,
         render_final_output,
         render_starting,
         render_summary,
@@ -586,31 +585,6 @@ def _cmd_test(args: argparse.Namespace) -> None:
     else:
         failure_output = OutputMode.IMMEDIATE
 
-    # --- Dry-run ---
-    if args.dry_run:
-        if output_format == OutputFormat.JSON:
-            import json as json_mod
-
-            dry_commands = [{"target_id": c.target_id, "kind": c.kind.value, "argv": list(c.argv)} for c in commands]
-            json_mod.dump({"type": "dry-run", "commands": dry_commands}, sys.stdout, indent=2)
-            sys.stdout.write("\n")
-        else:
-            render_dry_run(commands, compact=not args.verbose)
-        return
-
-    # --- Cache context ---
-    from mojox_core import TargetKind
-
-    no_cache = getattr(args, "no_cache", False)
-    cache_ctx = _make_cache_context(
-        lib_paths=[t.path for t in graph.targets if t.kind == TargetKind.LIB],
-        test_roots=manifest.test_roots,
-        implicit_dirs=(),
-        compiler_version=toolchain.version,
-        no_cache=no_cache,
-        host=host,
-    )
-
     # --- Bundle mode ---
     if is_bundle:
         _print_bundle_notes(
@@ -619,6 +593,7 @@ def _cmd_test(args: argparse.Namespace) -> None:
             examples=any(c.kind == CommandKind.CHECK_EXAMPLE for c in commands),
         )
         _run_bundle_test(
+            manifest=manifest,
             graph=graph,
             env=env,
             policy=policy,
@@ -626,7 +601,9 @@ def _cmd_test(args: argparse.Namespace) -> None:
             host=host,
             commands=commands,
             include_paths=include_paths,
-            cache_ctx=cache_ctx,
+            no_cache=getattr(args, "no_cache", False),
+            dry_run=args.dry_run,
+            verbose=args.verbose,
             output_format=output_format,
             filter_pattern=filter_pattern,
             fail_fast=fail_fast,
@@ -634,6 +611,14 @@ def _cmd_test(args: argparse.Namespace) -> None:
             failure_output=failure_output,
         )
         return
+
+    # --- Dry-run ---
+    if args.dry_run:
+        _print_dry_run(commands, output_format, verbose=args.verbose)
+        return
+
+    # --- Cache context ---
+    cache_ctx = _test_cache_context(manifest, graph, toolchain, host, no_cache=getattr(args, "no_cache", False))
 
     # --- Build callbacks ---
     on_start = None
@@ -769,6 +754,35 @@ def _plan_bundle(
     return plan(TargetGraph(targets=(harness,), edges=()), env, bundle_policy, toolchain, host)
 
 
+def _test_cache_context(
+    manifest: Manifest, graph: TargetGraph, toolchain: Toolchain, host: HostFacts, *, no_cache: bool
+) -> CacheContext:
+    """The binary cache context of a ``mojox test`` run: lib targets and test roots hashed, nothing stamped up front."""
+    from mojox_core import TargetKind
+
+    return _make_cache_context(
+        lib_paths=[t.path for t in graph.targets if t.kind == TargetKind.LIB],
+        test_roots=manifest.test_roots,
+        implicit_dirs=(),
+        compiler_version=toolchain.version,
+        no_cache=no_cache,
+        host=host,
+    )
+
+
+def _print_dry_run(commands: tuple[Command, ...], output_format: OutputFormat, *, verbose: bool) -> None:
+    """Print planned commands: one JSON document on stdout, or the human plan on stderr (grouped unless *verbose*)."""
+    from .output import render_dry_run
+    from .types import OutputFormat
+
+    if output_format == OutputFormat.JSON:
+        dry_commands = [{"target_id": c.target_id, "kind": c.kind.value, "argv": list(c.argv)} for c in commands]
+        json.dump({"type": "dry-run", "commands": dry_commands}, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+    else:
+        render_dry_run(commands, compact=not verbose)
+
+
 def _plan_bundle_examples(
     *,
     graph: TargetGraph,
@@ -820,6 +834,7 @@ def _skipped(
 
 def _run_bundle_test(
     *,
+    manifest: Manifest,
     graph: TargetGraph,
     env: ResolvedEnv,
     policy: Policy,
@@ -827,7 +842,9 @@ def _run_bundle_test(
     host: HostFacts,
     commands: tuple[Command, ...],
     include_paths: tuple[str, ...],
-    cache_ctx: CacheContext,
+    no_cache: bool,
+    dry_run: bool,
+    verbose: bool,
     output_format: OutputFormat,
     filter_pattern: str | None,
     fail_fast: bool,
@@ -855,7 +872,9 @@ def _run_bundle_test(
     The harness runs in one call to ``run_commands``. Requested examples are
     planned per file and checked in a second call, with ``policy.jobs_compile``
     workers, once the harness is done; ``--fail-fast`` skips them when it did
-    not pass.
+    not pass. With *dry_run* the staging area is still created, since the
+    harness path is named after its hash, but nothing is compiled; the area is
+    left in place like any other, as a concurrent run may use it.
     """
     import time
     from dataclasses import replace
@@ -941,6 +960,9 @@ def _run_bundle_test(
         example_ids=frozenset(c.target_id for c in commands if c.kind == CommandKind.CHECK_EXAMPLE),
     )
     all_commands = (*bundle_commands, *example_commands)
+    if dry_run:
+        _print_dry_run(all_commands, output_format, verbose=verbose)
+        return
     # The harness is one command; -j only matters for the example checks.
     jobs = policy.jobs_compile if example_commands else 1
 
@@ -951,6 +973,7 @@ def _run_bundle_test(
 
     bundle_include = (staging_result.include_path, *include_paths)
 
+    cache_ctx = _test_cache_context(manifest, graph, toolchain, host, no_cache=no_cache)
     cache_ctx = replace(
         cache_ctx,
         runtime_args=runtime_args,

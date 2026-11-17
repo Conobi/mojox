@@ -299,7 +299,6 @@ class TestMetadata:
             "tests/test_a.mojo",
             "tests/test_b.mojo",
         }
-        assert not (proj / ".mojox" / "bundle").exists()
         assert _calls(log) == []
 
     def test_no_bundle_flag_is_the_origin(self, project, capsys):
@@ -609,3 +608,39 @@ class TestExamples:
 
         assert _test("--bundle", "--output-format", "json", "-j", "2") == 0
         assert json.loads(capsys.readouterr().out.splitlines()[0])["jobs"] == 1
+
+
+class TestDryRun:
+    @staticmethod
+    def _planned(capsys, *argv: str) -> list[tuple[str, str]]:
+        import json
+
+        assert _test("--bundle", "--dry-run", "--output-format", "json", *argv) == 0
+        return [(c["kind"], c["target_id"]) for c in json.loads(capsys.readouterr().out)["commands"]]
+
+    def test_json_lists_the_harness_alone(self, project, capsys):
+        _proj, log = project
+        assert self._planned(capsys) == [("build-test", "bundle::harness")]
+        assert _calls(log) == []
+
+    def test_json_lists_example_checks_last_with_examples(self, project, capsys):
+        assert self._planned(capsys, "--examples") == [
+            ("build-test", "bundle::harness"),
+            ("check-example", "examples/hello/main.mojo"),
+        ]
+
+    def test_human_plan_shows_the_bundle_commands(self, project, capsys):
+        _proj, log = project
+        assert _test("--bundle", "--dry-run") == 0
+        err = capsys.readouterr().err
+        assert "[build-test] bundle::harness" in err
+        assert "Starting" not in err
+        assert _calls(log) == []
+
+
+class TestFilterWithNoMatch:
+    def test_k_with_no_match_still_builds_and_runs_the_harness(self, project, capsys):
+        _proj, log = project
+        assert _test("--bundle", "-k", "no_such_test") == 0
+        assert _harness_built(log)
+        assert "No tests match the filter" not in capsys.readouterr().err

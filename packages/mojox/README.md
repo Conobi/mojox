@@ -24,6 +24,7 @@ mojox test --output-format json               # NDJSON to stdout (CI)
 mojox test --no-fail-fast                     # run all tests even after failures
 mojox test --failure-output final             # show failing output after all tests
 mojox test --bundle -k "parse"                # one harness binary, filter test functions
+mojox test --no-bundle                        # one binary per test file, even when test-bundle is set
 mojox test --examples                         # also compile-check examples/*/main.mojo
 ```
 
@@ -36,14 +37,16 @@ Test-specific flags:
 | `--success-output {immediate,final,never}` | `never` | When to show passing test output |
 | `--failure-output {immediate,final,never}` | `immediate` | When to show failing test output |
 | `-k` / `--filter PATTERN` | | Filter tests by name (case-insensitive substring); see `--bundle` |
-| `--bundle` | off | Compile every `test_*` function into a single harness binary |
+| `--bundle` / `--no-bundle` | `test-bundle`, else off | Compile every `test_*` function into a single harness binary, or one binary per test file |
 | `--examples` | off | Also compile-check `examples/*/main.mojo` |
 | `--no-cache` | off | Always rebuild; cached test binaries are left untouched, precompiled packages are rebuilt in place and lose their cache entry |
 | `paths` (positional) | | Filter tests by file or directory prefix |
 
 Examples are not checked unless you pass `--examples` or a path under `examples/`. They are compiled, never executed.
 
-With `--bundle`, test files without `test_*` functions are left out of the bundle (with a note on stderr), and `-k` matches test function names inside the harness at runtime. Without it, `-k` matches test file paths.
+With `--bundle`, test files without `test_*` functions are left out of the bundle (with a note on stderr), and `-k` matches test function names inside the harness at runtime, so a pattern that matches nothing still builds the harness. Without it, `-k` matches test file paths.
+
+Bundle mode can be the project's default: set `test-bundle = true` in `[tool.mojox]`, or in one profile only (for example `[tool.mojox.profile.ci]`); `--bundle` and `--no-bundle` override it for one run. It cannot be set in `.mojox/config.toml` or through the environment. A bundle run builds and runs the harness as one command, with the libraries compiled from source, then checks the examples (with `--examples`) as `mojox test` does without `--bundle`. A line under `Starting` says what goes into the harness and which timeout applies: the timeout covers the harness compile and every test in it. `-j` sets the workers for the example checks only (it has no effect without `--examples`), and `--fail-fast` skips the examples when the harness does not pass; it never stops between tests inside the harness. `--dry-run` lists the harness build and any example checks. When the harness crashes, times out or fails before printing its summary, mojox suggests rerunning with `--no-bundle` to find the test. In JSON output the harness is one command event, and the suite `started` event carries `"mode": "bundle"` (`"files"` otherwise).
 
 #### Binary cache
 
