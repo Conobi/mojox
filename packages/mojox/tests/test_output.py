@@ -331,7 +331,6 @@ class TestBundleHeader:
         buf = io.StringIO()
         render_bundle_header(
             functions=12,
-            packages=2,
             examples=3,
             origin="--bundle",
             timeout_s=900,
@@ -339,7 +338,7 @@ class TestBundleHeader:
             stream=buf,
         )
         assert buf.getvalue() == (
-            "bundle: 1 binary, 12 test functions, 2 packages, 3 examples (--bundle); "
+            "bundle: 1 binary, 12 test functions, 3 examples (--bundle); "
             "timeout 900 s for the harness (/p/c.toml:timeout)\n"
         )
 
@@ -347,7 +346,6 @@ class TestBundleHeader:
         buf = io.StringIO()
         render_bundle_header(
             functions=1,
-            packages=0,
             examples=0,
             origin="tool.mojox.test-bundle",
             timeout_s=300,

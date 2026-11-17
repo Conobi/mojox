@@ -94,7 +94,6 @@ def _counted(count: int, noun: str) -> str:
 def render_bundle_header(
     *,
     functions: int,
-    packages: int,
     examples: int,
     origin: str,
     timeout_s: int,
@@ -111,9 +110,7 @@ def render_bundle_header(
     """
     out = stream or sys.stderr
     counts = ["1 binary"] + [
-        _counted(count, noun)
-        for count, noun in ((functions, "test function"), (packages, "package"), (examples, "example"))
-        if count
+        _counted(count, noun) for count, noun in ((functions, "test function"), (examples, "example")) if count
     ]
     out.write(
         f"bundle: {', '.join(counts)} ({escape_for_display(origin)}); "

@@ -23,7 +23,7 @@ from mojox_core import CommandKind, ConfigError
 from .option_flags import add_option_flags, build_cli_overrides
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
 
     from mojox_core import (
         Command,
@@ -613,7 +613,11 @@ def _cmd_test(args: argparse.Namespace) -> None:
 
     # --- Bundle mode ---
     if is_bundle:
-        _print_bundle_notes(policy, fail_fast_given=args.fail_fast is not None)
+        _print_bundle_notes(
+            policy,
+            fail_fast_given=args.fail_fast is not None,
+            examples=any(c.kind == CommandKind.CHECK_EXAMPLE for c in commands),
+        )
         _run_bundle_test(
             graph=graph,
             env=env,
@@ -712,7 +716,7 @@ def _harness_stopped_early(outcome: Outcome) -> bool:
     return outcome.kind == OutcomeKind.FAIL and _HARNESS_SUMMARY.search(outcome.stdout) is None
 
 
-def _print_bundle_notes(policy: Policy, *, fail_fast_given: bool) -> None:
+def _print_bundle_notes(policy: Policy, *, fail_fast_given: bool, examples: bool) -> None:
     """Say on stderr which explicit flags work differently in bundle mode, once each.
 
     Only a ``-j`` from the command line gets a note: a jobs value from
@@ -720,7 +724,10 @@ def _print_bundle_notes(policy: Policy, *, fail_fast_given: bool) -> None:
     the note on every run would be noise.
     """
     if policy.origins.get("jobs") == "--jobs":
-        print("note: -j has no effect in bundle mode, which builds and runs one binary", file=sys.stderr)
+        if examples:
+            print("note: -j sets the workers for the example checks; the harness is one binary", file=sys.stderr)
+        else:
+            print("note: -j has no effect in bundle mode, which builds and runs one binary", file=sys.stderr)
     if fail_fast_given:
         print("note: --fail-fast stops between commands, not between tests inside the bundle", file=sys.stderr)
 
@@ -762,6 +769,55 @@ def _plan_bundle(
     return plan(TargetGraph(targets=(harness,), edges=()), env, bundle_policy, toolchain, host)
 
 
+def _plan_bundle_examples(
+    *,
+    graph: TargetGraph,
+    env: ResolvedEnv,
+    policy: Policy,
+    toolchain: Toolchain,
+    host: HostFacts,
+    example_ids: frozenset[str],
+) -> tuple[Command, ...]:
+    """Plan the example checks of a bundle run exactly as ``mojox test`` plans them without ``--bundle``.
+
+    Only the libs and the requested examples are planned, so the usual
+    threshold decides whether the libs are precompiled for them; any such
+    precompile precedes the checks in the result and is run in the same call.
+    """
+    from mojox_core import TargetGraph, TargetKind
+
+    targets = tuple(t for t in graph.targets if t.kind == TargetKind.LIB or t.target_id in example_ids)
+    commands = _plan_content_addressed(TargetGraph(targets=targets, edges=()), env, policy, toolchain, host)
+    return tuple(c for c in commands if c.kind in (CommandKind.COMPILE_PACKAGE, CommandKind.CHECK_EXAMPLE))
+
+
+def _examples_blocked(harness_outcomes: tuple[Outcome, ...], *, fail_fast: bool) -> str | None:
+    """Why a bundle run must not check its examples after the harness; None when it may.
+
+    Under ``--fail-fast`` a harness that did not pass stops the run. Without
+    it the examples are checked whatever the harness did, since they do not
+    depend on it.
+    """
+    from .types import OutcomeKind
+
+    if fail_fast and any(o.kind != OutcomeKind.PASS for o in harness_outcomes):
+        return "Cancelled by --fail-fast"
+    return None
+
+
+def _skipped(
+    commands: tuple[Command, ...], reason: str, on_complete: Callable[[Outcome], None] | None
+) -> tuple[Outcome, ...]:
+    """SKIPPED outcomes, reported through *on_complete*, for commands that never start; *reason* is their stderr."""
+    from .types import Outcome, OutcomeKind
+
+    outcomes = tuple(Outcome(c, OutcomeKind.SKIPPED, None, "", reason, (), 0.0) for c in commands)
+    if on_complete is not None:
+        for outcome in outcomes:
+            on_complete(outcome)
+    return outcomes
+
+
 def _run_bundle_test(
     *,
     graph: TargetGraph,
@@ -795,6 +851,11 @@ def _run_bundle_test(
     with the others. The staging tree is not stamped: it is a function of
     the test files ``tests_tree_hash`` covers, and lives in a content-hashed
     directory that is left in place, as a concurrent run may use it.
+
+    The harness runs in one call to ``run_commands``. Requested examples are
+    planned per file and checked in a second call, with ``policy.jobs_compile``
+    workers, once the harness is done; ``--fail-fast`` skips them when it did
+    not pass.
     """
     import time
     from dataclasses import replace
@@ -871,6 +932,18 @@ def _run_bundle_test(
         staging_include=staging_result.include_path,
     )
 
+    example_commands = _plan_bundle_examples(
+        graph=graph,
+        env=env,
+        policy=policy,
+        toolchain=toolchain,
+        host=host,
+        example_ids=frozenset(c.target_id for c in commands if c.kind == CommandKind.CHECK_EXAMPLE),
+    )
+    all_commands = (*bundle_commands, *example_commands)
+    # The harness is one command; -j only matters for the example checks.
+    jobs = policy.jobs_compile if example_commands else 1
+
     # Runtime -k filter passed as argv to the binary
     runtime_args: tuple[str, ...] = ()
     if filter_pattern:
@@ -899,22 +972,21 @@ def _run_bundle_test(
         writer = JsonEventWriter(sys.stdout)
         test_count = sum(1 for c in bundle_commands if c.kind in _TEST_KINDS)
         writer.write_event(
-            serialize_suite_started(test_count, jobs=1, compile_threads=policy.compile_threads, mode="bundle")
+            serialize_suite_started(test_count, jobs=jobs, compile_threads=policy.compile_threads, mode="bundle")
         )
         json_on_start, json_on_complete = make_json_callbacks(writer)
         on_start = json_on_start
         on_complete = json_on_complete
     else:
         render_starting(
-            len(bundle_commands),
-            jobs=1,
+            len(all_commands),
+            jobs=jobs,
             compile_threads=policy.compile_threads,
-            jobs_detail=_jobs_detail(policy, host, 1),
+            jobs_detail=_jobs_detail(policy, host, jobs),
         )
         render_bundle_header(
             functions=sum(len(m.functions) for m in bundle_modules),
-            packages=0,
-            examples=0,
+            examples=sum(1 for c in example_commands if c.kind == CommandKind.CHECK_EXAMPLE),
             origin=_origin(policy, "test-bundle"),
             timeout_s=policy.timeout_s,
             timeout_origin=_origin(policy, "timeout"),
@@ -924,12 +996,11 @@ def _run_bundle_test(
             failure_output=failure_output,
         )
 
-    # --- Execute ---
-    wall_start = time.monotonic()
-    try:
-        outcomes = run_commands(
-            bundle_commands,
-            max_workers=1,
+    # --- Execute: the harness, then the example checks ---
+    def run(batch: tuple[Command, ...], workers: int) -> tuple[Outcome, ...]:
+        return run_commands(
+            batch,
+            max_workers=workers,
             extra_env=dict(policy.env) or None,
             include_paths=bundle_include,
             on_start=on_start,
@@ -937,8 +1008,18 @@ def _run_bundle_test(
             fail_fast=fail_fast,
             cache_context=cache_ctx,
         )
+
+    wall_start = time.monotonic()
+    try:
+        outcomes = run(bundle_commands, 1)
+        if example_commands:
+            blocked = _examples_blocked(outcomes, fail_fast=fail_fast)
+            if blocked is None:
+                outcomes += run(example_commands, jobs)
+            else:
+                outcomes += _skipped(example_commands, blocked, on_complete)
     except KeyboardInterrupt:
-        print(f"\n{_interrupted_summary(bundle_commands)}", file=sys.stderr)
+        print(f"\n{_interrupted_summary(all_commands)}", file=sys.stderr)
         sys.exit(130)
     wall_elapsed = time.monotonic() - wall_start
 

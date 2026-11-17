@@ -7,7 +7,7 @@ import sys
 from pathlib import Path, PurePosixPath
 
 import pytest
-from mojox.cli import _plan_bundle, build_parser
+from mojox.cli import _plan_bundle, _plan_bundle_examples, build_parser
 from mojox_core import (
     CommandKind,
     DistEntry,
@@ -70,6 +70,36 @@ def _bundle_inputs(root: Path, *, libs: tuple[str, ...]) -> dict:
 def _includes(argv: tuple[str, ...]) -> list[str]:
     """The ``-I`` dirs of *argv*, with the content-named package subdir shown as ``.mojox/build/pkg``."""
     return [re.sub(r"/pkg/[0-9a-f]{16}$", "/pkg", argv[i + 1]) for i, arg in enumerate(argv) if arg == "-I"]
+
+
+class TestPlanBundleExamples:
+    @staticmethod
+    def _inputs(root: Path, *, libs: tuple[str, ...], asked: str = "a") -> dict:
+        """:func:`_bundle_inputs` plus examples ``a`` and ``b``, of which only those in *asked* are requested."""
+        inputs = _bundle_inputs(root, libs=libs)
+        examples = tuple(
+            Target(TargetKind.EXAMPLE, f"examples/{name}/main.mojo", f"examples/{name}/main.mojo") for name in "ab"
+        )
+        graph = TargetGraph(targets=(*inputs["graph"].targets, *examples), edges=())
+        del inputs["root"], inputs["harness_rel"], inputs["staging_include"]
+        return {**inputs, "graph": graph, "example_ids": frozenset(f"examples/{n}/main.mojo" for n in asked)}
+
+    def test_one_asked_example_gets_the_per_file_plan_and_nothing_else(self, tmp_path):
+        commands = _plan_bundle_examples(**self._inputs(tmp_path, libs=("src/mylib",)))
+        assert [(c.kind, c.target_id) for c in commands] == [(CommandKind.CHECK_EXAMPLE, "examples/a/main.mojo")]
+        assert "--Werror" in commands[0].argv
+
+    def test_enough_examples_precompile_the_libs_they_depend_on(self, tmp_path):
+        commands = _plan_bundle_examples(**self._inputs(tmp_path, libs=("src/mylib",), asked="ab"))
+        assert [(c.kind, c.target_id) for c in commands] == [
+            (CommandKind.COMPILE_PACKAGE, "src/mylib"),
+            (CommandKind.CHECK_EXAMPLE, "examples/a/main.mojo"),
+            (CommandKind.CHECK_EXAMPLE, "examples/b/main.mojo"),
+        ]
+        assert commands[1].depends_on == ("src/mylib",)
+
+    def test_no_examples_asked_plans_nothing(self, tmp_path):
+        assert _plan_bundle_examples(**self._inputs(tmp_path, libs=("src/mylib",), asked="")) == ()
 
 
 class TestPlanBundle:
@@ -384,6 +414,7 @@ class TestHeader:
 
 
 _JOBS_NOTE = "note: -j has no effect in bundle mode, which builds and runs one binary\n"
+_JOBS_EXAMPLES_NOTE = "note: -j sets the workers for the example checks; the harness is one binary\n"
 _FAIL_FAST_NOTE = "note: --fail-fast stops between commands, not between tests inside the bundle\n"
 
 
@@ -392,6 +423,12 @@ class TestNotes:
     def test_jobs_flag_prints_the_jobs_note_once(self, project, capsys, jobs):
         assert _test("--bundle", *jobs) == 0
         assert capsys.readouterr().err.count(_JOBS_NOTE) == 1
+
+    def test_jobs_flag_with_examples_says_it_applies_to_the_example_checks(self, project, capsys):
+        assert _test("--bundle", "--examples", "-j", "4") == 0
+        err = capsys.readouterr().err
+        assert err.count(_JOBS_EXAMPLES_NOTE) == 1
+        assert _JOBS_NOTE not in err
 
     def test_jobs_from_the_environment_prints_no_note(self, project, monkeypatch, capsys):
         monkeypatch.setenv("MOJOX_JOBS", "4")
@@ -484,3 +521,91 @@ class TestCrashHint:
         assert _test("--bundle", "--output-format", "json") == 1
         captured = capsys.readouterr()
         assert _HINT not in captured.err + captured.out
+
+
+def _events(out: str) -> dict[str, str]:
+    """Each command's final event in a JSON run, by command name."""
+    import json
+
+    events = [json.loads(line) for line in out.splitlines()]
+    return {e["name"]: e["event"] for e in events if e["type"] == "command" and e["event"] != "started"}
+
+
+_EXAMPLE_BUILD = "build examples/hello/main.mojo"
+
+
+class TestExamples:
+    def test_examples_are_checked_after_the_harness(self, project, capsys):
+        _proj, log = project
+        assert _test("--bundle", "--examples") == 0
+        calls = _calls(log)
+        assert calls.index(_EXAMPLE_BUILD) > next(i for i, c in enumerate(calls) if c.endswith("/harness.mojo"))
+        err = capsys.readouterr().err
+        assert "Starting 2 targets" in err
+        assert "bundle: 1 binary, 3 test functions, 1 example (--bundle)" in err
+
+    def test_examples_precompile_the_libs_when_there_are_enough(self, project, capsys):
+        proj, log = project
+        (proj / "examples" / "second").mkdir()
+        (proj / "examples" / "second" / "main.mojo").write_text("def main():\n    pass\n")
+        assert _test("--bundle", "--examples") == 0
+        calls = _calls(log)
+        assert calls.count("precompile src/mylib") == 1
+        assert calls.index("precompile src/mylib") > next(i for i, c in enumerate(calls) if c.endswith("/harness.mojo"))
+        assert "2 examples" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("fail_fast", ["--fail-fast", "--no-fail-fast"])
+    def test_a_broken_example_fails_the_run_and_the_harness_still_passes(self, project, capsys, fail_fast):
+        proj, _log = project
+        (proj / "examples" / "hello" / "main.mojo").write_text("COMPILE_ERROR\n")
+        assert _test("--bundle", "--examples", fail_fast, "--output-format", "json") == 2
+        events = _events(capsys.readouterr().out)
+        assert (events["bundle::harness"], events["examples/hello/main.mojo"]) == ("ok", "failed")
+
+    def test_no_fail_fast_checks_examples_after_a_failing_harness(self, project, capsys):
+        proj, log = project
+        (proj / "tests" / "test_a.mojo").write_text("def test_a():\n    pass\n# HARNESS_FAIL\n")
+        assert _test("--bundle", "--examples", "--no-fail-fast", "--output-format", "json") == 1
+        assert _EXAMPLE_BUILD in _calls(log)
+        events = _events(capsys.readouterr().out)
+        assert (events["bundle::harness"], events["examples/hello/main.mojo"]) == ("failed", "ok")
+
+    def test_fail_fast_skips_examples_after_a_failing_harness(self, project, capsys):
+        proj, log = project
+        (proj / "tests" / "test_a.mojo").write_text("def test_a():\n    pass\n# HARNESS_FAIL\n")
+        assert _test("--bundle", "--examples", "--output-format", "json") == 1
+        assert _EXAMPLE_BUILD not in _calls(log)
+        events = _events(capsys.readouterr().out)
+        assert (events["bundle::harness"], events["examples/hello/main.mojo"]) == ("failed", "skipped")
+
+    def test_a_failed_example_precompile_skips_its_examples(self, project, capsys):
+        proj, _log = project
+        (proj / "examples" / "second").mkdir()
+        (proj / "examples" / "second" / "main.mojo").write_text("def main():\n    pass\n")
+        (proj / "src" / "mylib" / "__init__.mojo").write_text("PRECOMPILE_ERROR\n")
+        assert _test("--bundle", "--examples", "--output-format", "json") == 2
+        events = _events(capsys.readouterr().out)
+        assert events["src/mylib"] == "failed"
+        assert events["bundle::harness"] == "ok"
+        assert events["examples/hello/main.mojo"] == events["examples/second/main.mojo"] == "skipped"
+
+    def test_jobs_reach_the_example_call_and_the_header(self, project, monkeypatch, capsys):
+        from mojox.types import Outcome, OutcomeKind
+
+        seen = []
+
+        def fake_run_commands(commands, **kwargs):
+            seen.append(([c.target_id for c in commands], kwargs["max_workers"]))
+            return tuple(Outcome(c, OutcomeKind.PASS, 0, "", "", (), 0.0) for c in commands)
+
+        monkeypatch.setattr("mojox.exec.run_commands", fake_run_commands)
+        assert _test("--bundle", "--examples", "-j", "3") == 0
+        assert [ids for ids, _ in seen] == [["bundle::harness"], ["examples/hello/main.mojo"]]
+        assert seen[1][1] == 3
+        assert "Starting 2 targets (jobs 3, compile threads 1)\n" in capsys.readouterr().err
+
+    def test_without_examples_jobs_stay_one_in_header_and_json(self, project, capsys):
+        import json
+
+        assert _test("--bundle", "--output-format", "json", "-j", "2") == 0
+        assert json.loads(capsys.readouterr().out.splitlines()[0])["jobs"] == 1
