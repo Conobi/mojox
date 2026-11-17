@@ -71,6 +71,9 @@ def plan(
     before any dependent targets (tests, examples, binaries). Lib targets are
     precompiled once the graph holds ``_PRECOMPILE_THRESHOLD`` test, example
     and binary targets in total; never when the graph has no lib target.
+    A lib that is not precompiled is imported from source: its parent
+    directory goes on ``-I`` of every dependent, unless that is the project
+    root, which the working directory already serves.
     Every build gets ``policy.compile_threads`` as ``--num-threads``, so argv never
     depends on the host or on jobs: the thread count changes optimised
     machine code, and a host-derived value would make binaries differ
@@ -103,6 +106,7 @@ def plan(
         env,
         policy,
         precompile_output_dir if should_precompile else None,
+        () if should_precompile else _lib_source_dirs(lib_targets, host),
     )
 
     # Test targets
@@ -328,15 +332,24 @@ def _build_compile_binary_command(
     )
 
 
+def _lib_source_dirs(lib_targets: list[Target], host: HostFacts) -> tuple[str, ...]:
+    """Absolute parent dirs of *lib_targets*, in graph order, minus the project root."""
+    root = PurePosixPath(str(host.manifest_dir))
+    parents = ((root / t.path).parent for t in lib_targets)
+    return tuple(dict.fromkeys(str(p) for p in parents if p != root))
+
+
 def _build_include_sequence(
     env: ResolvedEnv,
     policy: Policy,
     precompile_output_dir: PurePosixPath | None,
+    source_dirs: tuple[str, ...] = (),
 ) -> tuple[str, ...]:
     """Build the deduplicated include path sequence.
 
-    Order: precompile output (if any) -> policy include paths (higher layer
-    first) -> environment include sequence.
+    Order: precompile output (if any) -> lib source dirs (when the libs are
+    not precompiled) -> policy include paths (higher layer first) ->
+    environment include sequence.
     """
     seen: set[str] = set()
     result: list[str] = []
@@ -348,6 +361,9 @@ def _build_include_sequence(
 
     if precompile_output_dir is not None:
         _add(str(precompile_output_dir))
+
+    for d in source_dirs:
+        _add(d)
 
     for p in policy.include_paths:
         _add(p)

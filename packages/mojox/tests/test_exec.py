@@ -802,6 +802,54 @@ class TestBuildTestCacheKey:
         after = _build_test_cache_key(cmd, _ctx(tmp_path, (str(dep),)), None)
         assert before != after
 
+    def test_unprecompiled_lib_source_edit_changes_key(self, tmp_path: Path):
+        """The parent dir the planner adds for a source lib is stamped, so editing the lib changes the key."""
+        from mojox_core import Target, TargetGraph, TargetKind, plan
+        from mojox_core.types import HostFacts, LintConfig, Policy, ResolvedEnv, Toolchain
+
+        lib = tmp_path / "src" / "demo"
+        lib.mkdir(parents=True)
+        (lib / "__init__.mojo").write_text("fn add(a: Int, b: Int) -> Int: return a + b")
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_add.mojo").write_text("from demo import add")
+        graph = TargetGraph(
+            targets=(
+                Target(TargetKind.LIB, "src/demo", "src/demo"),
+                Target(TargetKind.TEST, "tests/test_add.mojo", "tests/test_add.mojo"),
+            ),
+            edges=(),
+        )
+        host = HostFacts(cpu_count=1, available_memory_mb=1024, manifest_dir=PurePosixPath(tmp_path))
+        env = ResolvedEnv(
+            include_sequence=(),
+            mojo_path="/venv/bin/mojo",
+            mojo_version="1.0.0",
+            path_mojo=None,
+            lock_version=1,
+            diagnostics=(),
+        )
+        policy = Policy(
+            optimize=0,
+            debug_level="line-tables",
+            defines={},
+            flags=(),
+            include_paths=(),
+            lints=LintConfig(),
+            jobs=1,
+            jobs_compile=1,
+            jobs_tests=1,
+            timeout_s=300,
+            compile_threads=1,
+            jobs_spec="1",
+        )
+        toolchain = Toolchain(mojo_path="/venv/bin/mojo", version="1.0.0", subcommand="precompile", extension=".mojoc")
+        (cmd,) = plan(graph, env, policy, toolchain, host)
+        assert str(tmp_path / "src") in cmd.argv
+
+        before = _build_test_cache_key(cmd, _ctx(tmp_path, ()), None)
+        (lib / "__init__.mojo").write_text("fn add(a: Int, b: Int) -> Int: return b + a")
+        assert _build_test_cache_key(cmd, _ctx(tmp_path, ()), None) != before
+
     def test_include_reorder_changes_key(self, tmp_path: Path):
         a = tmp_path / "a"
         b = tmp_path / "b"

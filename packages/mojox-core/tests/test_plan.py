@@ -204,6 +204,64 @@ class TestPrecompilation:
         assert CommandKind.COMPILE_PACKAGE not in kinds
 
 
+class TestUnprecompiledLibInclude:
+    """A lib that is not precompiled is imported from source, so its parent dir must be on ``-I``."""
+
+    @staticmethod
+    def _includes(cmd) -> list[str]:
+        argv = list(cmd.argv)
+        return [argv[i + 1] for i in range(len(argv) - 1) if argv[i] == "-I"]
+
+    @staticmethod
+    def _graph(lib_path: str, n_tests: int = 1, kind: TargetKind = TargetKind.TEST) -> TargetGraph:
+        deps = tuple(Target(kind, f"tests/test_{i}.mojo", f"tests/test_{i}.mojo") for i in range(n_tests))
+        return TargetGraph(targets=(Target(TargetKind.LIB, lib_path, lib_path), *deps), edges=())
+
+    def test_lib_under_src_puts_parent_dir_on_include(self):
+        cmds = plan(self._graph("src/demo"), _make_env(), _make_policy(), _make_toolchain(), _make_host())
+        assert [c.kind for c in cmds] == [CommandKind.BUILD_TEST]
+        assert self._includes(cmds[0])[0] == "/workspace/mylib/src"
+
+    def test_parent_dir_precedes_policy_and_env_includes(self):
+        pol = _make_policy(include_paths=("/extra",))
+        cmds = plan(self._graph("src/demo"), _make_env(), pol, _make_toolchain(), _make_host())
+        assert self._includes(cmds[0]) == ["/workspace/mylib/src", "/extra", "/venv/mojo_packages"]
+
+    @pytest.mark.parametrize("kind", [TargetKind.EXAMPLE, TargetKind.BIN])
+    def test_examples_and_binaries_get_the_parent_dir(self, kind):
+        cmds = plan(self._graph("src/demo", kind=kind), _make_env(), _make_policy(), _make_toolchain(), _make_host())
+        assert len(cmds) == 1
+        assert self._includes(cmds[0])[0] == "/workspace/mylib/src"
+
+    def test_parent_dirs_are_deduplicated(self):
+        graph = TargetGraph(
+            targets=(
+                Target(TargetKind.LIB, "src/a", "src/a"),
+                Target(TargetKind.LIB, "src/b", "src/b"),
+                Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),
+            ),
+            edges=(),
+        )
+        cmds = plan(graph, _make_env(), _make_policy(), _make_toolchain(), _make_host())
+        assert self._includes(cmds[0]).count("/workspace/mylib/src") == 1
+
+    def test_lib_at_project_root_adds_no_include(self):
+        cmds = plan(self._graph("mylib"), _make_env(), _make_policy(), _make_toolchain(), _make_host())
+        assert self._includes(cmds[0]) == ["/venv/mojo_packages"]
+
+    def test_precompiled_lib_adds_no_source_include(self):
+        cmds = plan(self._graph("src/demo", n_tests=2), _make_env(), _make_policy(), _make_toolchain(), _make_host())
+        tests = [c for c in cmds if c.kind == CommandKind.BUILD_TEST]
+        assert len(tests) == 2
+        for c in tests:
+            assert "/workspace/mylib/src" not in self._includes(c)
+
+    def test_no_lib_adds_no_include(self):
+        graph = TargetGraph(targets=(Target(TargetKind.TEST, "tests/t.mojo", "tests/t.mojo"),), edges=())
+        cmds = plan(graph, _make_env(), _make_policy(), _make_toolchain(), _make_host())
+        assert self._includes(cmds[0]) == ["/venv/mojo_packages"]
+
+
 class TestPackageNamespace:
     """A namespace moves the precompiled packages and every dependent's include together."""
 
