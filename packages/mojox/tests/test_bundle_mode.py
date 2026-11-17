@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path, PurePosixPath
 
@@ -61,13 +62,14 @@ def _bundle_inputs(root: Path, *, libs: tuple[str, ...]) -> dict:
         "policy": policy,
         "toolchain": Toolchain(mojo_path="/bin/mojo", version="1.0.0", subcommand="precompile", extension=".mojoc"),
         "host": HostFacts(cpu_count=4, available_memory_mb=1024, manifest_dir=PurePosixPath(root)),
-        "harness_rel": ".mojox/bundle/harness.mojo",
-        "staging_include": str(root / ".mojox" / "bundle" / "stage"),
+        "harness_rel": ".mojox/bundle/abc/harness.mojo",
+        "staging_include": str(root / ".mojox" / "bundle" / "abc" / "stage"),
     }
 
 
 def _includes(argv: tuple[str, ...]) -> list[str]:
-    return [argv[i + 1] for i, arg in enumerate(argv) if arg == "-I"]
+    """The ``-I`` dirs of *argv*, with the content-named package subdir shown as ``.mojox/build/pkg``."""
+    return [re.sub(r"/pkg/[0-9a-f]{16}$", "/pkg", argv[i + 1]) for i, arg in enumerate(argv) if arg == "-I"]
 
 
 class TestPlanBundle:
@@ -84,16 +86,22 @@ class TestPlanBundle:
         commands = _plan_bundle(**_bundle_inputs(tmp_path, libs=("src/mylib",)))
         assert _includes(commands[-1].argv) == [
             f"{tmp_path}/.mojox/build/pkg",
-            f"{tmp_path}/.mojox/bundle/stage",
+            f"{tmp_path}/.mojox/bundle/abc/stage",
             f"{tmp_path}/src",
             "/deps",
         ]
+
+    def test_packages_are_published_where_the_harness_imports_them(self, tmp_path):
+        commands = _plan_bundle(**_bundle_inputs(tmp_path, libs=("src/mylib", "src/other")))
+        argv = commands[-1].argv
+        pkg_dir = next(argv[i + 1] for i, arg in enumerate(argv) if arg == "-I" and "/pkg/" in argv[i + 1])
+        assert {str(PurePosixPath(c.outputs[0]).parent) for c in commands[:-1]} == {pkg_dir}
 
     def test_libs_under_one_parent_add_it_once(self, tmp_path):
         commands = _plan_bundle(**_bundle_inputs(tmp_path, libs=("src/mylib", "src/other")))
         assert _includes(commands[-1].argv) == [
             f"{tmp_path}/.mojox/build/pkg",
-            f"{tmp_path}/.mojox/bundle/stage",
+            f"{tmp_path}/.mojox/bundle/abc/stage",
             f"{tmp_path}/src",
             "/deps",
         ]
@@ -107,7 +115,7 @@ class TestPlanBundle:
         commands = _plan_bundle(**inputs)
         assert _includes(commands[-1].argv) == [
             f"{tmp_path}/.mojox/build/pkg",
-            f"{tmp_path}/.mojox/bundle/stage",
+            f"{tmp_path}/.mojox/bundle/abc/stage",
             "/deps",
         ]
 
@@ -210,7 +218,9 @@ def _set_mojox(proj: Path, body: str) -> None:
     (proj / "pyproject.toml").write_text(f'[project]\nname = "testlib"\nversion = "0.1.0"\n\n[tool.mojox]\n{body}')
 
 
-_HARNESS_BUILD = "build .mojox/bundle/harness.mojo"
+def _harness_built(log: Path) -> bool:
+    """Whether the generated harness was compiled (it lives in a content-hashed staging dir)."""
+    return any(c.startswith("build .mojox/bundle/") and c.endswith("/harness.mojo") for c in _calls(log))
 
 
 class TestTestBundleOption:
@@ -218,30 +228,30 @@ class TestTestBundleOption:
         proj, log = project
         _set_mojox(proj, "test-bundle = true\n")
         assert _test() == 0
-        assert _HARNESS_BUILD in _calls(log)
+        assert _harness_built(log)
 
     def test_no_bundle_overrides_the_manifest(self, project):
         proj, log = project
         _set_mojox(proj, "test-bundle = true\n")
         assert _test("--no-bundle") == 0
-        assert _HARNESS_BUILD not in _calls(log)
+        assert not _harness_built(log)
         assert "build tests/test_a.mojo" in _calls(log)
 
     def test_profile_default_applies_only_with_that_profile(self, project):
         proj, log = project
         _set_mojox(proj, "[tool.mojox.profile.ci]\ntest-bundle = true\n")
         assert _test() == 0
-        assert _HARNESS_BUILD not in _calls(log)
+        assert not _harness_built(log)
         assert _test("--profile", "ci") == 0
-        assert _HARNESS_BUILD in _calls(log)
+        assert _harness_built(log)
 
     def test_bundle_flag_overrides_a_profile_that_turns_it_off(self, project):
         proj, log = project
         _set_mojox(proj, "test-bundle = true\n\n[tool.mojox.profile.ci]\ntest-bundle = false\n")
         assert _test("--profile", "ci") == 0
-        assert _HARNESS_BUILD not in _calls(log)
+        assert not _harness_built(log)
         assert _test("--profile", "ci", "--bundle") == 0
-        assert _HARNESS_BUILD in _calls(log)
+        assert _harness_built(log)
 
     def test_a_string_value_exits_2_naming_the_key(self, project, capsys):
         proj, log = project

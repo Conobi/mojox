@@ -232,6 +232,24 @@ class TestForcePrecompile:
             "/venv/mojo_packages",
         ]
 
+    def test_namespace_moves_packages_and_the_harness_include_together(self):
+        graph = TargetGraph(targets=(*self._LIBS, self._HARNESS), edges=())
+        cmds = plan(
+            graph,
+            _make_env(),
+            _make_policy(),
+            _make_toolchain(),
+            _make_host(),
+            force_precompile=True,
+            pkg_namespace="abc",
+        )
+        pkg_dir = "/workspace/mylib/.mojox/build/pkg/abc"
+        assert {str(PurePosixPath(c.outputs[0]).parent) for c in cmds if c.kind == CommandKind.COMPILE_PACKAGE} == {
+            pkg_dir
+        }
+        (harness,) = [c for c in cmds if c.kind == CommandKind.BUILD_TEST]
+        assert pkg_dir in harness.argv
+
     def test_no_lib_means_no_precompile(self):
         cmds = self._plan(self._HARNESS)
         assert [c.kind for c in cmds] == [CommandKind.BUILD_TEST]

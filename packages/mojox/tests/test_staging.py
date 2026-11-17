@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mojox.staging import StagingResult, cleanup_staging, create_bundle_staging
+from mojox.staging import StagingResult, create_bundle_staging
 
 
 class TestCreateBundleStaging:
@@ -135,33 +135,43 @@ class TestCreateBundleStaging:
         assert result.harness_path.is_file()
         assert isinstance(result.diagnostics, tuple)
 
-    def test_idempotent_on_rerun(self, tmp_path: Path) -> None:
-        """Running twice on the same staging dir does not fail."""
+    def test_same_content_shares_one_dir(self, tmp_path: Path) -> None:
+        """Rerunning with identical inputs reuses the staging dir, keeping the harness path stable."""
         root = tmp_path / "project"
-        root.mkdir()
-        (root / "tests").mkdir()
+        (root / "tests").mkdir(parents=True)
         (root / "tests" / "test_a.mojo").write_text("x")
         staging = root / ".mojox" / "bundle"
 
-        create_bundle_staging(root, ["tests/test_a.mojo"], "h1", staging)
-        result = create_bundle_staging(root, ["tests/test_a.mojo"], "h2", staging)
+        first = create_bundle_staging(root, ["tests/test_a.mojo"], "h", staging)
+        second = create_bundle_staging(root, ["tests/test_a.mojo"], "h", staging)
 
-        assert result.harness_path.read_text() == "h2"
+        assert first == second
+        assert [p.name for p in staging.iterdir()] == [first.staging_dir.name]
 
+    def test_different_harnesses_never_share_a_dir(self, tmp_path: Path) -> None:
+        """Two runs with other test selections must not overwrite or delete each other's harness."""
+        root = tmp_path / "project"
+        (root / "tests").mkdir(parents=True)
+        (root / "tests" / "test_a.mojo").write_text("x")
+        (root / "tests" / "test_b.mojo").write_text("y")
+        staging = root / ".mojox" / "bundle"
 
-class TestCleanupStaging:
-    """Tests for cleanup_staging."""
+        run_a = create_bundle_staging(root, ["tests/test_a.mojo"], "harness A", staging)
+        run_b = create_bundle_staging(root, ["tests/test_b.mojo"], "harness B", staging)
 
-    def test_removes_staging_dir(self, tmp_path: Path) -> None:
-        """Removes the entire staging directory tree."""
-        staging = tmp_path / "staging"
-        staging.mkdir()
-        (staging / "stage").mkdir()
-        (staging / "harness.mojo").write_text("test")
+        assert run_a.harness_path != run_b.harness_path
+        assert run_a.include_path != run_b.include_path
+        assert run_a.harness_path.read_text() == "harness A"
+        assert run_b.harness_path.read_text() == "harness B"
 
-        cleanup_staging(staging)
-        assert not staging.exists()
+    def test_leaves_no_build_leftovers(self, tmp_path: Path) -> None:
+        """The private build dir is renamed or removed, never left beside the result."""
+        root = tmp_path / "project"
+        (root / "tests").mkdir(parents=True)
+        (root / "tests" / "test_a.mojo").write_text("x")
+        staging = root / ".mojox" / "bundle"
 
-    def test_noop_if_absent(self, tmp_path: Path) -> None:
-        """Does not raise when the directory does not exist."""
-        cleanup_staging(tmp_path / "nonexistent")
+        result = create_bundle_staging(root, ["tests/test_a.mojo"], "h", staging)
+        create_bundle_staging(root, ["tests/test_a.mojo"], "h", staging)
+
+        assert [p.name for p in staging.iterdir()] == [result.staging_dir.name]

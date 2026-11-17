@@ -8,6 +8,8 @@ from Command.env, never inherited from the host process.
 from __future__ import annotations
 
 import errno
+import fcntl
+import hashlib
 import os
 import shutil
 import subprocess
@@ -15,8 +17,9 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePath
 from typing import Any
@@ -65,10 +68,11 @@ class CacheContext:
         runtime_args: Extra command-line arguments appended to the
             compiled binary's argv at execution time. Used by bundle
             mode to pass a ``-k`` filter pattern to the test binary.
-        unstamped_dirs: Normalised absolute ``-I`` dirs left out of the
-            stamp because other key inputs already determine their
-            content: the precompile output and the bundle staging tree,
-            both rewritten every run.
+        unstamped_dirs: Normalised absolute ``-I`` dirs, and their direct
+            subdirectories, left out of the stamp because other key inputs
+            already determine their content: the precompile output root
+            (its per-content subdirectories are named by the lib keys that
+            argv carries) and the bundle staging tree.
         cc_realpath: Real path of the ``cc`` the compiler links with, as
             ``HostFacts`` reports it; empty when there is none.
         nix_cc: The plain ``NIX_CC`` value; empty when unset.
@@ -93,7 +97,9 @@ class CacheContext:
         The lock is held while stamping, so parallel builds sharing a list
         wait for one stamp instead of each walking the same trees.
         """
-        dirs = tuple(d for d in include_dirs if d not in self.unstamped_dirs)
+        dirs = tuple(
+            d for d in include_dirs if d not in self.unstamped_dirs and os.path.dirname(d) not in self.unstamped_dirs
+        )
         with self._stamps_lock:
             stamp = self._stamps.get(dirs)
             if stamp is None:
@@ -310,6 +316,32 @@ def _precompile_cache_key(
     )
 
 
+def precompile_set_id(
+    commands: Sequence[Command],
+    *,
+    extra_env: dict[str, str] | None,
+    compiler_version: str,
+    cc_realpath: str,
+    nix_cc: str,
+) -> str:
+    """Name the package directory for *commands*: a hash of their precompile keys.
+
+    Runs whose libs, include dirs, env and compiler agree get the same name
+    and share packages; any difference gets a directory of its own, so no
+    run imports a package built from other inputs. *commands* must be
+    planned with the default (empty) namespace, so the keys do not depend
+    on the name they produce.
+    """
+    h = hashlib.sha256()
+    for cmd in commands:
+        if cmd.kind != CommandKind.COMPILE_PACKAGE:
+            continue
+        key = _precompile_cache_key(cmd, extra_env, compiler_version, cc_realpath=cc_realpath, nix_cc=nix_cc)
+        # An uncacheable command still has to tell its argv apart.
+        h.update(f"{cmd.target_id}\0{key or cmd.argv}\0".encode())
+    return h.hexdigest()[:16]
+
+
 def _resolve_cache_for_precompile(
     cmd: Command,
     cache_context: CacheContext,
@@ -350,6 +382,8 @@ def _execute(
             return _resolve_cache_for_build_test(cmd, cache_context, extra_env, include_paths)
         if cmd.kind == CommandKind.COMPILE_PACKAGE:
             return _resolve_cache_for_precompile(cmd, cache_context, extra_env, include_paths)
+    if cmd.kind in (CommandKind.CHECK_EXAMPLE, CommandKind.COMPILE_BINARY) and cmd.outputs:
+        return _run_atomic_output(cmd, extra_env, include_paths)
     return run_command(cmd, extra_env=extra_env, include_paths=include_paths)
 
 
@@ -823,6 +857,62 @@ def _is_nonempty_file(path: Path) -> bool:
     return path.is_file() and path.stat().st_size > 0
 
 
+@contextmanager
+def _meta_lock(meta_path: Path, *, exclusive: bool) -> Iterator[None]:
+    """Hold the ``flock`` guarding one cache entry (its output file plus *meta_path*).
+
+    Publishers take it exclusively around "drop meta, replace output, write
+    meta", so two runs publishing different content under different keys
+    cannot interleave and leave one's key vouching for the other's file.
+    Readers take it shared around "read meta, claim output". The lock is
+    never held while compiling or running anything.
+    """
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(meta_path.with_name(meta_path.name + ".lock"), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        yield
+    finally:
+        os.close(fd)  # closing releases the lock
+
+
+def _claim_private(published: Path, private_dir: Path) -> Path:
+    """Give this run its own inode of *published*, immune to a later replace by another run.
+
+    A hard link is free; a copy is the fallback where the filesystem has none.
+    """
+    claimed = private_dir / published.name
+    try:
+        os.link(published, claimed)
+    except OSError:
+        shutil.copy2(published, claimed)
+    return claimed
+
+
+def _run_atomic_output(
+    cmd: Command,
+    extra_env: dict[str, str] | None,
+    include_paths: tuple[str, ...],
+) -> Outcome:
+    """Run an uncached build that writes ``cmd.outputs[0]``, publishing it by atomic rename.
+
+    The compiler writes into a private ``mkdtemp`` dir beside the output, so
+    concurrent runs never write one file, and a failed build leaves the
+    previous output untouched. The last successful run wins the path.
+    """
+    output = Path(cmd.cwd) / cmd.outputs[0]
+    output.parent.mkdir(parents=True, exist_ok=True)
+    tmp_dir = Path(tempfile.mkdtemp(dir=output.parent, prefix=f".{output.name}."))
+    tmp_output = tmp_dir / output.name
+    try:
+        outcome = run_command(_with_output(cmd, tmp_output), extra_env=extra_env, include_paths=include_paths)
+        if outcome.kind == OutcomeKind.PASS and tmp_output.is_file():
+            os.replace(tmp_output, output)
+        return replace(outcome, command=cmd)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def run_cached_test(
     cmd: Command,
     *,
@@ -850,6 +940,12 @@ def run_cached_test(
     old meta is deleted, the binary is renamed into place, and only then
     is the new meta written; a missing or unreadable meta is a miss.
     Temp files are removed on every failure path.
+
+    Concurrent runs may publish different content (other flags or test
+    selection) to the same path. The delete/rename/write sequence runs under
+    an exclusive :func:`_meta_lock`, and each run executes a private hard
+    link of the binary it built or validated, so it never runs another
+    run's replacement.
 
     When *skip_cache_write* is True (``--no-cache``), the binary is
     built into a private ``mkdtemp`` directory removed after execution.
@@ -881,22 +977,31 @@ def run_cached_test(
 
     # --- cache hit path (skipped when cache writes are disabled) ---
     if not skip_cache_write:
-        stored_key = read_cache_meta(meta_path)
-        if stored_key == cache_key and binary_path.is_file():
-            return _execute_binary(
-                cmd,
-                str(binary_path),
-                extra_env=extra_env,
-                include_paths=include_paths,
-                remaining_timeout=cmd.timeout_s,
-                runtime_args=runtime_args,
-            )
+        binary_path.parent.mkdir(parents=True, exist_ok=True)
+        hit_dir = Path(tempfile.mkdtemp(dir=binary_path.parent, prefix=f".{binary_path.name}.run."))
+        try:
+            with _meta_lock(meta_path, exclusive=False):
+                hit = read_cache_meta(meta_path) == cache_key and binary_path.is_file()
+                if hit:
+                    claimed = _claim_private(binary_path, hit_dir)
+            if hit:
+                return _execute_binary(
+                    cmd,
+                    str(claimed),
+                    extra_env=extra_env,
+                    include_paths=include_paths,
+                    remaining_timeout=cmd.timeout_s,
+                    runtime_args=runtime_args,
+                )
+        finally:
+            shutil.rmtree(hit_dir, ignore_errors=True)
 
     # --- cache miss: build to a unique temp path ---
     # Worker threads share a pid, so temp names must come from mkstemp /
     # mkdtemp. The cache temp lives next to the binary so the publishing
     # rename stays on one filesystem and is atomic.
     tmp_dir: Path | None = None
+    run_dir: Path | None = None
     if skip_cache_write:
         tmp_dir = Path(tempfile.mkdtemp(prefix="mojox_nocache_"))
         tmp_binary = tmp_dir / binary_path.name
@@ -940,18 +1045,20 @@ def run_cached_test(
         if skip_cache_write:
             exec_binary = tmp_binary
         else:
-            # Drop the old key before the binary changes: an interrupt
-            # between rename and meta write then reads as a miss, never
-            # as the old key vouching for the new binary.
-            meta_path.unlink(missing_ok=True)
-            os.replace(tmp_binary, binary_path)
-            published = True
-            write_cache_meta(
-                meta_path,
-                cache_key=cache_key,
-                compiler_version=compiler_version,
-            )
-            exec_binary = binary_path
+            run_dir = Path(tempfile.mkdtemp(dir=binary_path.parent, prefix=f".{binary_path.name}.run."))
+            exec_binary = _claim_private(tmp_binary, run_dir)
+            with _meta_lock(meta_path, exclusive=True):
+                # Drop the old key before the binary changes: an interrupt
+                # between rename and meta write then reads as a miss, never
+                # as the old key vouching for the new binary.
+                meta_path.unlink(missing_ok=True)
+                os.replace(tmp_binary, binary_path)
+                published = True
+                write_cache_meta(
+                    meta_path,
+                    cache_key=cache_key,
+                    compiler_version=compiler_version,
+                )
 
         # --- execute ---
         timeout_left = _remaining_timeout(cmd.timeout_s, build_outcome.elapsed_s)
@@ -964,6 +1071,8 @@ def run_cached_test(
             runtime_args=runtime_args,
         )
     finally:
+        if run_dir is not None:
+            shutil.rmtree(run_dir, ignore_errors=True)
         if tmp_dir is not None:
             shutil.rmtree(tmp_dir, ignore_errors=True)
         elif not published:
@@ -999,8 +1108,9 @@ def run_cached_precompile(
     """Precompile a lib package unless the published one matches *cache_key*.
 
     The package is ``cmd.outputs[0]``, one ``.mojoc`` file. Its key lives
-    in ``<meta_dir>/precompile-<file name>.json``; output names are unique
-    per lib, so libs never share an entry. A hit needs the stored key to
+    in ``<meta_dir>/precompile-<dir name>-<file name>.json``; the dir name is
+    the package set's content name, so sets never share an entry, and output
+    names are unique per lib. A hit needs the stored key to
     match and the package to be a non-empty file. It returns a PASS
     without running the compiler, so dependents run as usual.
 
@@ -1013,11 +1123,22 @@ def run_cached_precompile(
     A ``None`` key (``--no-cache``, or an uncacheable command) skips the
     lookup and writes no meta. The package is still published, because
     dependents import it from its fixed path, so the old meta is dropped.
+
+    The meta check and the delete/rename/write sequence run under
+    :func:`_meta_lock`, so concurrent runs cannot leave one's key vouching
+    for another's package. The planner puts each package set in a directory
+    named by :func:`precompile_set_id`, so a dependent never imports a
+    package built from other inputs.
     """
     output = Path(cmd.cwd) / cmd.outputs[0]
-    meta_path = meta_dir / f"precompile-{output.name}.json"
+    meta_path = meta_dir / f"precompile-{output.parent.name}-{output.name}.json"
 
-    if cache_key is not None and read_cache_meta(meta_path) == cache_key and _is_nonempty_file(output):
+    if cache_key is not None:
+        with _meta_lock(meta_path, exclusive=False):
+            hit = read_cache_meta(meta_path) == cache_key and _is_nonempty_file(output)
+    else:
+        hit = False
+    if hit:
         return Outcome(
             command=cmd,
             kind=OutcomeKind.PASS,
@@ -1044,10 +1165,11 @@ def run_cached_precompile(
             )
         # Same ordering as run_cached_test: an interrupt after the rename
         # reads as a miss, never as the old key vouching for the new file.
-        meta_path.unlink(missing_ok=True)
-        os.replace(tmp_output, output)
-        if cache_key is not None:
-            write_cache_meta(meta_path, cache_key=cache_key, compiler_version=compiler_version)
+        with _meta_lock(meta_path, exclusive=True):
+            meta_path.unlink(missing_ok=True)
+            os.replace(tmp_output, output)
+            if cache_key is not None:
+                write_cache_meta(meta_path, cache_key=cache_key, compiler_version=compiler_version)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
     return replace(outcome, command=cmd)

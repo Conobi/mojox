@@ -328,7 +328,6 @@ def _resolve_pipeline(
     from mojox_core import (
         discover,
         parse_manifest,
-        plan,
         resolve,
     )
     from mojox_core.environment import build_env
@@ -409,11 +408,44 @@ def _resolve_pipeline(
         print(str(e), file=sys.stderr)
         sys.exit(2)
 
-    commands = plan(graph, env, policy, toolchain, host)
+    commands = _plan_content_addressed(graph, env, policy, toolchain, host)
 
     include_paths = tuple(dict.fromkeys(list(policy.include_paths) + [d.include_dir for d in env.include_sequence]))
 
     return manifest, graph, env, policy, toolchain, host, settings, commands, include_paths
+
+
+def _plan_content_addressed(
+    graph: TargetGraph,
+    env: ResolvedEnv,
+    policy: Policy,
+    toolchain: Toolchain,
+    host: HostFacts,
+    *,
+    force_precompile: bool = False,
+) -> tuple[Command, ...]:
+    """Plan *graph* with its packages in a directory named after their inputs.
+
+    Two runs in one project whose libs, flags or environment differ publish
+    to different ``.mojox/build/pkg/<name>`` dirs, so neither can import (or
+    cache a binary built against) the other's packages. Identical runs share
+    one dir, so cache hits survive. ``--no-cache`` does not change the name.
+    """
+    from mojox_core import plan
+
+    from .exec import precompile_set_id
+
+    commands = plan(graph, env, policy, toolchain, host, force_precompile=force_precompile)
+    if not any(c.kind == CommandKind.COMPILE_PACKAGE for c in commands):
+        return commands
+    namespace = precompile_set_id(
+        commands,
+        extra_env=dict(policy.env) or None,
+        compiler_version=toolchain.version,
+        cc_realpath=host.cc_realpath,
+        nix_cc=host.nix_cc,
+    )
+    return plan(graph, env, policy, toolchain, host, force_precompile=force_precompile, pkg_namespace=namespace)
 
 
 def _make_cache_context(
@@ -434,7 +466,8 @@ def _make_cache_context(
     :class:`~mojox.exec.CacheContext`), except the precompile output dir
     (``.mojox/build/pkg``): its packages are a function of the lib sources,
     the include dirs, the environment and the compiler, which this key
-    covers too, and each is only replaced under its own precompile cache key.
+    covers too. Each package set lives in a subdirectory named by a hash of
+    those inputs, which is in the argv the key hashes.
     *host* supplies the C toolchain identity (``cc_realpath``, ``nix_cc``) that
     both keys hash.
     """
@@ -720,7 +753,6 @@ def _plan_bundle(
     from dataclasses import replace
 
     from mojox_core import Target, TargetGraph, TargetKind
-    from mojox_core import plan as plan_fn
 
     lib_targets = tuple(t for t in graph.targets if t.kind == TargetKind.LIB)
     harness = Target(TargetKind.TEST, harness_rel, "bundle::harness")
@@ -731,7 +763,7 @@ def _plan_bundle(
         lints=replace(policy.lints, warnings_as_errors=False),
     )
     bundle_graph = TargetGraph(targets=(*lib_targets, harness), edges=())
-    return plan_fn(bundle_graph, env, bundle_policy, toolchain, host, force_precompile=True)
+    return _plan_content_addressed(bundle_graph, env, bundle_policy, toolchain, host, force_precompile=True)
 
 
 def _run_bundle_test(
@@ -764,8 +796,9 @@ def _run_bundle_test(
     dirs. The parents of lib targets expose more than the lib packages
     ``project_hash`` covers (sibling modules such as ``src/util.mojo``,
     non-target packages); being on the harness's ``-I``, they are stamped
-    with the others. The staging tree is not stamped: it is regenerated
-    each run from the test files ``tests_tree_hash`` covers.
+    with the others. The staging tree is not stamped: it is a function of
+    the test files ``tests_tree_hash`` covers, and lives in a content-hashed
+    directory that is left in place, as a concurrent run may use it.
     """
     import time
     from dataclasses import replace
@@ -786,7 +819,7 @@ def _run_bundle_test(
         render_starting,
         render_summary,
     )
-    from .staging import cleanup_staging, create_bundle_staging
+    from .staging import create_bundle_staging
     from .types import OutputFormat
 
     root = Path.cwd()
@@ -832,106 +865,102 @@ def _run_bundle_test(
     test_file_paths = [m.file_path for m in bundle_modules]
     staging_result = create_bundle_staging(root, test_file_paths, harness_source)
 
+    bundle_commands = _plan_bundle(
+        root=root,
+        graph=graph,
+        env=env,
+        policy=policy,
+        toolchain=toolchain,
+        host=host,
+        harness_rel=str(staging_result.harness_path.relative_to(root)),
+        staging_include=staging_result.include_path,
+    )
+
+    # Runtime -k filter passed as argv to the binary
+    runtime_args: tuple[str, ...] = ()
+    if filter_pattern:
+        runtime_args = (filter_pattern,)
+
+    bundle_include = (staging_result.include_path, *include_paths)
+
+    cache_ctx = replace(
+        cache_ctx,
+        runtime_args=runtime_args,
+        unstamped_dirs=cache_ctx.unstamped_dirs | {os.path.normpath(staging_result.include_path)},
+    )
+
+    # --- Callbacks ---
+    on_start = None
+    on_complete = None
+
+    if output_format == OutputFormat.JSON:
+        from .json import (
+            JsonEventWriter,
+            make_json_callbacks,
+            serialize_suite_finished,
+            serialize_suite_started,
+        )
+
+        writer = JsonEventWriter(sys.stdout)
+        test_count = sum(1 for c in bundle_commands if c.kind in _TEST_KINDS)
+        writer.write_event(
+            serialize_suite_started(test_count, jobs=1, compile_threads=policy.compile_threads, mode="bundle")
+        )
+        json_on_start, json_on_complete = make_json_callbacks(writer)
+        on_start = json_on_start
+        on_complete = json_on_complete
+    else:
+        render_starting(
+            len(bundle_commands),
+            jobs=1,
+            compile_threads=policy.compile_threads,
+            jobs_detail=_jobs_detail(policy, host, 1),
+        )
+        render_bundle_header(
+            functions=sum(len(m.functions) for m in bundle_modules),
+            packages=sum(1 for t in graph.targets if t.kind == TargetKind.LIB),
+            examples=0,
+            origin=_origin(policy, "test-bundle"),
+            timeout_s=policy.timeout_s,
+            timeout_origin=_origin(policy, "timeout"),
+        )
+        on_complete = make_progress_callback(
+            success_output=success_output,
+            failure_output=failure_output,
+        )
+
+    # --- Execute ---
+    wall_start = time.monotonic()
     try:
-        bundle_commands = _plan_bundle(
-            root=root,
-            graph=graph,
-            env=env,
-            policy=policy,
-            toolchain=toolchain,
-            host=host,
-            harness_rel=str(staging_result.harness_path.relative_to(root)),
-            staging_include=staging_result.include_path,
+        outcomes = run_commands(
+            bundle_commands,
+            max_workers=1,
+            extra_env=dict(policy.env) or None,
+            include_paths=bundle_include,
+            on_start=on_start,
+            on_complete=on_complete,
+            fail_fast=fail_fast,
+            cache_context=cache_ctx,
         )
+    except KeyboardInterrupt:
+        print(f"\n{_interrupted_summary(bundle_commands)}", file=sys.stderr)
+        sys.exit(130)
+    wall_elapsed = time.monotonic() - wall_start
 
-        # Runtime -k filter passed as argv to the binary
-        runtime_args: tuple[str, ...] = ()
-        if filter_pattern:
-            runtime_args = (filter_pattern,)
-
-        bundle_include = (staging_result.include_path, *include_paths)
-
-        cache_ctx = replace(
-            cache_ctx,
-            runtime_args=runtime_args,
-            unstamped_dirs=cache_ctx.unstamped_dirs | {os.path.normpath(staging_result.include_path)},
+    # --- Render ---
+    if output_format == OutputFormat.JSON:
+        writer.write_event(serialize_suite_finished(outcomes, elapsed_s=wall_elapsed))
+    else:
+        render_final_output(
+            outcomes,
+            success_output=success_output,
+            failure_output=failure_output,
         )
+        render_summary(outcomes)
+        if any(o.command.kind == CommandKind.BUILD_TEST and _harness_stopped_early(o) for o in outcomes):
+            print("rerun with --no-bundle to isolate the failing test", file=sys.stderr)
 
-        # --- Callbacks ---
-        on_start = None
-        on_complete = None
-
-        if output_format == OutputFormat.JSON:
-            from .json import (
-                JsonEventWriter,
-                make_json_callbacks,
-                serialize_suite_finished,
-                serialize_suite_started,
-            )
-
-            writer = JsonEventWriter(sys.stdout)
-            test_count = sum(1 for c in bundle_commands if c.kind in _TEST_KINDS)
-            writer.write_event(
-                serialize_suite_started(test_count, jobs=1, compile_threads=policy.compile_threads, mode="bundle")
-            )
-            json_on_start, json_on_complete = make_json_callbacks(writer)
-            on_start = json_on_start
-            on_complete = json_on_complete
-        else:
-            render_starting(
-                len(bundle_commands),
-                jobs=1,
-                compile_threads=policy.compile_threads,
-                jobs_detail=_jobs_detail(policy, host, 1),
-            )
-            render_bundle_header(
-                functions=sum(len(m.functions) for m in bundle_modules),
-                packages=sum(1 for t in graph.targets if t.kind == TargetKind.LIB),
-                examples=0,
-                origin=_origin(policy, "test-bundle"),
-                timeout_s=policy.timeout_s,
-                timeout_origin=_origin(policy, "timeout"),
-            )
-            on_complete = make_progress_callback(
-                success_output=success_output,
-                failure_output=failure_output,
-            )
-
-        # --- Execute ---
-        wall_start = time.monotonic()
-        try:
-            outcomes = run_commands(
-                bundle_commands,
-                max_workers=1,
-                extra_env=dict(policy.env) or None,
-                include_paths=bundle_include,
-                on_start=on_start,
-                on_complete=on_complete,
-                fail_fast=fail_fast,
-                cache_context=cache_ctx,
-            )
-        except KeyboardInterrupt:
-            print(f"\n{_interrupted_summary(bundle_commands)}", file=sys.stderr)
-            sys.exit(130)
-        wall_elapsed = time.monotonic() - wall_start
-
-        # --- Render ---
-        if output_format == OutputFormat.JSON:
-            writer.write_event(serialize_suite_finished(outcomes, elapsed_s=wall_elapsed))
-        else:
-            render_final_output(
-                outcomes,
-                success_output=success_output,
-                failure_output=failure_output,
-            )
-            render_summary(outcomes)
-            if any(o.command.kind == CommandKind.BUILD_TEST and _harness_stopped_early(o) for o in outcomes):
-                print("rerun with --no-bundle to isolate the failing test", file=sys.stderr)
-
-        sys.exit(determine_exit_code(outcomes))
-
-    finally:
-        cleanup_staging(staging_result.staging_dir)
+    sys.exit(determine_exit_code(outcomes))
 
 
 def _read_run_manifest(root: Path) -> Manifest | None:
@@ -971,7 +1000,7 @@ def _cmd_run(args: argparse.Namespace) -> None:
     """
     from dataclasses import replace
 
-    from mojox_core import plan, resolve
+    from mojox_core import resolve
     from mojox_core.environment import build_env
     from mojox_core.io.environment import read_distributions, read_host_facts, read_lockfile
     from mojox_core.io.toolchain import resolve as resolve_toolchain
@@ -1030,7 +1059,7 @@ def _cmd_run(args: argparse.Namespace) -> None:
         targets=(Target(TargetKind.TEST, args.file, args.file),),
         edges=(),
     )
-    commands = plan(graph, env, policy, toolchain, host)
+    commands = _plan_content_addressed(graph, env, policy, toolchain, host)
 
     if args.dry_run:
         from .output import render_dry_run
@@ -1281,10 +1310,12 @@ def _cmd_metadata(args: argparse.Namespace) -> None:
 
 
 def _cmd_cache_clean(args: argparse.Namespace) -> None:
-    """Remove all cached test binaries and metadata.
+    """Remove everything mojox regenerates under ``.mojox``.
 
-    Deletes the ``.mojox/cache`` directory tree under the current
-    working directory.  Safe to call when no cache exists.
+    Deletes ``cache`` (test binaries and metadata), ``bundle`` (bundle
+    staging trees, including leftover ``.build.*`` dirs) and ``build/pkg``
+    (precompiled packages, one directory per distinct input set) under the
+    current working directory. Safe to call when none exist.
 
     Args:
         args: Parsed CLI arguments (unused but required by the
@@ -1292,11 +1323,14 @@ def _cmd_cache_clean(args: argparse.Namespace) -> None:
     """
     import shutil
 
-    cache_dir = Path.cwd() / ".mojox" / "cache"
-    if cache_dir.is_dir():
-        shutil.rmtree(cache_dir)
-        print(f"Removed {cache_dir}")
-    else:
+    root = Path.cwd() / ".mojox"
+    removed = False
+    for target in (root / "cache", root / "bundle", root / "build" / "pkg"):
+        if target.is_dir():
+            shutil.rmtree(target)
+            print(f"Removed {target}")
+            removed = True
+    if not removed:
         print("Nothing to clean")
 
 

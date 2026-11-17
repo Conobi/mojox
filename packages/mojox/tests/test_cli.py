@@ -538,6 +538,23 @@ class TestCacheSubcommand:
         assert "Removed" in result.stdout
         assert not cache_dir.exists()
 
+    def test_cache_clean_removes_bundle_staging_and_packages(self, tmp_path):
+        """Staging trees, stale build dirs and content-named package dirs are removed too."""
+        root = tmp_path / ".mojox"
+        for rel in ("bundle/0123abcd/stage", "bundle/.build.xyz", "build/pkg/0123abcd"):
+            (root / rel).mkdir(parents=True)
+        (root / "build" / "pkg" / "0123abcd" / "mylib.mojoc").write_text("pkg")
+
+        result = subprocess.run(
+            [sys.executable, "-m", "mojox", "cache", "clean"],
+            cwd=str(tmp_path),
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert not (root / "bundle").exists()
+        assert not (root / "build" / "pkg").exists()
+
     def test_cache_clean_nothing_to_clean(self, tmp_path):
         """cache clean with no cache directory prints info message."""
         result = subprocess.run(
@@ -1135,11 +1152,13 @@ class TestPrecompileCache:
 
     @staticmethod
     def _package(proj: Path) -> Path:
-        return proj / ".mojox" / "build" / "pkg" / "mylib.mojoc"
+        packages = (proj / ".mojox" / "build" / "pkg").glob("*/mylib.mojoc")
+        return max(packages, key=lambda p: p.stat().st_mtime_ns)
 
     @staticmethod
     def _meta(proj: Path) -> Path:
-        return proj / ".mojox" / "cache" / "meta" / "precompile-mylib.mojoc.json"
+        metas = (proj / ".mojox" / "cache" / "meta").glob("precompile-*-mylib.mojoc.json")
+        return max(metas, key=lambda p: p.stat().st_mtime_ns, default=proj / "no-precompile-meta.json")
 
     def test_warm_run_skips_precompile(self, project):
         proj, _dep, log = project
@@ -1155,6 +1174,26 @@ class TestPrecompileCache:
         assert self._run() == 0
         assert self._precompiles(log) == 2
         assert self._package(proj).read_text() == "mojoc:fn lib(): return\n"
+
+    def test_different_lib_content_gets_its_own_package_dir(self, project):
+        """Another run's lib content must never overwrite or be imported as this run's package."""
+        proj, _dep, _log = project
+        assert self._run() == 0
+        first = self._package(proj)
+        (proj / "src" / "mylib" / "__init__.mojo").write_text("fn lib(): return\n")
+        assert self._run() == 0
+        second = self._package(proj)
+        assert first.parent != second.parent
+        assert first.read_text() == "mojoc:fn lib(): pass\n"
+        assert second.read_text() == "mojoc:fn lib(): return\n"
+
+    def test_no_cache_run_shares_the_content_dir_but_rebuilds(self, project):
+        proj, _dep, log = project
+        assert self._run() == 0
+        first = self._package(proj)
+        assert self._run("--no-cache") == 0
+        assert self._package(proj) == first
+        assert self._precompiles(log) == 2
 
     def test_new_lib_module_reprecompiles(self, project):
         proj, _dep, log = project

@@ -15,6 +15,7 @@ from mojox.exec import (
     _build_test_cache_key,
     _extract_test_source_and_flags,
     _precompile_cache_key,
+    precompile_set_id,
     run_cached_precompile,
     run_cached_test,
     run_command,
@@ -805,6 +806,17 @@ class TestBuildTestCacheKey:
         ctx = replace(_ctx(tmp_path, ()), unstamped_dirs=frozenset({str(pkg)}))
         before = _build_test_cache_key(cmd, ctx, None)
         (pkg / "mylib.mojoc").write_text("rewritten")
+        assert _build_test_cache_key(cmd, ctx, None) == before
+
+    def test_subdir_of_an_unstamped_dir_is_ignored(self, tmp_path: Path):
+        """Content-named package dirs sit under the unstamped precompile root."""
+        pkg = tmp_path / ".mojox" / "build" / "pkg"
+        ns = pkg / "0123abcd"
+        ns.mkdir(parents=True)
+        cmd = _planner_cmd(tmp_path, "-I", str(ns))
+        ctx = replace(_ctx(tmp_path, ()), unstamped_dirs=frozenset({str(pkg)}))
+        before = _build_test_cache_key(cmd, ctx, None)
+        (ns / "mylib.mojoc").write_text("rewritten")
         assert _build_test_cache_key(cmd, ctx, None) == before
 
     def test_identical_include_lists_are_stamped_once(self, tmp_path: Path, monkeypatch):
@@ -1641,7 +1653,7 @@ class TestRunCachedPrecompile:
         assert second.command is cmd
         assert len(log.read_text().splitlines()) == 1
         assert package.read_text() == "pkg:1"
-        assert (meta_dir / "precompile-mylib.mojoc.json").is_file()
+        assert (meta_dir / "precompile-pkg-mylib.mojoc.json").is_file()
 
     def test_builds_into_a_temp_path_with_the_same_file_name(self, setup):
         cmd, meta_dir, log, package = setup
@@ -1665,7 +1677,7 @@ class TestRunCachedPrecompile:
         assert self._run(cmd, meta_dir, None).kind == OutcomeKind.PASS
         assert self._run(cmd, meta_dir, None).kind == OutcomeKind.PASS
         assert len(log.read_text().splitlines()) == 3
-        assert not (meta_dir / "precompile-mylib.mojoc.json").exists()
+        assert not (meta_dir / "precompile-pkg-mylib.mojoc.json").exists()
         assert package.read_text() == "pkg:3"
 
     def test_failure_writes_no_meta_and_keeps_old_package(self, setup):
@@ -1675,14 +1687,14 @@ class TestRunCachedPrecompile:
         failed = self._run(cmd, meta_dir, "k2")
         assert failed.kind == OutcomeKind.FAIL
         assert package.read_text() == "pkg:1"
-        assert read_cache_meta(meta_dir / "precompile-mylib.mojoc.json") == "k1"
+        assert read_cache_meta(meta_dir / "precompile-pkg-mylib.mojoc.json") == "k1"
         assert not any(p.name.startswith(".") for p in package.parent.iterdir())
 
     def test_first_failure_writes_no_meta(self, setup):
         cmd, meta_dir, log, _package = setup
         (log.parent / "FAIL").touch()
         assert self._run(cmd, meta_dir).kind == OutcomeKind.FAIL
-        assert not (meta_dir / "precompile-mylib.mojoc.json").exists()
+        assert not (meta_dir / "precompile-pkg-mylib.mojoc.json").exists()
 
     def test_success_without_output_is_a_compile_error(self, tmp_path: Path):
         base = _precompile_cmd(tmp_path)
@@ -1691,14 +1703,14 @@ class TestRunCachedPrecompile:
         outcome = self._run(cmd, meta_dir)
         assert outcome.kind == OutcomeKind.COMPILE_ERROR
         assert "mylib.mojoc" in outcome.stderr
-        assert not (meta_dir / "precompile-mylib.mojoc.json").exists()
+        assert not (meta_dir / "precompile-pkg-mylib.mojoc.json").exists()
 
     def test_meta_absent_while_package_is_replaced(self, setup, monkeypatch):
         import mojox.exec as exec_mod
 
         cmd, meta_dir, _log, package = setup
         self._run(cmd, meta_dir, "k1")
-        meta = meta_dir / "precompile-mylib.mojoc.json"
+        meta = meta_dir / "precompile-pkg-mylib.mojoc.json"
         seen: list[bool] = []
         real_replace = exec_mod.os.replace
 
@@ -1742,7 +1754,7 @@ class TestRunCachedPrecompile:
         run_commands((cmd,), cache_context=ctx)
         run_commands((cmd,), cache_context=ctx)
         assert len(log.read_text().splitlines()) == 2
-        assert not (meta_dir / "precompile-mylib.mojoc.json").exists()
+        assert not (meta_dir / "precompile-pkg-mylib.mojoc.json").exists()
 
 
 _ENV_DUMP = "import json, os; print(json.dumps(dict(os.environ)))"
@@ -1898,3 +1910,189 @@ class TestForwardedEnvPrecedence:
         env = _child_env({"CC": "/host/cc", "TMPDIR": "/host/tmp"}, {"CC": "/user/cc"})
         assert env["CC"] == "/user/cc"
         assert env["TMPDIR"] == "/host/tmp"
+
+
+class TestConcurrentRunsShareACache:
+    """Two runs in one project may publish different content under one path."""
+
+    def test_run_executes_its_own_build_not_a_concurrent_replacement(self, tmp_path: Path, monkeypatch):
+        """Another run publishes between this run's publish and exec: this run must still run its own binary."""
+        import mojox.exec as exec_mod
+
+        binary = tmp_path / "bin" / "test_x-deadbeef"
+        meta_dir = tmp_path / "meta"
+        real_execute = exec_mod._execute_binary
+        competitor: list[Outcome | None] = []
+
+        def execute_after_competitor_publishes(cmd, path, **kwargs):
+            if not competitor:
+                competitor.append(None)  # claimed before running: the competitor's own exec must not recurse
+                competitor[0] = run_cached_test(
+                    _recording_cmd(tmp_path / "log_b", "B", binary),
+                    cache_key="kB",
+                    meta_dir=meta_dir,
+                    compiler_version="v",
+                )
+            return real_execute(cmd, path, **kwargs)
+
+        monkeypatch.setattr(exec_mod, "_execute_binary", execute_after_competitor_publishes)
+        mine = run_cached_test(
+            _recording_cmd(tmp_path / "log_a", "A", binary),
+            cache_key="kA",
+            meta_dir=meta_dir,
+            compiler_version="v",
+        )
+
+        assert mine.stdout.strip() == "built-A"
+        assert competitor[0] is not None and competitor[0].stdout.strip() == "built-B"
+        assert not any(p.name.startswith(".") for p in binary.parent.iterdir())
+
+    def test_cache_hit_executes_a_private_link(self, tmp_path: Path, monkeypatch):
+        """A hit runs a claimed inode, so a replace right after the key check cannot swap the binary."""
+        import mojox.exec as exec_mod
+
+        binary = tmp_path / "bin" / "test_x-deadbeef"
+        meta_dir = tmp_path / "meta"
+        run_cached_test(
+            _recording_cmd(tmp_path / "log", "A", binary), cache_key="kA", meta_dir=meta_dir, compiler_version="v"
+        )
+        ran: list[str] = []
+        real_execute = exec_mod._execute_binary
+
+        def spy(cmd, path, **kwargs):
+            ran.append(path)
+            return real_execute(cmd, path, **kwargs)
+
+        monkeypatch.setattr(exec_mod, "_execute_binary", spy)
+        outcome = run_cached_test(
+            _recording_cmd(tmp_path / "log", "never-built", binary),
+            cache_key="kA",
+            meta_dir=meta_dir,
+            compiler_version="v",
+        )
+
+        assert outcome.stdout.strip() == "built-A"
+        assert ran != [str(binary)]
+        assert not Path(ran[0]).exists()
+
+    def test_parallel_runs_keep_binary_and_key_paired(self, tmp_path: Path):
+        """Many runs, one path, distinct keys: each runs its own build and the survivor matches its meta."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        binary = tmp_path / "bin" / "test_x-deadbeef"
+        meta_dir = tmp_path / "meta"
+
+        def build(i: int) -> str:
+            outcome = run_cached_test(
+                _recording_cmd(tmp_path / f"log{i}", str(i), binary),
+                cache_key=f"k{i}",
+                meta_dir=meta_dir,
+                compiler_version="v",
+            )
+            return outcome.stdout.strip()
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            outs = list(pool.map(build, range(8)))
+
+        assert outs == [f"built-{i}" for i in range(8)]
+        survivor = binary.read_text().split("built-")[1].split("'")[0].strip()
+        assert read_cache_meta(meta_dir / f"{binary.name}.json") == f"k{survivor}"
+
+    @staticmethod
+    def _assert_replaces_hold_the_lock(monkeypatch, entry_lock: Path) -> list[bool]:
+        """Record, per ``os.replace``, whether *entry_lock* was exclusively held by someone else."""
+        import fcntl
+        import os
+
+        held: list[bool] = []
+        real = os.replace
+
+        def spy(src, dst):
+            fd = os.open(entry_lock, os.O_RDWR)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                held.append(False)
+            except BlockingIOError:
+                held.append(True)
+            finally:
+                os.close(fd)
+            return real(src, dst)
+
+        monkeypatch.setattr(os, "replace", spy)
+        return held
+
+    def test_test_publish_holds_the_entry_lock(self, tmp_path: Path, monkeypatch):
+        binary = tmp_path / "bin" / "test_x-deadbeef"
+        meta_dir = tmp_path / "meta"
+        held = self._assert_replaces_hold_the_lock(monkeypatch, meta_dir / f"{binary.name}.json.lock")
+        run_cached_test(
+            _recording_cmd(tmp_path / "log", "A", binary), cache_key="kA", meta_dir=meta_dir, compiler_version="v"
+        )
+        assert held == [True, True]  # the binary rename and the meta write
+
+    def test_precompile_publish_holds_the_entry_lock(self, tmp_path: Path, monkeypatch):
+        base = _precompile_cmd(tmp_path)
+        script = "import sys\np = sys.argv[sys.argv.index('-o') + 1]\nopen(p, 'w').write('pkg')\n"
+        cmd = replace(base, argv=(sys.executable, "-c", script, *base.argv[1:]))
+        meta_dir = tmp_path / "meta"
+        held = self._assert_replaces_hold_the_lock(monkeypatch, meta_dir / "precompile-pkg-mylib.mojoc.json.lock")
+        outcome = run_cached_precompile(cmd, cache_key="k", meta_dir=meta_dir, compiler_version="v")
+        assert outcome.kind == OutcomeKind.PASS, outcome.stderr
+        assert held == [True, True]
+
+    @pytest.mark.parametrize("kind", [CommandKind.CHECK_EXAMPLE, CommandKind.COMPILE_BINARY])
+    def test_uncached_outputs_are_published_by_rename(self, tmp_path: Path, kind: CommandKind):
+        """The compiler never writes the shared output path itself, and a failed build keeps the old file."""
+        from mojox.exec import _execute
+
+        out = tmp_path / "out" / "prog"
+        out.parent.mkdir()
+        out.write_text("old")
+        seen: list[str] = []
+        script = (
+            "import sys\np = sys.argv[sys.argv.index('-o') + 1]\n"
+            f"print(p == {str(out)!r})\nopen(p, 'w').write(sys.argv[1])\nsys.exit(int(sys.argv[2]))\n"
+        )
+
+        def run(tag: str, rc: int) -> Outcome:
+            cmd = _cmd(
+                (sys.executable, "-c", script, tag, str(rc), "-o", str(out)),
+                cwd=PurePosixPath(tmp_path),
+                kind=kind,
+                outputs=("out/prog",),
+            )
+            return _execute(cmd, None, (), None)
+
+        failed = run("bad", 1)
+        assert failed.kind == OutcomeKind.FAIL
+        assert out.read_text() == "old"
+        ok = run("good", 0)
+        seen.append(ok.stdout.strip())
+        assert ok.kind == OutcomeKind.PASS and seen == ["False"]
+        assert out.read_text() == "good"
+        assert sorted(p.name for p in out.parent.iterdir()) == ["prog"]
+
+
+class TestPrecompileSetId:
+    """The package dir name follows the precompile keys, so it follows their inputs."""
+
+    @staticmethod
+    def _id(cmd: Command, **kw) -> str:
+        args = {"extra_env": None, "compiler_version": "1", "cc_realpath": "", "nix_cc": ""} | kw
+        return precompile_set_id([cmd], **args)
+
+    def test_same_inputs_share_a_name(self, tmp_path: Path):
+        assert self._id(_precompile_cmd(tmp_path)) == self._id(_precompile_cmd(tmp_path))
+
+    def test_lib_content_env_and_compiler_each_change_the_name(self, tmp_path: Path):
+        cmd = _precompile_cmd(tmp_path)
+        base = self._id(cmd)
+        assert self._id(cmd, extra_env={"X": "1"}) != base
+        assert self._id(cmd, compiler_version="2") != base
+        (tmp_path / "src" / "mylib" / "__init__.mojo").write_text("fn other(): pass\n")
+        assert self._id(cmd) != base
+
+    def test_non_package_commands_are_ignored(self, tmp_path: Path):
+        assert precompile_set_id(
+            [_cmd(("x",))], extra_env=None, compiler_version="1", cc_realpath="", nix_cc=""
+        ) == precompile_set_id([], extra_env=None, compiler_version="9", cc_realpath="", nix_cc="")

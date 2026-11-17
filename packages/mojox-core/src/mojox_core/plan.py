@@ -64,6 +64,7 @@ def plan(
     host: HostFacts,
     *,
     force_precompile: bool = False,
+    pkg_namespace: str = "",
 ) -> tuple[Command, ...]:
     """Produce the sequence of mojo commands to execute.
 
@@ -78,9 +79,14 @@ def plan(
     machine code, and a host-derived value would make binaries differ
     between machines. Flags that ``mojo precompile`` rejects
     (``-O``, ``-D``, ``--num-threads``) are stripped from lib targets.
+
+    Precompiled packages go to ``.mojox/build/pkg``, or to its
+    *pkg_namespace* subdirectory when one is given. A caller that derives
+    the namespace from the packages' inputs gives runs with different lib
+    content different dirs, so one run never imports another's packages.
     """
     commands: list[Command] = []
-    precompile_output_dir = PurePosixPath(str(host.manifest_dir)) / ".mojox" / "build" / "pkg"
+    precompile_output_dir = PurePosixPath(str(host.manifest_dir)) / ".mojox" / "build" / "pkg" / pkg_namespace
 
     lib_targets = [t for t in graph.targets if t.kind == TargetKind.LIB]
     dependent_targets = [t for t in graph.targets if t.kind in (TargetKind.TEST, TargetKind.EXAMPLE, TargetKind.BIN)]

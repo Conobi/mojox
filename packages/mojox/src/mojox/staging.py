@@ -4,12 +4,19 @@ Creates a temporary directory tree that mirrors the test layout with
 symlinks for ``.mojo`` files, adds ``__init__.mojo`` stubs where
 missing, and writes the generated harness source. The staging area
 is separate from the user's source tree.
+
+Each staging tree lives in a directory named after the hash of its content,
+so runs that need different harnesses never share one, and runs that need
+the same one share a stable path (which keeps the harness binary cached).
 """
 
 from __future__ import annotations
 
+import errno
+import hashlib
 import os
 import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,7 +28,7 @@ class StagingResult:
     Attributes:
         harness_path: Absolute path to the generated harness ``.mojo``
             file.
-        staging_dir: Root of the staging directory.
+        staging_dir: Root of this content-addressed staging directory.
         include_path: Path to add to ``-I`` for Mojo module resolution
             of test packages.
         diagnostics: Warning messages for excluded or problematic files.
@@ -41,25 +48,42 @@ def create_bundle_staging(
 ) -> StagingResult:
     """Create a staging area with symlinked test files and init stubs.
 
-    Mirrors the test directory tree inside a ``stage/`` subdirectory of
-    *staging_dir*, symlinking each ``.mojo`` file listed in
-    *test_file_paths*.  Directories that lack an ``__init__.mojo`` get
-    an empty one so Mojo treats them as importable packages.
+    Mirrors the test directory tree inside a ``stage/`` subdirectory of a
+    ``<hash>`` directory under *staging_dir*, symlinking each ``.mojo``
+    file listed in *test_file_paths*.  Directories that lack an
+    ``__init__.mojo`` get an empty one so Mojo treats them as importable
+    packages.
 
     Args:
         project_root: Absolute path to the project root.
         test_file_paths: Relative paths to test ``.mojo`` files.
         harness_source: Generated Mojo harness source code.
-        staging_dir: Where to create the staging area.  Defaults to
-            ``project_root / ".mojox" / "bundle"``.
+        staging_dir: Parent of the content-addressed staging directories.
+            Defaults to ``project_root / ".mojox" / "bundle"``.
 
     Returns:
-        A :class:`StagingResult` with paths and any diagnostics.
+        A :class:`StagingResult` with paths and any diagnostics. The tree is
+        built privately and renamed into place only if no identical one
+        exists, so concurrent callers never observe a partial tree and
+        never modify another's. It is never removed by a run: another run
+        may be compiling against it.
     """
     if staging_dir is None:
         staging_dir = project_root / ".mojox" / "bundle"
 
-    stage_root = staging_dir / "stage"
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    build_dir = Path(tempfile.mkdtemp(dir=staging_dir, prefix=".build."))
+    try:
+        return _publish(build_dir, _build_tree(project_root, test_file_paths, harness_source, build_dir), staging_dir)
+    finally:
+        shutil.rmtree(build_dir, ignore_errors=True)
+
+
+def _build_tree(
+    project_root: Path, test_file_paths: list[str], harness_source: str, build_dir: Path
+) -> tuple[str, ...]:
+    """Fill *build_dir* with ``stage/`` and ``harness.mojo``; return the diagnostics."""
+    stage_root = build_dir / "stage"
     diagnostics: list[str] = []
 
     dirs_seen: set[str] = set()
@@ -92,25 +116,34 @@ def create_bundle_staging(
         if not (staged_dir / "__init__.mojo").exists():
             (staged_dir / "__init__.mojo").write_text("")
 
-    harness_path = staging_dir / "harness.mojo"
-    harness_path.parent.mkdir(parents=True, exist_ok=True)
-    harness_path.write_text(harness_source)
+    (build_dir / "harness.mojo").write_text(harness_source)
+    return tuple(diagnostics)
 
+
+def _tree_digest(root: Path) -> str:
+    """Hash every entry of *root*: names, symlink targets and file contents."""
+    h = hashlib.sha256()
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames.sort()
+        for name in sorted(filenames):
+            path = Path(dirpath) / name
+            body = os.readlink(path) if path.is_symlink() else path.read_text()
+            h.update(f"{path.relative_to(root)}\0{body}\0".encode())
+    return h.hexdigest()[:16]
+
+
+def _publish(build_dir: Path, diagnostics: tuple[str, ...], parent: Path) -> StagingResult:
+    """Rename *build_dir* to ``parent/<digest>``, unless an identical tree is already there."""
+    final = parent / _tree_digest(build_dir)
+    try:
+        os.rename(build_dir, final)
+    except OSError as e:
+        # A non-empty target means an identical tree won the race: use it.
+        if e.errno not in (errno.ENOTEMPTY, errno.EEXIST):
+            raise
     return StagingResult(
-        harness_path=harness_path,
-        staging_dir=staging_dir,
-        include_path=str(stage_root),
-        diagnostics=tuple(diagnostics),
+        harness_path=final / "harness.mojo",
+        staging_dir=final,
+        include_path=str(final / "stage"),
+        diagnostics=diagnostics,
     )
-
-
-def cleanup_staging(staging_dir: Path) -> None:
-    """Remove the staging area.
-
-    Safe to call when the directory does not exist.
-
-    Args:
-        staging_dir: Root of the staging directory to remove.
-    """
-    if staging_dir.is_dir():
-        shutil.rmtree(staging_dir, ignore_errors=True)
