@@ -139,6 +139,8 @@ def compute_cache_key(
     mojo_path: str,
     flags: tuple[str, ...],
     env: Mapping[str, str],
+    cc_realpath: str = "",
+    nix_cc: str = "",
 ) -> str:
     """Build a composite SHA-256 cache key from all compilation inputs.
 
@@ -146,6 +148,10 @@ def compute_cache_key(
     are never reused. *flags* are hashed in order (``-I`` order decides
     which package wins); *env* is order-insensitive. Inputs are encoded
     as one JSON document so no two distinct inputs share a byte stream.
+
+    Host environment variables are never hashed: a per-run value such as
+    ``TMPDIR`` must not defeat the cache. The toolchain is identified by
+    *mojo_path*, *compiler_version*, *cc_realpath* and *nix_cc* instead.
 
     Args:
         test_source: The test ``.mojo`` file; its content is hashed.
@@ -155,7 +161,10 @@ def compute_cache_key(
         compiler_version: Mojo compiler version string.
         mojo_path: The compiler binary the build invokes.
         flags: Build argv after the output path, in argv order.
-        env: Environment the build runs with.
+        env: The user's extra environment (the resolved ``Policy.env``),
+            not the environment the child process receives.
+        cc_realpath: Real path of the ``cc`` mojo links with; empty when none.
+        nix_cc: The plain ``NIX_CC`` value; empty when unset.
     """
     h = hashlib.sha256()
     h.update(test_source.read_bytes())
@@ -167,6 +176,8 @@ def compute_cache_key(
             deps_stamp=deps_stamp,
             compiler_version=compiler_version,
             mojo_path=mojo_path,
+            cc_realpath=cc_realpath,
+            nix_cc=nix_cc,
             flags=flags,
             env=env,
         )
@@ -182,17 +193,22 @@ def compute_precompile_key(
     mojo_path: str,
     args: tuple[str, ...],
     env: Mapping[str, str],
+    cc_realpath: str = "",
+    nix_cc: str = "",
 ) -> str:
     """Build the cache key of one ``mojo precompile`` invocation.
 
-    Same encoding as :func:`compute_cache_key`, tagged so a precompile key
-    can never equal a test key.
+    Same encoding and the same toolchain identity as
+    :func:`compute_cache_key`, tagged so a precompile key can never equal
+    a test key.
 
     Args:
         lib_hash: :func:`hash_directory_tree` of the lib package.
         deps_stamp: :func:`stamp_include_dirs` of its ``-I`` dirs, in order.
         args: The argv after the compiler binary, in order.
-        env: Environment the precompile runs with.
+        env: The user's extra environment (the resolved ``Policy.env``).
+        cc_realpath: Real path of the ``cc`` mojo links with; empty when none.
+        nix_cc: The plain ``NIX_CC`` value; empty when unset.
     """
     return hashlib.sha256(
         _encode_inputs(
@@ -201,6 +217,8 @@ def compute_precompile_key(
             deps_stamp=deps_stamp,
             compiler_version=compiler_version,
             mojo_path=mojo_path,
+            cc_realpath=cc_realpath,
+            nix_cc=nix_cc,
             flags=args,
             env=env,
         )

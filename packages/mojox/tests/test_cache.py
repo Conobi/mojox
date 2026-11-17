@@ -9,6 +9,7 @@ from pathlib import Path
 from mojox.cache import (
     MOJO_IMPORT_SUFFIXES,
     compute_cache_key,
+    compute_precompile_key,
     hash_directory_tree,
     read_cache_meta,
     stamp_include_dirs,
@@ -531,3 +532,37 @@ class TestCorruptMeta:
         meta = tmp_path / "m.json"
         meta.mkdir()
         assert read_cache_meta(meta) is None
+
+
+class TestToolchainIdentityInKey:
+    """The key hashes the toolchain identity it is given: the C compiler's real path and ``NIX_CC``."""
+
+    def test_cc_realpath_change_different_key(self, tmp_path: Path):
+        src = tmp_path / "t.mojo"
+        src.write_text("fn main(): pass")
+        assert _key(src, cc_realpath="/nix/store/a-gcc/bin/gcc") != _key(src, cc_realpath="/nix/store/b-gcc/bin/gcc")
+
+    def test_nix_cc_change_different_key(self, tmp_path: Path):
+        src = tmp_path / "t.mojo"
+        src.write_text("fn main(): pass")
+        assert _key(src, nix_cc="/nix/store/a-gcc-wrapper") != _key(src, nix_cc="/nix/store/b-gcc-wrapper")
+
+    def test_absent_identity_is_a_fixed_marker(self, tmp_path: Path):
+        src = tmp_path / "t.mojo"
+        src.write_text("fn main(): pass")
+        assert _key(src) == _key(src, cc_realpath="", nix_cc="")
+        assert _key(src) != _key(src, cc_realpath="/usr/bin/gcc")
+
+    def test_precompile_key_tracks_the_identity(self):
+        base = {
+            "lib_hash": "l",
+            "deps_stamp": "d",
+            "compiler_version": "1.1.0",
+            "mojo_path": "/opt/mojo",
+            "args": ("precompile", "src/lib"),
+            "env": {},
+        }
+        key = compute_precompile_key(**base)
+        assert compute_precompile_key(**base, cc_realpath="/nix/store/a/bin/gcc") != key
+        assert compute_precompile_key(**base, nix_cc="/nix/store/a") != key
+        assert compute_precompile_key(**base, cc_realpath="", nix_cc="") == key

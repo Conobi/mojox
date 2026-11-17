@@ -1217,12 +1217,12 @@ class TestPrecompileCache:
         assert self._run() == 0
         assert self._precompiles(log) == 2
 
-    def test_env_change_reprecompiles(self, project, monkeypatch):
+    def test_host_locale_change_does_not_reprecompile(self, project, monkeypatch):
         _proj, _dep, log = project
         assert self._run() == 0
         monkeypatch.setenv("LANG", "en_US.UTF-8")
         assert self._run() == 0
-        assert self._precompiles(log) == 2
+        assert self._precompiles(log) == 1
 
     def test_profile_and_flags_do_not_reprecompile(self, project):
         """``mojo precompile`` takes no -O/-D/--flag, so its output ignores them."""

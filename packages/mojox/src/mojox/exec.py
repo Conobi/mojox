@@ -46,8 +46,8 @@ class CacheContext:
     key covers every include dir the compiler is given, whichever layer
     (dependency, manifest or profile flags, CLI flags) put it there. That
     stamp is memoised per dir list, since most commands share one.
-    ``COMPILE_PACKAGE`` commands only use ``compiler_version``, ``meta_dir``
-    and ``enabled``: their key is computed per command (see
+    ``COMPILE_PACKAGE`` commands only use ``compiler_version``, the
+    toolchain identity, ``meta_dir`` and ``enabled``: their key is computed per command (see
     :func:`_precompile_cache_key`).
 
     Attributes:
@@ -68,6 +68,9 @@ class CacheContext:
             stamp because other key inputs already determine their
             content: the precompile output and the bundle staging tree,
             both rewritten every run.
+        cc_realpath: Real path of the ``cc`` the compiler links with, as
+            ``HostFacts`` reports it; empty when there is none.
+        nix_cc: The plain ``NIX_CC`` value; empty when unset.
     """
 
     project_hash: str
@@ -78,6 +81,8 @@ class CacheContext:
     enabled: bool = True
     runtime_args: tuple[str, ...] = ()
     unstamped_dirs: frozenset[str] = frozenset()
+    cc_realpath: str = ""
+    nix_cc: str = ""
     _stamps: dict[tuple[str, ...], str] = field(default_factory=dict, init=False, compare=False, repr=False)
     _stamps_lock: threading.Lock = field(default_factory=threading.Lock, init=False, compare=False, repr=False)
 
@@ -188,9 +193,11 @@ def _build_test_cache_key(
 
     Beyond the per-run :class:`CacheContext` inputs, the key covers the
     compiler binary (``argv[0]``), the flags in argv order, a stat stamp of
-    every ``-I`` dir in them (:meth:`CacheContext.include_stamp`), and the
-    build environment as :func:`_merge_env` builds it for
-    :func:`run_command`. An argv that does not match the planner's
+    every ``-I`` dir in them (:meth:`CacheContext.include_stamp`), the
+    settings env (*extra_env*) and the toolchain identity of
+    *cache_context* (``cc_realpath``, ``nix_cc``). The host variables the
+    planner forwards are not hashed, so a per-run value such as ``TMPDIR``
+    cannot defeat the cache. An argv that does not match the planner's
     layout is uncacheable rather than keyed on a guess. So is a source that
     cannot be read (missing, a directory): the build then runs and the
     compiler reports it.
@@ -213,7 +220,9 @@ def _build_test_cache_key(
             compiler_version=cache_context.compiler_version,
             mojo_path=cmd.argv[0],
             flags=flags,
-            env=_merge_env(cmd.env, extra_env),
+            env=dict(extra_env or {}),
+            cc_realpath=cache_context.cc_realpath,
+            nix_cc=cache_context.nix_cc,
         )
     except OSError:
         return None
@@ -255,6 +264,8 @@ def _precompile_cache_key(
     cmd: Command,
     extra_env: dict[str, str] | None,
     compiler_version: str,
+    cc_realpath: str = "",
+    nix_cc: str = "",
 ) -> str | None:
     """Return the cache key for a COMPILE_PACKAGE command, or ``None`` if uncacheable.
 
@@ -262,8 +273,8 @@ def _precompile_cache_key(
     <flags...>``. The key covers the lib's importable files, a stat stamp
     of each ``-I`` dir in argv order (relative ones resolved against
     ``cmd.cwd``, as the compiler resolves them), the whole argv, the
-    compiler binary and version, and the environment as :func:`_merge_env`
-    builds it. Another layout, or a lib that is not a
+    compiler binary and version, the settings env (*extra_env*) and the
+    toolchain identity (*cc_realpath*, *nix_cc*). Another layout, or a lib that is not a
     readable directory, is uncacheable: it always precompiles.
     """
     argv = cmd.argv
@@ -284,7 +295,9 @@ def _precompile_cache_key(
         compiler_version=compiler_version,
         mojo_path=argv[0],
         args=argv[1:],
-        env=_merge_env(cmd.env, extra_env),
+        env=dict(extra_env or {}),
+        cc_realpath=cc_realpath,
+        nix_cc=nix_cc,
     )
 
 
@@ -295,7 +308,13 @@ def _resolve_cache_for_precompile(
     include_paths: tuple[str, ...],
 ) -> Outcome:
     """Route a COMPILE_PACKAGE command through :func:`run_cached_precompile`."""
-    cache_key = _precompile_cache_key(cmd, extra_env, cache_context.compiler_version) if cache_context.enabled else None
+    cache_key = (
+        _precompile_cache_key(
+            cmd, extra_env, cache_context.compiler_version, cache_context.cc_realpath, cache_context.nix_cc
+        )
+        if cache_context.enabled
+        else None
+    )
     return run_cached_precompile(
         cmd,
         cache_key=cache_key,

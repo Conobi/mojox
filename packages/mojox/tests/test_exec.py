@@ -1540,12 +1540,12 @@ class TestPrecompileCacheKey:
         base = _precompile_cache_key(_precompile_cmd(tmp_path), None, "1.0.0")
         assert _precompile_cache_key(_precompile_cmd(tmp_path, "--Werror"), None, "1.0.0") != base
 
-    def test_env_changes_key(self, tmp_path: Path):
+    def test_settings_env_changes_key_but_the_planner_env_does_not(self, tmp_path: Path):
         cmd = _precompile_cmd(tmp_path)
         base = _precompile_cache_key(cmd, None, "1.0.0")
         assert _precompile_cache_key(cmd, {"MODULAR_X": "1"}, "1.0.0") != base
         other = _precompile_cmd(tmp_path, env={"PATH": "/usr/bin", "HOME": "", "LANG": "fr_FR.UTF-8"})
-        assert _precompile_cache_key(other, None, "1.0.0") != base
+        assert _precompile_cache_key(other, None, "1.0.0") == base
 
     def test_mojo_path_changes_key(self, tmp_path: Path):
         base = _precompile_cache_key(_precompile_cmd(tmp_path), None, "1.0.0")
@@ -1745,30 +1745,79 @@ class TestSettingsLocalePrecedence:
         env = _child_env({"HOME": ""}, {"HOME": "/settings-home", "LANG": "fr_FR.UTF-8"})
         assert env["HOME"] == ""
 
-    def test_build_test_key_uses_effective_env(self, tmp_path: Path, monkeypatch):
+    def test_build_test_key_hashes_only_the_settings_env(self, tmp_path: Path, monkeypatch):
         import mojox.exec as exec_mod
 
-        seen: dict[str, dict] = {}
-        monkeypatch.setattr(exec_mod, "compute_cache_key", lambda **kw: seen.setdefault("env", dict(kw["env"])) and "k")
-        cmd = replace(_planner_cmd(tmp_path), env={"PATH": "/usr/bin", "HOME": "", "LC_ALL": "C.UTF-8"})
-        extra = {"LANG": "fr_FR.UTF-8"}
-        _build_test_cache_key(cmd, _ctx(tmp_path, ()), extra)
-        assert seen["env"] == exec_mod._merge_env(cmd.env, extra)
-        assert seen["env"] == {"PATH": "/usr/bin", "HOME": "", "LANG": "fr_FR.UTF-8"}
-
-    def test_precompile_key_uses_effective_env(self, tmp_path: Path, monkeypatch):
-        import mojox.exec as exec_mod
-
-        seen: dict[str, dict] = {}
-        monkeypatch.setattr(
-            exec_mod, "compute_precompile_key", lambda **kw: seen.setdefault("env", dict(kw["env"])) and "k"
+        seen: dict[str, object] = {}
+        monkeypatch.setattr(exec_mod, "compute_cache_key", lambda **kw: seen.update(kw) or "k")
+        cmd = replace(
+            _planner_cmd(tmp_path),
+            env={"PATH": "/usr/bin", "HOME": "", "LC_ALL": "C.UTF-8", "TMPDIR": "/run/t"},
         )
-        cmd = _precompile_cmd(tmp_path, env={"PATH": "/usr/bin", "HOME": "", "LC_ALL": "C.UTF-8"})
-        extra = {"LANG": "fr_FR.UTF-8"}
-        _precompile_cache_key(cmd, extra, "1.0.0")
-        assert seen["env"] == {"PATH": "/usr/bin", "HOME": "", "LANG": "fr_FR.UTF-8"}
+        _build_test_cache_key(cmd, _ctx(tmp_path, ()), {"LANG": "fr_FR.UTF-8"})
+        assert seen["env"] == {"LANG": "fr_FR.UTF-8"}
+
+    def test_precompile_key_hashes_only_the_settings_env(self, tmp_path: Path, monkeypatch):
+        import mojox.exec as exec_mod
+
+        seen: dict[str, object] = {}
+        monkeypatch.setattr(exec_mod, "compute_precompile_key", lambda **kw: seen.update(kw) or "k")
+        cmd = _precompile_cmd(tmp_path, env={"PATH": "/usr/bin", "HOME": "", "LC_ALL": "C.UTF-8", "TMPDIR": "/run/t"})
+        _precompile_cache_key(cmd, {"LANG": "fr_FR.UTF-8"}, "1.0.0")
+        assert seen["env"] == {"LANG": "fr_FR.UTF-8"}
 
     def test_settings_locale_change_changes_key(self, tmp_path: Path):
         cmd = replace(_planner_cmd(tmp_path), env={"PATH": "/usr/bin", "HOME": "", "LC_ALL": "C.UTF-8"})
         ctx = _ctx(tmp_path, ())
         assert _build_test_cache_key(cmd, ctx, None) != _build_test_cache_key(cmd, ctx, {"LANG": "fr_FR.UTF-8"})
+
+
+_HOST_ENV = {"PATH": "/p", "HOME": "", "LC_ALL": "C.UTF-8", "MODULAR_DEBUG": "stack-trace-on-error"}
+
+
+class TestKeyIgnoresPerRunHostEnv:
+    """Forwarded host variables never reach a key; the toolchain identity does."""
+
+    def test_per_run_variables_keep_the_test_key(self, tmp_path: Path):
+        a = replace(_planner_cmd(tmp_path), env={**_HOST_ENV, "TMPDIR": "/tmp/a", "NIX_BUILD_CORES": "4"})
+        b = replace(a, env={**_HOST_ENV, "TMPDIR": "/tmp/b", "NIX_BUILD_CORES": "8", "LANG": "de_DE.UTF-8"})
+        ctx = _ctx(tmp_path, ())
+        assert _build_test_cache_key(a, ctx, None) == _build_test_cache_key(b, ctx, None)
+
+    def test_per_run_variables_keep_the_precompile_key(self, tmp_path: Path):
+        a = _precompile_cmd(tmp_path, env={**_HOST_ENV, "TMPDIR": "/tmp/a"})
+        b = _precompile_cmd(tmp_path, env={**_HOST_ENV, "TMPDIR": "/tmp/b", "NIX_BUILD_CORES": "8"})
+        assert _precompile_cache_key(a, None, "1.0.0") == _precompile_cache_key(b, None, "1.0.0")
+
+    def test_cc_realpath_changes_the_test_key(self, tmp_path: Path):
+        cmd = _planner_cmd(tmp_path)
+        a = replace(_ctx(tmp_path, ()), cc_realpath="/nix/store/a-gcc/bin/gcc")
+        b = replace(_ctx(tmp_path, ()), cc_realpath="/nix/store/b-gcc/bin/gcc")
+        assert _build_test_cache_key(cmd, a, None) != _build_test_cache_key(cmd, b, None)
+
+    def test_nix_cc_changes_the_test_key(self, tmp_path: Path):
+        cmd = _planner_cmd(tmp_path)
+        a = replace(_ctx(tmp_path, ()), nix_cc="/nix/store/a-gcc-wrapper")
+        b = replace(_ctx(tmp_path, ()), nix_cc="/nix/store/b-gcc-wrapper")
+        assert _build_test_cache_key(cmd, a, None) != _build_test_cache_key(cmd, b, None)
+
+    def test_cc_identity_changes_the_precompile_key(self, tmp_path: Path):
+        cmd = _precompile_cmd(tmp_path)
+        base = _precompile_cache_key(cmd, None, "1.0.0")
+        assert _precompile_cache_key(cmd, None, "1.0.0", "/nix/store/a/bin/gcc", "") != base
+        assert _precompile_cache_key(cmd, None, "1.0.0", "", "/nix/store/a") != base
+
+    def test_compiler_binary_and_version_still_change_the_key(self, tmp_path: Path):
+        ctx = _ctx(tmp_path, ())
+        assert _build_test_cache_key(_planner_cmd(tmp_path, mojo="/opt/a/mojo"), ctx, None) != _build_test_cache_key(
+            _planner_cmd(tmp_path, mojo="/opt/b/mojo"), ctx, None
+        )
+        cmd = _precompile_cmd(tmp_path)
+        assert _precompile_cache_key(cmd, None, "1.0.0") != _precompile_cache_key(cmd, None, "1.0.1")
+
+    def test_settings_env_still_changes_both_keys(self, tmp_path: Path):
+        ctx = _ctx(tmp_path, ())
+        cmd = _planner_cmd(tmp_path)
+        assert _build_test_cache_key(cmd, ctx, {"X": "1"}) != _build_test_cache_key(cmd, ctx, {"X": "2"})
+        pre = _precompile_cmd(tmp_path)
+        assert _precompile_cache_key(pre, {"X": "1"}, "1.0.0") != _precompile_cache_key(pre, {"X": "2"}, "1.0.0")
