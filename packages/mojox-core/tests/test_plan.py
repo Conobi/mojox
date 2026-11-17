@@ -462,6 +462,100 @@ class TestCommandLocale:
         assert env["HOME"] == ""
 
 
+class TestForwardedEnv:
+    """Only the allowlisted host variables and the filtered PATH reach a planned command."""
+
+    @staticmethod
+    def _env_for(**facts) -> dict[str, str]:
+        graph = TargetGraph(
+            targets=(Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),),
+            edges=(),
+        )
+        host = HostFacts(cpu_count=8, available_memory_mb=16384, manifest_dir=PurePosixPath("/project"), **facts)
+        (cmd,) = plan(graph, _make_env(), _make_policy(), _make_toolchain(), host)
+        return cmd.env
+
+    def test_no_facts_keeps_the_previous_environment(self):
+        env = self._env_for()
+        assert set(env) == {"PATH", "HOME", "MODULAR_DEBUG", "LC_ALL"}
+        assert env["PATH"] == "/venv/bin:/usr/local/bin:/usr/bin:/bin"
+
+    def test_allowlisted_variables_are_forwarded(self):
+        env = self._env_for(
+            forwarded_env={
+                "NIX_CC": "/nix/store/x-gcc-wrapper",
+                "NIX_BUILD_CORES": "4",
+                "TMPDIR": "/run/t",
+                "PKG_CONFIG_PATH": "/p",
+                "CARGO_HOME": "/c",
+                "NIX_LDFLAGS_x86_64_unknown_linux_gnu": "-L/x",
+            }
+        )
+        assert env["NIX_CC"] == "/nix/store/x-gcc-wrapper"
+        assert env["NIX_BUILD_CORES"] == "4"
+        assert env["TMPDIR"] == "/run/t"
+        assert env["PKG_CONFIG_PATH"] == "/p"
+        assert env["CARGO_HOME"] == "/c"
+        assert env["NIX_LDFLAGS_x86_64_unknown_linux_gnu"] == "-L/x"
+
+    def test_other_variables_never_reach_the_child(self):
+        env = self._env_for(
+            forwarded_env={
+                "LD_LIBRARY_PATH": "/evil",
+                "PYTHONPATH": "/evil",
+                "FOO": "bar",
+                "NIX_CONFIG": "access-tokens = github.com=ghp_SECRET",
+                "NIX_PATH": "nixpkgs=/secret",
+                "NIX_REMOTE": "daemon",
+                "NIX_FOO": "x",
+            }
+        )
+        assert set(env) == {"PATH", "HOME", "MODULAR_DEBUG", "LC_ALL"}
+        assert "ghp_SECRET" not in repr(env)
+
+    def test_path_is_mojo_dir_then_host_entries_then_standard_dirs(self):
+        env = self._env_for(path_entries=("/nix/store/a/bin", "/usr/bin", "/opt/x/bin"))
+        assert env["PATH"] == "/venv/bin:/nix/store/a/bin:/usr/bin:/opt/x/bin:/usr/local/bin:/bin"
+
+    def test_hand_built_relative_entries_are_dropped(self):
+        env = self._env_for(path_entries=("", ".", "bin", "/ok", "/a:b"))
+        assert env["PATH"] == "/venv/bin:/ok:/usr/local/bin:/usr/bin:/bin"
+
+    def test_forwarded_env_cannot_override_the_fixed_variables(self):
+        env = self._env_for(forwarded_env={"PATH": "/evil", "HOME": "/root", "MODULAR_DEBUG": "x"})
+        assert env["PATH"] == "/venv/bin:/usr/local/bin:/usr/bin:/bin"
+        assert env["HOME"] == ""
+        assert env["MODULAR_DEBUG"] == "stack-trace-on-error"
+
+    def test_relative_compiler_is_dropped_but_a_name_or_absolute_path_survives(self):
+        assert "CC" not in self._env_for(forwarded_env={"CC": "./cc"})
+        assert "CXX" not in self._env_for(forwarded_env={"CXX": "bin/c++"})
+        env = self._env_for(forwarded_env={"CC": "gcc", "CXX": "/nix/store/x/bin/g++"})
+        assert (env["CC"], env["CXX"]) == ("gcc", "/nix/store/x/bin/g++")
+
+    def test_precompile_commands_get_the_same_environment(self):
+        graph = TargetGraph(
+            targets=(
+                Target(TargetKind.LIB, "src/mylib", "src/mylib"),
+                Target(TargetKind.TEST, "tests/test_a.mojo", "tests/test_a.mojo"),
+                Target(TargetKind.TEST, "tests/test_b.mojo", "tests/test_b.mojo"),
+            ),
+            edges=(),
+        )
+        host = HostFacts(
+            cpu_count=8,
+            available_memory_mb=16384,
+            manifest_dir=PurePosixPath("/project"),
+            forwarded_env={"NIX_CC": "/nix/store/x-gcc-wrapper"},
+            path_entries=("/nix/store/a/bin",),
+        )
+        cmds = plan(graph, _make_env(), _make_policy(), _make_toolchain(), host)
+        assert {c.kind for c in cmds} >= {CommandKind.COMPILE_PACKAGE, CommandKind.BUILD_TEST}
+        for c in cmds:
+            assert c.env["NIX_CC"] == "/nix/store/x-gcc-wrapper"
+            assert c.env["PATH"].startswith("/venv/bin:/nix/store/a/bin:")
+
+
 class TestBuildTestArgvOrdering:
     """mojo build places source before -o and flags."""
 

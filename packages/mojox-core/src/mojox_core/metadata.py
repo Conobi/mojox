@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .hostenv import is_forwarded_name, select_forwarded_env
 from .types import (
     Command,
     Diagnostic,
@@ -43,6 +44,9 @@ def serialize(
         toolchain: The resolved Mojo toolchain identity.
         diagnostics: Any compiler or mojox diagnostics to include.
         host: Host facts behind the resolved jobs; serialized as ``null`` when omitted.
+            ``host.forwarded_env`` lists the names of the forwarded variables (always
+            including ``PATH``); their values, and ``PATH``'s, are left out of
+            ``commands[].env``.
 
     Returns:
         A plain ``dict[str, Any]`` that is directly JSON-serialisable via ``json.dumps``.
@@ -63,6 +67,8 @@ def serialize(
         else {
             "cpu_count": host.cpu_count,
             "cpu_count_source": host.cpu_count_source,
+            # Names only: a forwarded value may be a token or a private path.
+            "forwarded_env": sorted({*select_forwarded_env(host.forwarded_env), "PATH"}),
         },
         "environment": {
             "include_sequence": [
@@ -109,7 +115,7 @@ def serialize(
             {
                 "argv": list(c.argv),
                 "cwd": str(c.cwd),
-                "env": dict(c.env),
+                "env": {name: value for name, value in c.env.items() if name != "PATH" and not is_forwarded_name(name)},
                 "kind": c.kind.value,
                 "target_id": c.target_id,
                 "timeout_s": c.timeout_s,

@@ -133,11 +133,40 @@ class TestParallelism:
             cpu_count_source="cgroup",
         )
         doc = serialize(graph, env, policy, commands, toolchain, (), host=host)
-        assert doc["host"] == {"cpu_count": 8, "cpu_count_source": "cgroup"}
+        assert doc["host"] == {"cpu_count": 8, "cpu_count_source": "cgroup", "forwarded_env": ["PATH"]}
 
     def test_host_is_null_when_not_given(self):
         graph, env, policy, commands, toolchain = _make_fixture()
         assert serialize(graph, env, policy, commands, toolchain, ())["host"] is None
+
+    def test_forwarded_names_are_listed_without_values(self):
+        graph, env, policy, commands, toolchain = _make_fixture()
+        secret = "s3cr3t-token-value"
+        host = HostFacts(
+            cpu_count=2,
+            available_memory_mb=1024,
+            manifest_dir=PurePosixPath("/project"),
+            forwarded_env={"NIX_CC": secret, "TMPDIR": secret, "NIX_CONFIG": secret, "FOO": secret},
+            path_entries=(f"/{secret}/bin",),
+        )
+        leaky = tuple(
+            replace(c, env={**c.env, "NIX_CC": secret, "TMPDIR": secret, "PATH": f"/{secret}/bin:/usr/bin"})
+            for c in commands
+        )
+        doc = serialize(graph, env, policy, leaky, toolchain, (), host=host)
+        assert doc["host"]["forwarded_env"] == ["NIX_CC", "PATH", "TMPDIR"]
+        assert secret not in json.dumps(doc)
+        for command in doc["commands"]:
+            assert "PATH" not in command["env"]
+            assert "NIX_CC" not in command["env"]
+
+    def test_fixed_command_variables_are_still_reported(self):
+        graph, env, policy, commands, toolchain = _make_fixture()
+        leaky = tuple(
+            replace(c, env={"PATH": "/p", "HOME": "", "MODULAR_DEBUG": "x", "LC_ALL": "C.UTF-8"}) for c in commands
+        )
+        doc = serialize(graph, env, policy, leaky, toolchain, ())
+        assert doc["commands"][0]["env"] == {"HOME": "", "MODULAR_DEBUG": "x", "LC_ALL": "C.UTF-8"}
 
     def test_existing_top_level_keys_keep_their_order(self):
         graph, env, policy, commands, toolchain = _make_fixture()

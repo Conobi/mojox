@@ -1821,3 +1821,43 @@ class TestKeyIgnoresPerRunHostEnv:
         assert _build_test_cache_key(cmd, ctx, {"X": "1"}) != _build_test_cache_key(cmd, ctx, {"X": "2"})
         pre = _precompile_cmd(tmp_path)
         assert _precompile_cache_key(pre, {"X": "1"}, "1.0.0") != _precompile_cache_key(pre, {"X": "2"}, "1.0.0")
+
+
+class TestForwardedEnvPrecedence:
+    """The settings env beats a forwarded host variable; the fixed variables still beat the settings env."""
+
+    def test_settings_env_beats_forwarded_variables(self):
+        import mojox.exec as exec_mod
+
+        merged = exec_mod._merge_env(
+            {
+                "CC": "/host/cc",
+                "TMPDIR": "/host/tmp",
+                "NIX_CFLAGS_COMPILE_x86_64_unknown_linux_gnu": "-a",
+                "PATH": "/p",
+            },
+            {"CC": "/user/cc", "TMPDIR": "/user/tmp", "NIX_CFLAGS_COMPILE_x86_64_unknown_linux_gnu": "-b"},
+        )
+        assert merged["CC"] == "/user/cc"
+        assert merged["TMPDIR"] == "/user/tmp"
+        assert merged["NIX_CFLAGS_COMPILE_x86_64_unknown_linux_gnu"] == "-b"
+
+    def test_forwarded_variable_survives_when_the_settings_do_not_set_it(self):
+        import mojox.exec as exec_mod
+
+        assert exec_mod._merge_env({"CC": "/host/cc"}, {"OTHER": "1"}) == {"CC": "/host/cc", "OTHER": "1"}
+        assert exec_mod._merge_env({"CC": "/host/cc"}, None) == {"CC": "/host/cc"}
+
+    def test_fixed_variables_still_beat_the_settings_env(self):
+        import mojox.exec as exec_mod
+
+        merged = exec_mod._merge_env(
+            {"PATH": "/p", "HOME": "", "MODULAR_DEBUG": "stack-trace-on-error"},
+            {"PATH": "/evil", "HOME": "/root", "MODULAR_DEBUG": "off"},
+        )
+        assert merged == {"PATH": "/p", "HOME": "", "MODULAR_DEBUG": "stack-trace-on-error"}
+
+    def test_child_sees_the_settings_value(self):
+        env = _child_env({"CC": "/host/cc", "TMPDIR": "/host/tmp"}, {"CC": "/user/cc"})
+        assert env["CC"] == "/user/cc"
+        assert env["TMPDIR"] == "/host/tmp"

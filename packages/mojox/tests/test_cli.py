@@ -1492,7 +1492,9 @@ class TestParallelismReporting:
 
         _cmd_metadata(build_parser().parse_args(["metadata", "--no-config", "-j", "-2", "--compile-threads", "2"]))
         doc = json.loads(capsys.readouterr().out)
-        assert doc["host"] == {"cpu_count": 3, "cpu_count_source": "MOJOX_CPU_COUNT"}
+        host = doc["host"]
+        assert (host["cpu_count"], host["cpu_count_source"]) == (3, "MOJOX_CPU_COUNT")
+        assert "PATH" in host["forwarded_env"]
         policy = doc["policy"]
         assert (policy["jobs"], policy["jobs_spec"], policy["compile_threads"]) == (1, "-2", 2)
 

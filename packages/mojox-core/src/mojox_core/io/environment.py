@@ -9,11 +9,13 @@ from __future__ import annotations
 import importlib.metadata
 import os
 import re
+import shutil
 import sysconfig
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from ..hostenv import absolute_path_entries, construct_path, select_forwarded_env
 from ..plan import select_locale_env
 from ..policy import parse_count_text
 from ..types import DistKind, HostFacts
@@ -89,13 +91,40 @@ def read_lockfile(project_root: Path) -> dict[str, Any] | None:
         return None
 
 
-def read_host_facts(manifest_dir: Path, environ: Mapping[str, str] | None = None) -> HostFacts:
+def usable_path_entries(raw_path: str, project_root: Path) -> tuple[str, ...]:
+    """Absolute ``PATH`` entries that do not resolve inside *project_root*.
+
+    Guards ``$PWD/.direnv/bin`` and ``node_modules/.bin``: they are absolute,
+    yet a binary planted there must not shadow ``cc``. Entries are resolved
+    through symlinks first, so a link into the project is dropped too.
+    Entries that do not exist are kept (they are harmless).
+    """
+    root = os.path.realpath(project_root)
+    return tuple(entry for entry in absolute_path_entries(raw_path) if not _is_within(os.path.realpath(entry), root))
+
+
+def _is_within(path: str, root: str) -> bool:
+    """Whether the resolved *path* is *root* or below it (a shared name prefix does not count)."""
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def read_host_facts(
+    manifest_dir: Path,
+    environ: Mapping[str, str] | None = None,
+    *,
+    mojo_path: str | None = None,
+) -> HostFacts:
     """Gather machine-specific facts for the planner.
 
     Args:
-        environ: Host environment to take the locale and ``MOJOX_CPU_COUNT``
-            from; defaults to ``os.environ``. Only ``LANG`` and ``LC_*``
-            reach planned commands.
+        environ: Host environment to take the locale, ``MOJOX_CPU_COUNT``,
+            ``PATH`` and the allowlisted variables from; defaults to
+            ``os.environ``. Only ``LANG``/``LC_*``, the allowlisted
+            variables and the filtered ``PATH`` reach planned commands.
+        mojo_path: The compiler binary. When given, its directory leads the
+            PATH on which ``cc`` is looked up and ``CC``/``CXX`` names are
+            resolved, exactly as the planner builds it; without it that PATH
+            starts at the host entries.
 
     Raises:
         ConfigError: ``MOJOX_CPU_COUNT`` is set but not an integer >= 1.
@@ -105,13 +134,43 @@ def read_host_facts(manifest_dir: Path, environ: Mapping[str, str] | None = None
     if environ is None:
         environ = os.environ
     cpu_count, cpu_count_source = detect_cpu_count(environ)
+    root = manifest_dir.resolve()
+    path_entries = usable_path_entries(environ.get("PATH", ""), root)
+    constructed = construct_path(os.path.dirname(mojo_path) if mojo_path else None, path_entries)
+
+    forwarded = select_forwarded_env(environ)
+    for name in ("CC", "CXX"):
+        if name in forwarded and not _compiler_is_usable(forwarded[name], constructed, root):
+            del forwarded[name]
+    cc = shutil.which("cc", path=constructed)
 
     return HostFacts(
         cpu_count=cpu_count,
         available_memory_mb=_available_memory_mb(),
-        manifest_dir=PurePosixPath(str(manifest_dir.resolve())),
+        manifest_dir=PurePosixPath(str(root)),
         locale_env=select_locale_env(environ),
         cpu_count_source=cpu_count_source,
+        path_entries=path_entries,
+        forwarded_env=forwarded,
+        cc_realpath=os.path.realpath(cc) if cc else "",
+        nix_cc=environ.get("NIX_CC", ""),
+    )
+
+
+def _compiler_is_usable(value: str, constructed_path: str, project_root: Path) -> bool:
+    """Whether a ``CC``/``CXX`` value names a real compiler outside the project.
+
+    An absolute path must be an executable file that does not resolve inside
+    *project_root*; a bare name must resolve on *constructed_path*, which
+    only holds absolute entries outside the project. Blank values and
+    command lines such as ``ccache gcc`` resolve to nothing and are dropped.
+    """
+    if not value.startswith("/"):
+        return shutil.which(value, path=constructed_path) is not None
+    return (
+        os.path.isfile(value)
+        and os.access(value, os.X_OK)
+        and not _is_within(os.path.realpath(value), os.path.realpath(project_root))
     )
 
 

@@ -195,10 +195,21 @@ class Toolchain:
 class HostFacts:
     """Machine-specific facts injected into the planner for determinism.
 
-    ``locale_env`` holds the host's ``LANG`` and ``LC_*`` variables and
-    nothing else: it is the only slice of the host environment that reaches
-    a planned command, because embedded CPython takes its stdio encoding
-    from the locale. Empty means the host set no locale.
+    ``locale_env`` holds the host's ``LANG`` and ``LC_*`` variables. Together
+    with ``forwarded_env`` and ``path_entries`` it is the only slice of the
+    host environment that reaches a planned command (embedded CPython takes
+    its stdio encoding from the locale, and the Nix ``cc`` is found through
+    the PATH). Empty means the host set none.
+
+    ``forwarded_env`` is the allowlisted part of the host environment
+    (``mojox_core.hostenv``), already validated by ``read_host_facts``;
+    ``path_entries`` is the host ``PATH`` reduced to absolute entries outside
+    the project. The planner re-filters both, so a hand-built value cannot
+    widen the environment.
+
+    ``cc_realpath`` (the real path of the ``cc`` on the PATH the planner
+    builds) and ``nix_cc`` (the plain ``NIX_CC`` value) identify the C
+    toolchain for the cache keys; empty means none.
 
     ``cpu_count_source`` names what bounded ``cpu_count``: ``"affinity"``,
     ``"cgroup"``, ``"os"``, or ``"MOJOX_CPU_COUNT"`` when overridden.
@@ -209,6 +220,10 @@ class HostFacts:
     manifest_dir: PurePosixPath
     locale_env: dict[str, str] = field(default_factory=dict)
     cpu_count_source: str = "os"
+    path_entries: tuple[str, ...] = ()
+    forwarded_env: dict[str, str] = field(default_factory=dict)
+    cc_realpath: str = ""
+    nix_cc: str = ""
 
 
 @dataclass(frozen=True)

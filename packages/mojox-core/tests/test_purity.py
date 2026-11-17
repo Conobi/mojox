@@ -26,6 +26,7 @@ _PURE_MODULES = [
     "mojox_core.settings",
     "mojox_core.environment",
     "mojox_core.options",
+    "mojox_core.hostenv",
 ]
 
 # Modules in io/ are effectful and may import anything.

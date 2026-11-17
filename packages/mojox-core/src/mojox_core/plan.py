@@ -12,6 +12,7 @@ import re
 from collections.abc import Mapping
 from pathlib import PurePosixPath
 
+from .hostenv import construct_path, select_forwarded_env
 from .types import (
     Command,
     CommandKind,
@@ -355,29 +356,33 @@ def _build_include_sequence(
 
 
 def _construct_env(toolchain: Toolchain, host: HostFacts) -> dict[str, str]:
-    """Construct a minimal, safe environment for mojo invocations.
+    """Build the environment of every ``mojo`` invocation and test binary.
 
-    The environment is explicitly constructed rather than inherited from the
-    host process, ensuring reproducibility and preventing accidental leakage
-    of ambient environment variables.
+    The host process environment is not inherited; an allowlist of it is
+    forwarded (see ``mojox_core.hostenv``). ``PATH`` is the mojo directory,
+    then the host's absolute entries outside the project, then the standard
+    directories, so the C compiler the user's shell provides is the one
+    ``mojo build`` links with, and a binary inside the project can never
+    shadow it. The allowlisted variables come from ``host.forwarded_env``;
+    ``HOME`` stays empty so the compiler cache lands in the repository.
 
-    PATH includes the Mojo binary's directory plus standard system
-    directories so that the C compiler (cc/clang) is available for linking.
+    The host locale is forwarded as-is: a binary that embeds CPython gets
+    ASCII stdio without a UTF-8 locale, and ``PYTHONUTF8`` does not help
+    there. When the host sets none, ``LC_ALL=C.UTF-8`` is the default, never
+    added next to a host locale because ``LC_ALL`` would override the
+    user's choice.
 
-    The host locale is the one exception, and the executor runs test
-    binaries with this same env. A binary that embeds CPython gets ASCII stdio
-    without a UTF-8 locale, and ``PYTHONUTF8`` does not help there. So the
-    host's ``LANG``/``LC_*`` are forwarded as-is. They are re-filtered here
-    so that a hand-built HostFacts cannot smuggle other variables in. When
-    the host sets none, ``LC_ALL=C.UTF-8`` is the default. It is never added
-    next to a host locale, because ``LC_ALL`` would override the user's
-    choice.
+    Everything the host supplies is re-filtered here, so a hand-built
+    ``HostFacts`` cannot smuggle other variables in, and none of it can
+    override ``PATH``, ``HOME`` or ``MODULAR_DEBUG``. The settings env wins
+    over forwarded values later, in the executor.
     """
     mojo_dir = str(PurePosixPath(toolchain.mojo_path).parent)
     locale_env = select_locale_env(host.locale_env) or _DEFAULT_LOCALE
     return {
+        **select_forwarded_env(host.forwarded_env),
         **locale_env,
-        "PATH": f"{mojo_dir}:/usr/local/bin:/usr/bin:/bin",
+        "PATH": construct_path(mojo_dir, host.path_entries),
         "HOME": "",
         "MODULAR_DEBUG": "stack-trace-on-error",
     }

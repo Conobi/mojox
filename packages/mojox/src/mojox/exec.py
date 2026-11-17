@@ -22,6 +22,7 @@ from pathlib import Path, PurePath
 from typing import Any
 
 from mojox_core import Command, CommandKind
+from mojox_core.hostenv import is_forwarded_name
 from mojox_core.plan import select_locale_env
 
 from .cache import (
@@ -169,19 +170,26 @@ def _extract_test_source_and_flags(
 
 
 def _merge_env(cmd_env: Mapping[str, str], extra_env: Mapping[str, str] | None) -> dict[str, str]:
-    """Overlay *cmd_env* on the settings *extra_env*, except for the locale.
+    """Overlay *cmd_env* on the settings *extra_env*, with two exceptions.
 
-    The planner's env wins on conflicts, but its locale is only a host
-    fallback. If the settings set any ``LANG``/``LC_*``, every planner
-    locale var is dropped, so that a defaulted ``LC_ALL`` cannot mask a
-    settings ``LANG``. The executor and both cache keys use this one merge,
-    so a key always describes the env the child actually gets.
+    The planner's env wins on conflicts, except that the host variables it
+    forwards (the ``mojox_core.hostenv`` allowlist) are only defaults: the
+    settings value wins, so ``[env] CC = ...`` really selects the compiler.
+    ``PATH``, ``HOME`` and ``MODULAR_DEBUG`` are not forwardable and stay
+    fixed. The planner's locale is also only a host fallback: if the
+    settings set any ``LANG``/``LC_*``, every planner locale var is dropped,
+    so that a defaulted ``LC_ALL`` cannot mask a settings ``LANG``. The
+    executor uses this one merge for the env the child actually gets.
     """
     extra = dict(extra_env or {})
     if select_locale_env(extra):
         planner_locale = select_locale_env(cmd_env)
         cmd_env = {name: value for name, value in cmd_env.items() if name not in planner_locale}
-    return {**extra, **cmd_env}
+    merged = {**extra, **cmd_env}
+    for name in cmd_env:
+        if name in extra and is_forwarded_name(name):
+            merged[name] = extra[name]
+    return merged
 
 
 def _build_test_cache_key(
@@ -382,7 +390,8 @@ def run_command(
         cmd: The command to execute.
         extra_env: Additional environment variables (the resolved ``Policy.env``).
             cmd.env wins on conflicts, except that a settings locale
-            replaces the planner's (see :func:`_merge_env`).
+            replaces the planner's and a settings value replaces a
+            forwarded host variable (see :func:`_merge_env`).
         include_paths: Dependency include directories whose ``lib/``
             subdirectories are added to the dynamic linker search path.
 
