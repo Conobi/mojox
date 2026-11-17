@@ -693,15 +693,15 @@ class TestCacheInvalidatesOnDependencyChange:
     def _calls(log: Path, subcommand: str) -> int:
         return sum(1 for line in log.read_text().splitlines() if line.startswith(f"{subcommand} "))
 
-    # One test target is below the precompile threshold; bundle mode precompiles anyway.
-    @pytest.mark.parametrize(("mode", "precompiles"), [((), 0), (("--bundle",), 1)], ids=["per-file", "bundle"])
+    # Bundle mode never precompiles: its one harness is below the precompile threshold.
+    @pytest.mark.parametrize(("mode", "precompiles"), [((), 0), (("--bundle",), 0)], ids=["per-file", "bundle"])
     def test_unchanged_dependency_is_a_hit(self, project, mode, precompiles):
         _dep, log = project
         assert self._run(*mode) == 0
         assert self._run(*mode) == 0
         assert (self._calls(log, "build"), self._calls(log, "precompile")) == (1, precompiles)
 
-    @pytest.mark.parametrize(("mode", "precompiles"), [((), 0), (("--bundle",), 2)], ids=["per-file", "bundle"])
+    @pytest.mark.parametrize(("mode", "precompiles"), [((), 0), (("--bundle",), 0)], ids=["per-file", "bundle"])
     def test_dependency_edit_rebuilds(self, project, mode, precompiles):
         dep, log = project
         assert self._run(*mode) == 0
@@ -714,14 +714,14 @@ class TestCacheInvalidatesOnDependencyChange:
         assert self._run("--bundle") == 0
         (Path.cwd() / "src" / "util.mojo").write_text("fn u(): return\n")
         assert self._run("--bundle") == 0
-        assert (self._calls(log, "build"), self._calls(log, "precompile")) == (2, 1)
+        assert (self._calls(log, "build"), self._calls(log, "precompile")) == (2, 0)
 
-    def test_bundle_lib_edit_reprecompiles_and_rebuilds(self, project):
+    def test_bundle_lib_edit_rebuilds(self, project):
         _dep, log = project
         assert self._run("--bundle") == 0
         (Path.cwd() / "src" / "mylib" / "__init__.mojo").write_text("fn g(): pass\n")
         assert self._run("--bundle") == 0
-        assert (self._calls(log, "build"), self._calls(log, "precompile")) == (2, 2)
+        assert (self._calls(log, "build"), self._calls(log, "precompile")) == (2, 0)
 
 
 # Where a ``-I extra`` flag can come from, as (pyproject [tool.mojox] body, CLI args).

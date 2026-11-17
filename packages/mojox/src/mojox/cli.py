@@ -421,8 +421,6 @@ def _plan_content_addressed(
     policy: Policy,
     toolchain: Toolchain,
     host: HostFacts,
-    *,
-    force_precompile: bool = False,
 ) -> tuple[Command, ...]:
     """Plan *graph* with its packages in a directory named after their inputs.
 
@@ -435,7 +433,7 @@ def _plan_content_addressed(
 
     from .exec import precompile_set_id
 
-    commands = plan(graph, env, policy, toolchain, host, force_precompile=force_precompile)
+    commands = plan(graph, env, policy, toolchain, host)
     if not any(c.kind == CommandKind.COMPILE_PACKAGE for c in commands):
         return commands
     namespace = precompile_set_id(
@@ -445,7 +443,7 @@ def _plan_content_addressed(
         cc_realpath=host.cc_realpath,
         nix_cc=host.nix_cc,
     )
-    return plan(graph, env, policy, toolchain, host, force_precompile=force_precompile, pkg_namespace=namespace)
+    return plan(graph, env, policy, toolchain, host, pkg_namespace=namespace)
 
 
 def _make_cache_context(
@@ -722,7 +720,7 @@ def _print_bundle_notes(policy: Policy, *, fail_fast_given: bool) -> None:
     the note on every run would be noise.
     """
     if policy.origins.get("jobs") == "--jobs":
-        print("note: -j applies to precompiles and examples, not to tests inside the bundle", file=sys.stderr)
+        print("note: -j has no effect in bundle mode, which builds and runs one binary", file=sys.stderr)
     if fail_fast_given:
         print("note: --fail-fast stops between commands, not between tests inside the bundle", file=sys.stderr)
 
@@ -738,21 +736,20 @@ def _plan_bundle(
     harness_rel: str,
     staging_include: str,
 ) -> tuple[Command, ...]:
-    """Plan the bundle's lib precompiles and the one ``BUILD_TEST`` that builds the generated harness.
+    """Plan the one ``BUILD_TEST`` that builds the generated harness; the libs are compiled from source.
 
-    Every lib target is precompiled, although the harness is the only
-    target that depends on them: it imports every test module, so it
-    compiles the libs once either way. Its include order is the package
-    dir, the staging dir, then the parent dir of each directory lib target
-    (each parent once). The parent dirs stay, after the packages, for
-    modules next to the libs that no target covers (``src/util.mojo``).
-    The harness is built without ``--Werror``: its ``try``/``except``
-    around test functions that cannot raise draws "unreachable except"
-    warnings.
+    Precompilation is skipped: the harness is the only target that depends
+    on the libs, below the planner's threshold, and measured on a large
+    project a precompiled package barely shortened the harness compile.
+    So the harness gets the staging dir, then the parent dir of each lib
+    target, ahead of the policy's include paths; the parent dirs also serve
+    modules next to the libs that no target covers (``src/util.mojo``). The
+    harness is built without ``--Werror``: its ``try``/``except`` around
+    test functions that cannot raise draws "unreachable except" warnings.
     """
     from dataclasses import replace
 
-    from mojox_core import Target, TargetGraph, TargetKind
+    from mojox_core import Target, TargetGraph, TargetKind, plan
 
     lib_targets = tuple(t for t in graph.targets if t.kind == TargetKind.LIB)
     harness = Target(TargetKind.TEST, harness_rel, "bundle::harness")
@@ -762,8 +759,7 @@ def _plan_bundle(
         include_paths=(staging_include, *source_dirs, *policy.include_paths),
         lints=replace(policy.lints, warnings_as_errors=False),
     )
-    bundle_graph = TargetGraph(targets=(*lib_targets, harness), edges=())
-    return _plan_content_addressed(bundle_graph, env, bundle_policy, toolchain, host, force_precompile=True)
+    return plan(TargetGraph(targets=(harness,), edges=()), env, bundle_policy, toolchain, host)
 
 
 def _run_bundle_test(
@@ -803,7 +799,6 @@ def _run_bundle_test(
     import time
     from dataclasses import replace
 
-    from mojox_core import TargetKind
     from mojox_core.bundle import (
         TestModule,
         discover_test_functions,
@@ -918,7 +913,7 @@ def _run_bundle_test(
         )
         render_bundle_header(
             functions=sum(len(m.functions) for m in bundle_modules),
-            packages=sum(1 for t in graph.targets if t.kind == TargetKind.LIB),
+            packages=0,
             examples=0,
             origin=_origin(policy, "test-bundle"),
             timeout_s=policy.timeout_s,

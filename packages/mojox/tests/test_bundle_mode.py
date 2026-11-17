@@ -73,38 +73,19 @@ def _includes(argv: tuple[str, ...]) -> list[str]:
 
 
 class TestPlanBundle:
-    def test_every_lib_is_precompiled_before_the_harness(self, tmp_path):
+    def test_plan_is_the_harness_alone_whatever_the_libs(self, tmp_path):
         commands = _plan_bundle(**_bundle_inputs(tmp_path, libs=("src/mylib", "src/other")))
-        assert [(c.kind, c.target_id) for c in commands] == [
-            (CommandKind.COMPILE_PACKAGE, "src/mylib"),
-            (CommandKind.COMPILE_PACKAGE, "src/other"),
-            (CommandKind.BUILD_TEST, "bundle::harness"),
+        assert [(c.kind, c.target_id, c.depends_on) for c in commands] == [
+            (CommandKind.BUILD_TEST, "bundle::harness", ())
         ]
-        assert commands[-1].depends_on == ("src/mylib", "src/other")
 
-    def test_harness_sees_packages_then_staging_then_lib_parents(self, tmp_path):
+    def test_harness_sees_staging_then_lib_parents_then_policy_includes(self, tmp_path):
         commands = _plan_bundle(**_bundle_inputs(tmp_path, libs=("src/mylib",)))
-        assert _includes(commands[-1].argv) == [
-            f"{tmp_path}/.mojox/build/pkg",
-            f"{tmp_path}/.mojox/bundle/abc/stage",
-            f"{tmp_path}/src",
-            "/deps",
-        ]
-
-    def test_packages_are_published_where_the_harness_imports_them(self, tmp_path):
-        commands = _plan_bundle(**_bundle_inputs(tmp_path, libs=("src/mylib", "src/other")))
-        argv = commands[-1].argv
-        pkg_dir = next(argv[i + 1] for i, arg in enumerate(argv) if arg == "-I" and "/pkg/" in argv[i + 1])
-        assert {str(PurePosixPath(c.outputs[0]).parent) for c in commands[:-1]} == {pkg_dir}
+        assert _includes(commands[0].argv) == [f"{tmp_path}/.mojox/bundle/abc/stage", f"{tmp_path}/src", "/deps"]
 
     def test_libs_under_one_parent_add_it_once(self, tmp_path):
         commands = _plan_bundle(**_bundle_inputs(tmp_path, libs=("src/mylib", "src/other")))
-        assert _includes(commands[-1].argv) == [
-            f"{tmp_path}/.mojox/build/pkg",
-            f"{tmp_path}/.mojox/bundle/abc/stage",
-            f"{tmp_path}/src",
-            "/deps",
-        ]
+        assert _includes(commands[0].argv) == [f"{tmp_path}/.mojox/bundle/abc/stage", f"{tmp_path}/src", "/deps"]
 
     def test_lib_that_is_not_a_dir_adds_no_source_dir(self, tmp_path):
         inputs = _bundle_inputs(tmp_path, libs=())
@@ -113,11 +94,7 @@ class TestPlanBundle:
         lib = Target(TargetKind.LIB, "single/mod.mojo", "single/mod.mojo")
         inputs["graph"] = TargetGraph(targets=(lib, *inputs["graph"].targets), edges=())
         commands = _plan_bundle(**inputs)
-        assert _includes(commands[-1].argv) == [
-            f"{tmp_path}/.mojox/build/pkg",
-            f"{tmp_path}/.mojox/bundle/abc/stage",
-            "/deps",
-        ]
+        assert _includes(commands[0].argv) == [f"{tmp_path}/.mojox/bundle/abc/stage", "/deps"]
 
     def test_harness_is_built_without_werror(self, tmp_path):
         commands = _plan_bundle(**_bundle_inputs(tmp_path, libs=("src/mylib",)))
@@ -362,13 +339,13 @@ class TestHeader:
         assert _test("--bundle") == 0
         err = capsys.readouterr().err
         assert (
-            "targets (jobs 1, compile threads 1)\n"
-            "bundle: 1 binary, 3 test functions, 1 package (--bundle); timeout 300 s for the harness (default)\n"
+            "target (jobs 1, compile threads 1)\n"
+            "bundle: 1 binary, 3 test functions (--bundle); timeout 300 s for the harness (default)\n"
         ) in err
 
     def test_counts_functions_after_path_filters_and_before_k(self, project, capsys):
         assert _test("--bundle", "tests/test_b.mojo", "-k", "test_c") == 0
-        assert "bundle: 1 binary, 2 test functions, 1 package (--bundle)" in capsys.readouterr().err
+        assert "bundle: 1 binary, 2 test functions (--bundle)" in capsys.readouterr().err
 
     def test_shows_a_settings_file_timeout_and_a_manifest_mode(self, project, capsys):
         from mojox.cli import _cmd_test
@@ -406,7 +383,7 @@ class TestHeader:
         assert "bundle:" not in capsys.readouterr().err
 
 
-_JOBS_NOTE = "note: -j applies to precompiles and examples, not to tests inside the bundle\n"
+_JOBS_NOTE = "note: -j has no effect in bundle mode, which builds and runs one binary\n"
 _FAIL_FAST_NOTE = "note: --fail-fast stops between commands, not between tests inside the bundle\n"
 
 
